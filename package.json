@@ -1,0 +1,23 @@
+{
+  "name": "nyx",
+  "version": "1.0.0",
+  "description": "A simple site in vanillajs running on top of Cloudflare Pages",
+  "main": "index.js",
+  "devDependencies": {
+    "tailwindcss": "^3.0.23"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev" : "npx wrangler@beta pages dev --proxy 3000 ./pub"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rishavs/nyx.git"
+  },
+  "author": "Rishav Sharan",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rishavs/nyx/issues"
+  },
+  "homepage": "https://github.com/rishavs/nyx#readme"
+}
