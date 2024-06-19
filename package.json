@@ -1,16 +1,11 @@
 {
-  "private": true,
-  "scripts": {
-    "dev": "nuxi dev",
-    "build": "nuxi build",
-    "start": "node .output/server/index.mjs"
-  },
+  "name": "nyx",
+  "module": "main.ts",
+  "type": "module",
   "devDependencies": {
-    "@nuxtjs/supabase": "^0.1.8",
-    "@nuxtjs/tailwindcss": "^5.0.2",
-    "nuxt3": "latest"
+    "@types/bun": "latest"
   },
-  "dependencies": {
-    "daisyui": "^2.13.6"
+  "peerDependencies": {
+    "typescript": "^5.0.0"
   }
 }

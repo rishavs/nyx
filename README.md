@@ -1,29 +1,15 @@
-# Nuxt 3 Minimal Starter
+# nyx
 
-We recommend to look at the [documentation](https://v3.nuxtjs.org).
-
-## Setup
-
-Make sure to install the dependencies
+To install dependencies:
 
 ```bash
-yarn install
+bun install
 ```
 
-## Development
-
-Start the development server on http://localhost:3000
+To run:
 
 ```bash
-yarn dev
+bun run main.ts
 ```
 
-## Production
-
-Build the application for production:
-
-```bash
-yarn build
-```
-
-Checkout the [deployment documentation](https://v3.nuxtjs.org/docs/deployment).
+This project was created using `bun init` in bun v1.1.13. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
