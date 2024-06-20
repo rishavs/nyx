@@ -2,6 +2,8 @@ import { KwdTokenKind, OprTokenKind, type Token } from "./tokens";
 import type { LexingResult, LexingContext, CompilingError } from "./types";
 
 // Character definitions
+// TODO - lexer broken for consequtive operators
+
 const isAlphabet = (c: string): boolean =>  
     'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(c);
 

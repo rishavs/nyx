@@ -1,5 +1,5 @@
+import { expression } from "./expressions";
 import { lex_file } from "./lexer";
-import { parse_expression } from "./expressions";
 import type { ParsingContext } from "./types";
 
 let src2 = `
@@ -10,7 +10,7 @@ let src2 = `
     
     return z`
 
-let src = `1+ (2+3)`
+let src = `66 != 67 > !2`
 
 let parsingStart = Date.now();
 
@@ -34,7 +34,7 @@ let p: ParsingContext = {
     tokens: lexingResult.tokens,
     i: 0,
 }
-let parsingResult = parse_expression(p);
+let parsingResult = expression(p);
 let parsingEnd = Date.now();
 
 console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);

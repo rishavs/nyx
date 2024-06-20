@@ -43,56 +43,68 @@ export enum StmtNodeKind {
 // ---------------------------
 // Expressions
 // ---------------------------
-// expression     → literal
-//                | unary
-//                | binary
-//                | grouping ;
-
-// literal        → NUMBER | STRING | "true" | "false" | "nil" ;
-// grouping       → "(" expression ")" ;
-// unary          → ( "-" | "!" ) expression ;
-// binary         → expression operator expression ;
-// operator       → "==" | "!=" | "<" | "<=" | ">" | ">="
-//                | "+"  | "-"  | "*" | "/" | "and" | "or";
-
+// expression     → equality ;
+// equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+// comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+// term           → factor ( ( "-" | "+" ) factor )* ;
+// factor         → unary ( ( "/" | "*" ) unary )* ;
+// unary          → ( "!" | "-" ) unary
+//                | primary ;
+// primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
 
 export type ExprNodeKind =
     'IDENTIFIER'
     | 'NUMBER'
+    | 'STRING'
+    | 'BOOLEAN'
     | 'NIL'
     | 'UNARY'
     | 'BINARY'
     | 'GROUPING';
 
-export type IdentifierNode = {
-    kind: 'IDENTIFIER';
-    isQualified: boolean;
-    name: string;
+type BaseNode = {
+    value: string;
+    i: number;
+    line: number;
 }
 
-export type NilNode = {
+export type IdentifierNode = BaseNode & {
+    kind: 'IDENTIFIER';
+    isQualified: boolean;
+}
+
+export type NumberNode = BaseNode & {
+    kind: 'NUMBER';
+}
+
+export type StringNode = BaseNode & {
+    kind: 'STRING';
+    isStatic: boolean;
+    isInterpolated: boolean;
+}
+
+export type BooleanNode = BaseNode & {
+    kind: 'BOOLEAN';
+}
+
+export type NilNode = BaseNode & {
     kind: 'NIL';
 }
 
-export type NumberNode = {
-    kind: 'NUMBER';
-    value: string;
-}
-
-export type UnaryNode = {
+export type UnaryNode = BaseNode & {
     kind: 'UNARY';
     operator: string;
     right: ExprNode;
 }
 
-export type BinaryNode = {
+export type BinaryNode = BaseNode & {
     kind: 'BINARY';
     left: ExprNode;
     operator: string;
     right: ExprNode;
 }
 
-export type GroupingNode = {
+export type GroupingNode = BaseNode & {
     kind: 'GROUPING';
     expression: ExprNode;
 }
@@ -100,6 +112,8 @@ export type GroupingNode = {
 export type ExprNode = 
     IdentifierNode 
     | NumberNode 
+    | StringNode
+    | BooleanNode
     | NilNode
     | UnaryNode 
     | BinaryNode 
