@@ -14,7 +14,7 @@ let src = `1 + 3`
 
 let lexingStart = Date.now();
 
-let lexingResult = lex_file(src);
+let lexingResult = lex_file(src2);
 // print time taken
 console.log(`Lexing took ${Date.now() - lexingStart}ms`);
 

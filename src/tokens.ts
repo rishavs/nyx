@@ -1,26 +1,57 @@
-export enum SpecialTokenKind {
-    ILLEGAL = 'ILLEGAL',
+// export type TokenKind = 
+//     // Special Tokens
+//     'ILLEGAL' 
+//     // Keywords
+//     | 'let' | 'return'
+//     // Delimited Tokens
+//     | '(' | ')'
+//     // Literals
+//     | 'IDENTIFIER' | 'NUMBER'
+//     // Unary Operators
+//     | '!' | '-'
+//     // Binary Operators
+//     | '==' | '!=' | '<' | '<=' | '>' | '>=' | '+' | '-' | '*' | '/' | '&' | '|';
 
-    NUMBER = 'NUMBER',
-    IDENTIFIER = 'IDENTIFIER',
-    LPAREN = '(',
-    RPAREN = ')',
+
+export const KwdTokenKind = {
+    'let'       : null,
+    'return'    : null,
 }
 
-// These tokens have a fixed string value
-export enum KwdTokenKind {
-    LET = 'let',
-    RETURN = 'return',
+export const OtherTokenKind = {
+    'ILLEGAL'   : null,
+    'NUMBER'    : null,
+    'IDENTIFIER': null,
 }
 
-export enum OprTokenKind {
-    NOT = '!',
-    NEGATE = '-',
-    PLUS = '+',
-    EQUALS = '==',
-    ASSIGN = '=',
+export const OprTokenKind = {
+    // unary 
+    '!' : null,
+
+    // binary
+    '==' : null,
+    '!=' : null,
+    '<'  : null,
+    '<=' : null,
+    '>'  : null,
+    '>=' : null,
+    '+'  : null,
+    '-'  : null,
+    '*'  : null,
+    '/'  : null,
+    '&'  : null,
+    '|'  : null,
+
+    // delimiters
+    '(' : null,
+    ')' : null,
+
+    // Special
+    '=' : null,
 }
-export type TokenKind = SpecialTokenKind | KwdTokenKind | OprTokenKind;
+
+export type TokenKind = 
+    keyof typeof KwdTokenKind | keyof typeof OprTokenKind | keyof typeof OtherTokenKind;
 
 export type Token = {
     kind: TokenKind;
@@ -28,4 +59,3 @@ export type Token = {
     i: number;
     line: number;
 }
-

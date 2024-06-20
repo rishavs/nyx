@@ -1,5 +1,4 @@
-import type { Token } from "./tokens";
-import { SpecialTokenKind, OprTokenKind, KwdTokenKind } from "./tokens";
+import { KwdTokenKind, OprTokenKind, type Token } from "./tokens";
 import type { LexingResult, LexingContext, CompilingError } from "./types";
 
 // Character definitions
@@ -42,7 +41,7 @@ export const lex_file = (src: string): LexingResult => {
             default:
                 token = oprOrIllegal(l);
                 result.tokens.push(token);
-                if (token.kind === SpecialTokenKind.ILLEGAL) {
+                if (token.kind === 'ILLEGAL') {
                     let error: CompilingError = {
                         category: 'Lexing',
                         msg: `Illegal token ${token.value}`,
@@ -74,24 +73,24 @@ const oprOrIllegal = (l: LexingContext): Token => {
 
     // iterate over the FixedTokenKind enum
     for (let key of Object.keys(OprTokenKind)) {
-        if (value === OprTokenKind[key as keyof typeof OprTokenKind]) {
+        if (value === key) {
             let token = {
-                kind: OprTokenKind[key as keyof typeof OprTokenKind],
+                kind: key,
                 value: value,
                 i: l.i,
                 line: l.line
-            };
+            } as Token;
             l.i = cursor;
             return token;
         }
     }
     
     let token = {
-        kind: SpecialTokenKind.ILLEGAL,
+        kind: 'ILLEGAL',
         value: value,
         i: l.i,
         line: l.line
-    };
+    } as Token;
     l.i = cursor;
     return token;
 }
@@ -118,11 +117,11 @@ const number = (l: LexingContext): Token => {
         cursor++;
     }
     let token = {
-        kind: SpecialTokenKind.NUMBER,
+        kind: 'NUMBER',
         value: value,
         i: l.i,
         line: l.line
-    };
+    } as Token;
     l.i = cursor;
     return token;
 }
@@ -157,24 +156,24 @@ const kwdOrId = (l: LexingContext): Token => {
 
     // iterate over the FixedTokenKind enum
     for (let key of Object.keys(KwdTokenKind)) {
-        if (value === KwdTokenKind[key as keyof typeof KwdTokenKind]) {
+        if (value === key) {
             let token = {
-                kind: KwdTokenKind[key as keyof typeof KwdTokenKind],
+                kind: key,
                 value: value,
                 i: l.i,
                 line: l.line
-            };
+            } as Token;
             l.i = cursor;
             return token;
         }
     }
     
     let token = {
-        kind: SpecialTokenKind.IDENTIFIER,
+        kind: 'IDENTIFIER' ,
         value: value,
         i: l.i,
         line: l.line
-    };
+    } as Token;
     l.i = cursor;
     return token;
 }

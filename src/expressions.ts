@@ -1,5 +1,4 @@
 import { type ExprNode, type UnaryNode, type BinaryNode, type GroupingNode, ExprNodeKind, type IdentifierNode, type NilNode, type NumberNode } from './ast';
-import { OprTokenKind, SpecialTokenKind } from './tokens';
 import { type CompilingError, type ParsingContext } from './types';
 
 export const parse_expression = (p: ParsingContext): ExprNode | CompilingError => {
