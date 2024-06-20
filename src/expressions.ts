@@ -1,4 +1,4 @@
-import { type ExprNode, type UnaryNode, type BinaryNode, type GroupingNode, ExprNodeKind, type IdentifierNode, type NilNode, type NumberNode } from './ast';
+import { type ExprNode, type UnaryNode, type BinaryNode, type GroupingNode, type ExprNodeKind, type IdentifierNode, type NilNode, type NumberNode } from './ast';
 import { type CompilingError, type ParsingContext } from './types';
 
 export const parse_expression = (p: ParsingContext): ExprNode | CompilingError => {
@@ -7,59 +7,50 @@ export const parse_expression = (p: ParsingContext): ExprNode | CompilingError =
 
     switch (token.kind) {
         // Parse Identifiers & Function calls
-        case SpecialTokenKind.IDENTIFIER:
+        case 'IDENTIFIER':
             return {
-                kind: ExprNodeKind.IDENTIFIER,
+                kind: 'IDENTIFIER',
                 isQualified: false, // or true, depending on your language semantics
                 name: token.value,
             } as IdentifierNode;
         
         // Parse Literals
-        case SpecialTokenKind.NUMBER:
-            let nextToken = p.tokens[p.i + 1];
-            if (nextToken && (
-                nextToken.kind === OprTokenKind.PLUS)
-            ) { 
-                return parse_binary(p)
-            }
-            return {
-                kind: ExprNodeKind.NUMBER,
+        case 'NUMBER':
+            let number = {
+                kind: 'NUMBER',
                 value: token.value,
             } as NumberNode;
+            p.i++; // consume the number
+
+            token = p.tokens[p.i];
+            if (token && (
+                token.kind === '+')
+            ) { 
+                return parse_binary(p, number)
+            }
+
+            return number;
     
         // Parse Unary Expressions
-        case OprTokenKind.NOT:
-        case OprTokenKind.NEGATE:
+        case '!':
+        case '-':
             p.i++; // consume the operator
             right = parse_expression(p);
             if ('category' in right) return right; // propagate error. no way to check types
             return {
-                kind: ExprNodeKind.UNARY,
+                kind: 'UNARY',
                 operator: token.kind,
                 right: right,
             } as UnaryNode;
 
-        // Parse Binary Expressions
-        case OprTokenKind.EQUALS:
-        case OprTokenKind.PLUS:
-            p.i++; // consume the operator
-            left = parse_expression(p);
-            if ('category' in left) return left; // propagate error
-            right = parse_expression(p);
-            if ('category' in right) return right; // propagate error
-            return {
-                kind: ExprNodeKind.BINARY,
-                left: left,
-                operator: token.kind,
-                right: right,
-            } as BinaryNode;
+        
                 
         // Parse Grouping Expressions
-        case SpecialTokenKind.LPAREN:
+        case '(':
             p.i++; // consume the left parenthesis
             let expr = parse_expression(p);
             if ('category' in expr) return expr; // propagate error
-            if (p.tokens[p.i].kind !== SpecialTokenKind.RPAREN) {
+            if (p.tokens[p.i].kind !== ')') {
                 return {
                     category: 'Parsing',
                     msg: `Expected right parenthesis, found ${p.tokens[p.i].kind}`,
@@ -69,7 +60,7 @@ export const parse_expression = (p: ParsingContext): ExprNode | CompilingError =
             }
             p.i++; // consume the right parenthesis
             return {
-                kind: ExprNodeKind.GROUPING,
+                kind: 'GROUPING',
                 expression: expr,
             } as GroupingNode;
 
@@ -83,18 +74,17 @@ export const parse_expression = (p: ParsingContext): ExprNode | CompilingError =
     }
 }
 
-const parse_binary = (p: ParsingContext): ExprNode | CompilingError => {
-    let left, right : ExprNode | CompilingError;
-    let token = p.tokens[p.i];
+const parse_binary = (p: ParsingContext, left: ExprNode): ExprNode | CompilingError => {
+    
+    let currentToken = p.tokens[p.i];
     p.i++; // consume the operator
-    left = parse_expression(p);
-    if ('category' in left) return left; // propagate error
-    right = parse_expression(p);
+
+    let right = parse_expression(p);
     if ('category' in right) return right; // propagate error
     return {
-        kind: ExprNodeKind.BINARY,
+        kind: 'BINARY',
         left: left,
-        operator: token.kind,
+        operator: currentToken.value,
         right: right,
     } as BinaryNode;
 }

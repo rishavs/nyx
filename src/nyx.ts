@@ -10,14 +10,15 @@ let src2 = `
     
     return z`
 
-let src = `1 + 3`
+let src = `1 + 3 + 7`
 
-let lexingStart = Date.now();
+let parsingStart = Date.now();
 
-let lexingResult = lex_file(src2);
-// print time taken
-console.log(`Lexing took ${Date.now() - lexingStart}ms`);
+let lexingResult = lex_file(src);
+let lexingEnd = Date.now();
 
+
+console.log(`------------- Lexing : ${lexingEnd - parsingStart}ms ---------------`);
 for (let token of lexingResult.tokens) {
     console.log(JSON.stringify(token));
 }
@@ -34,5 +35,7 @@ let p: ParsingContext = {
     i: 0,
 }
 let parsingResult = parse_expression(p);
-console.log('------------------- Parsing Result -------------------');
+let parsingEnd = Date.now();
+
+console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
 console.log(parsingResult);

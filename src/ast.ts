@@ -55,47 +55,45 @@ export enum StmtNodeKind {
 // operator       → "==" | "!=" | "<" | "<=" | ">" | ">="
 //                | "+"  | "-"  | "*" | "/" | "and" | "or";
 
-export enum ExprNodeKind {
-    IDENTIFIER,
-    NUMBER,
-    NIL,
 
-    UNARY,
-    BINARY,
-
-    GROUPING,
-}
+export type ExprNodeKind =
+    'IDENTIFIER'
+    | 'NUMBER'
+    | 'NIL'
+    | 'UNARY'
+    | 'BINARY'
+    | 'GROUPING';
 
 export type IdentifierNode = {
-    kind: ExprNodeKind.IDENTIFIER;
+    kind: 'IDENTIFIER';
     isQualified: boolean;
     name: string;
 }
 
 export type NilNode = {
-    kind: ExprNodeKind.NIL;
+    kind: 'NIL';
 }
 
 export type NumberNode = {
-    kind: ExprNodeKind.NUMBER;
+    kind: 'NUMBER';
     value: string;
 }
 
 export type UnaryNode = {
-    kind: ExprNodeKind.UNARY;
+    kind: 'UNARY';
     operator: string;
     right: ExprNode;
 }
 
 export type BinaryNode = {
-    kind: ExprNodeKind.BINARY;
+    kind: 'BINARY';
     left: ExprNode;
     operator: string;
     right: ExprNode;
 }
 
 export type GroupingNode = {
-    kind: ExprNodeKind.GROUPING;
+    kind: 'GROUPING';
     expression: ExprNode;
 }
 
