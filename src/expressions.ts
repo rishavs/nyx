@@ -28,7 +28,6 @@ export const parse_expression = (p: ParsingContext): ExprNode | CompilingError =
             ) { 
                 return parse_binary(p, number)
             }
-
             return number;
     
         // Parse Unary Expressions
@@ -48,21 +47,8 @@ export const parse_expression = (p: ParsingContext): ExprNode | CompilingError =
         // Parse Grouping Expressions
         case '(':
             p.i++; // consume the left parenthesis
-            let expr = parse_expression(p);
-            if ('category' in expr) return expr; // propagate error
-            if (p.tokens[p.i].kind !== ')') {
-                return {
-                    category: 'Parsing',
-                    msg: `Expected right parenthesis, found ${p.tokens[p.i].kind}`,
-                    i: p.tokens[p.i].i,
-                    line: p.tokens[p.i].line,
-                } as CompilingError;
-            }
-            p.i++; // consume the right parenthesis
-            return {
-                kind: 'GROUPING',
-                expression: expr,
-            } as GroupingNode;
+            let grouping = parse_grouping(p);
+            return grouping;
 
         default:
             return {
@@ -87,4 +73,22 @@ const parse_binary = (p: ParsingContext, left: ExprNode): ExprNode | CompilingEr
         operator: currentToken.value,
         right: right,
     } as BinaryNode;
+}
+
+const parse_grouping = (p: ParsingContext): ExprNode | CompilingError => {
+    let expr = parse_expression(p);
+    if ('category' in expr) return expr; // propagate error
+    if (p.tokens[p.i].kind !== ')') {
+        return {
+            category: 'Parsing',
+            msg: `Expected right parenthesis, found ${p.tokens[p.i].kind}`,
+            i: p.tokens[p.i].i,
+            line: p.tokens[p.i].line,
+        } as CompilingError;
+    }
+    p.i++; // consume the right parenthesis
+    return {
+        kind: 'GROUPING',
+        expression: expr,
+    } as GroupingNode;
 }

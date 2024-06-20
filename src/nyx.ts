@@ -10,7 +10,7 @@ let src2 = `
     
     return z`
 
-let src = `1 + 3 + 7`
+let src = `1+ (2+3)`
 
 let parsingStart = Date.now();
 
@@ -38,4 +38,4 @@ let parsingResult = parse_expression(p);
 let parsingEnd = Date.now();
 
 console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
-console.log(parsingResult);
+console.log(JSON.stringify(parsingResult, null, 2));
