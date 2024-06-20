@@ -1,141 +1,180 @@
-import { type Token, type LexingContext, KwdTokenKind, SpecialTokenKind, OprTokenKind, type LexingResult } from "./types";
+import type { Token } from "./tokens";
+import { SpecialTokenKind, OprTokenKind, KwdTokenKind } from "./tokens";
+import type { LexingResult, LexingContext, CompilingError } from "./types";
 
-export const lex_number = (l: LexingContext): Token => {
-    let start = l.i;
+// Character definitions
+const isAlphabet = (c: string): boolean =>  
+    'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.includes(c);
+
+const isDigit = (c: string): boolean => 
+    '0123456789'.includes(c);
+
+export const lex_file = (src: string): LexingResult => {
+    let l: LexingContext = {
+        src: src,
+        i: 0,
+        line: 0,
+    };
+    let result : LexingResult= {
+        tokens: [],
+        errors: []
+    };
+
+    while (l.i < l.src.length) {
+        let c = l.src[l.i];
+        let token: Token;
+
+        switch (true) {
+            case ' \n\t'.includes(c):
+                ws(l);
+                break;
+
+            case isAlphabet(c) || c === '_':
+                token = kwdOrId(l);
+                result.tokens.push(token);
+                break;
+
+            case isDigit(c):
+                token = number(l);
+                result.tokens.push(token);
+                break;
+
+            default:
+                token = oprOrIllegal(l);
+                result.tokens.push(token);
+                if (token.kind === SpecialTokenKind.ILLEGAL) {
+                    let error: CompilingError = {
+                        category: 'Lexing',
+                        msg: `Illegal token ${token.value}`,
+                        i: token.i,
+                        line: token.line
+                    };
+                    result.errors.push(error);
+                }
+                break;
+        }
+    }
+    
+    return result;
+}
+
+const oprOrIllegal = (l: LexingContext): Token => {
+    let cursor = l.i;
+    while (cursor < l.src.length && 
+        !(
+            isAlphabet(l.src[cursor]) || 
+            isDigit( l.src[cursor] ) || 
+            ' \n\t'.includes(l.src[cursor]) || 
+            l.src[cursor] === '_'
+        )
+    ){
+        cursor++;
+    }
+    let value = l.src.slice(l.i, cursor);
+
+    // iterate over the FixedTokenKind enum
+    for (let key of Object.keys(OprTokenKind)) {
+        if (value === OprTokenKind[key as keyof typeof OprTokenKind]) {
+            let token = {
+                kind: OprTokenKind[key as keyof typeof OprTokenKind],
+                value: value,
+                i: l.i,
+                line: l.line
+            };
+            l.i = cursor;
+            return token;
+        }
+    }
+    
+    let token = {
+        kind: SpecialTokenKind.ILLEGAL,
+        value: value,
+        i: l.i,
+        line: l.line
+    };
+    l.i = cursor;
+    return token;
+}
+
+const number = (l: LexingContext): Token => {
+    let cursor = l.i;
     let isFloat = false;
     let value = '';
-    while (l.i < l.src.length && /[0-9_\.]/.test(l.src[l.i])) {
-        if (l.src[l.i] === '_') {
-            l.i++;
+    while (
+        cursor < l.src.length && 
+        (isDigit(l.src[cursor]) || l.src[cursor] === '.' || l.src[cursor] === '_' )
+    ) {
+        if (l.src[cursor] === '_') {
+            cursor++;
             continue;
         }
-        if (l.src[l.i] === '.') {
+        if (l.src[cursor] === '.') {
             if (isFloat) {
                 break;
             }
             isFloat = true;
         }
-        value += l.src[l.i];
-        l.i++;
+        value += l.src[cursor];
+        cursor++;
     }
-    return {
+    let token = {
         kind: SpecialTokenKind.NUMBER,
         value: value,
-        i: start,
+        i: l.i,
         line: l.line
     };
+    l.i = cursor;
+    return token;
 }
 
-export const lex_ws = (l: LexingContext): Token => {
-    let start = l.i;
-    while (l.i < l.src.length && /[ \n\t]/.test(l.src[l.i])) {
-        if (l.src[l.i] === '\n') {
+
+const ws = (l: LexingContext) => {
+    let cursor = l.i;
+    while (cursor < l.src.length && ' \n\t'.includes(l.src[cursor]) ){
+        if (l.src[cursor] === '\n') {
             l.line++;
         }
-        l.i++;
+        cursor++;
     }
-    
-    return {
-        kind: SpecialTokenKind.WS,
-        value: '',
-        i: start,
-        line: l.line
-    };
+    l.i = cursor;
+    // return {
+    //     kind: SpecialTokenKind.WS,
+    //     value: '',
+    //     i: l.i,
+    //     line: l.line
+    // };
 }
 
-export const lex_idOrKwd = (l: LexingContext): Token => {
-    let start = l.i;
-    while (l.i < l.src.length && /[a-zA-Z_0-9]/.test(l.src[l.i])) {
-        l.i++;
+const kwdOrId = (l: LexingContext): Token => {
+    let cursor = l.i;
+    while (
+        cursor < l.src.length && 
+        (isAlphabet(l.src[cursor]) || isDigit(l.src[cursor]) || l.src[cursor] === '_' )
+    ) {
+        cursor++;
     }
-    let token: Token = {
-        kind: SpecialTokenKind.IDENTIFIER,
-        value: l.src.slice(start, l.i),
-        i: start,
-        line: l.line
-    };
+    let value = l.src.slice(l.i, cursor);
 
     // iterate over the FixedTokenKind enum
     for (let key of Object.keys(KwdTokenKind)) {
-        if (token.value === KwdTokenKind[key as keyof typeof KwdTokenKind]) {
-            token.kind = KwdTokenKind[key as keyof typeof KwdTokenKind];
-            token.value = ''
+        if (value === KwdTokenKind[key as keyof typeof KwdTokenKind]) {
+            let token = {
+                kind: KwdTokenKind[key as keyof typeof KwdTokenKind],
+                value: value,
+                i: l.i,
+                line: l.line
+            };
+            l.i = cursor;
+            return token;
         }
     }
     
-    return token
-}
-
-export const lex_equalsOrAssign = (l: LexingContext): Token => {
-    let start = l.i;
-    if (l.src.startsWith('==', l.i)) {
-        l.i += 2;
-        return {
-            kind: OprTokenKind.EQUALS,
-            value: '==',
-            i: start,
-            line: l.line
-        };
-    } else {
-        l.i++;
-        return {
-            kind: OprTokenKind.ASSIGN,
-            value: '=',
-            i: start,
-            line: l.line
-        };
-    }
-}
-
-export const lex_file = (l: LexingContext): LexingResult => {
-    let result : LexingResult= {
-        tokens: [],
-        errors: []
+    let token = {
+        kind: SpecialTokenKind.IDENTIFIER,
+        value: value,
+        i: l.i,
+        line: l.line
     };
-    while (l.i < l.src.length) {
-        let c = l.src[l.i];
-        if (c === ' ' || c === '\t' || c === '\n') {
-            let token = lex_ws(l);
-            // if (token) tokens.push(token);
-
-        } else if (/[a-zA-Z_]/.test(c)) {
-            let token = lex_idOrKwd(l);
-            if (token) result.tokens.push(token);
-        } else if (/[0-9]/.test(c)) {
-            let token = lex_number(l);
-            if (token) result.tokens.push(token); 
-
-        } else if (c === '=') {
-            let token = lex_equalsOrAssign(l);
-            if (token) result.tokens.push(token);
-        } else if (c === '+') {
-            let token: Token = {
-                kind: OprTokenKind.PLUS,
-                value: '+',
-                i: l.i,
-                line: l.line
-            };
-            result.tokens.push(token);
-            l.i++;                                                                                                                                                                  
-        } else {
-            let error = {
-                category: 'SyntaxError',
-                msg: `unexpected character '${c}'`,
-                i: l.i,
-                line: l.line
-            };
-            result.errors.push(error);
-
-            let token: Token = {
-                kind: SpecialTokenKind.ILLEGAL,
-                value: c,
-                i: l.i,
-                line: l.line
-            };
-            result.tokens.push(token);
-
-            l.i++;
-        }
-    }
-    return result;
+    l.i = cursor;
+    return token;
 }

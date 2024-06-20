@@ -1,21 +1,23 @@
 import { lex_file } from "./lexer";
-import { type LexingContext, type RootNode, StmtNodeKind, type ParsingContext } from "./types";
+import { parse_expression } from "./expressions";
+import type { ParsingContext } from "./types";
 
-
-let l: LexingContext = {
-    src: `
+let src2 = `
     let z
     let x = 1
     let y = 2
     z = x + y
     
-    return z`,
-    i: 0,
-    line: 0,
-}
+    return z`
 
-let lexingResult = lex_file(l);
-// print tokens as flat list
+let src = `1 + 3`
+
+let lexingStart = Date.now();
+
+let lexingResult = lex_file(src);
+// print time taken
+console.log(`Lexing took ${Date.now() - lexingStart}ms`);
+
 for (let token of lexingResult.tokens) {
     console.log(JSON.stringify(token));
 }
@@ -31,4 +33,6 @@ let p: ParsingContext = {
     tokens: lexingResult.tokens,
     i: 0,
 }
-let parsingResult = parse_file(p);
+let parsingResult = parse_expression(p);
+console.log('------------------- Parsing Result -------------------');
+console.log(parsingResult);
