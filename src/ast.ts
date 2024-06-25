@@ -11,13 +11,26 @@ export enum StmtNodeKind {
     DECLARE,    // 'let x' where x gets the initial value of the Type
     ASSIGN,     // 'let x = 1'
     REASSIGN,   // 'x = 2'
+    RETURN,     // 'return x'
 }
 
 
-// export type RootNode = {
-//     kind: SpecialNodeKind.ROOT;
-//     statements: StmtNode[];
-// }
+export type RootNode = {
+    kind: SpecialNodeKind.ROOT;
+    statements: StmtNode[];
+}
+
+export type BlockNode = {
+    kind: SpecialNodeKind.BLOCK;
+    statements: StmtNode[];
+}
+
+export type ReturnNode = {
+    kind: StmtNodeKind.RETURN;
+    expression: ExprNode;
+}
+
+export type StmtNode = ReturnNode;
 
 // export type AssignNode = {
 //     kind: StmtNodeKind.ASSIGN;
@@ -91,6 +104,12 @@ export type NilNode = BaseNode & {
     kind: 'NIL';
 }
 
+export type FunCallNode = BaseNode & {
+    kind: 'FUNCALL';
+    id: IdentifierNode;
+    args: ExprNode[];
+}
+
 export type UnaryNode = BaseNode & {
     kind: 'UNARY';
     operator: string;
@@ -115,6 +134,7 @@ export type ExprNode =
     | StringNode
     | BooleanNode
     | NilNode
+    | FunCallNode
     | UnaryNode 
     | BinaryNode 
     | GroupingNode;

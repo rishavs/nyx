@@ -1,4 +1,4 @@
-import type { ExprNode } from "./ast";
+import type { ExprNode, RootNode } from "./ast";
 import type { Token } from "./tokens";
 
 
@@ -25,6 +25,6 @@ export type ParsingContext = {
 }
 
 export type ParsingResult = {
-    ast: ExprNode;
+    root: RootNode;
     errors: CompilingError[];
 }

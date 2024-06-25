@@ -10,6 +10,9 @@ const isAlphabet = (c: string): boolean =>
 const isDigit = (c: string): boolean => 
     '0123456789'.includes(c);
 
+const isSpecialChar = (c: string): boolean =>
+    !isAlphabet(c) && !isDigit(c) && !' \n\t'.includes(c) && c !== '_';
+
 export const lex_file = (src: string): LexingResult => {
     let l: LexingContext = {
         src: src,
@@ -23,7 +26,7 @@ export const lex_file = (src: string): LexingResult => {
 
     while (l.i < l.src.length) {
         let c = l.src[l.i];
-        let token: Token;
+        let token: Token | null;
 
         switch (true) {
             case ' \n\t'.includes(c):
@@ -40,18 +43,27 @@ export const lex_file = (src: string): LexingResult => {
                 result.tokens.push(token);
                 break;
 
+            case isSpecialChar(c):
+                token = opr(l)
+                if (token) result.tokens.push(token);
+                break;
+
             default:
-                token = oprOrIllegal(l);
+                let error = {
+                    msg: `Unexpected character: ${c}`,
+                    i: l.i,
+                    line: l.line
+                } as CompilingError;
+                result.errors.push(error);
+
+                token = {
+                    kind: 'ILLEGAL',
+                    value: c,
+                    i: l.i,
+                    line: l.line
+                } as Token;
                 result.tokens.push(token);
-                if (token.kind === 'ILLEGAL') {
-                    let error: CompilingError = {
-                        category: 'Lexing',
-                        msg: `Illegal token ${token.value}`,
-                        i: token.i,
-                        line: token.line
-                    };
-                    result.errors.push(error);
-                }
+                l.i++;
                 break;
         }
     }
@@ -59,42 +71,20 @@ export const lex_file = (src: string): LexingResult => {
     return result;
 }
 
-const oprOrIllegal = (l: LexingContext): Token => {
-    let cursor = l.i;
-    while (cursor < l.src.length && 
-        !(
-            isAlphabet(l.src[cursor]) || 
-            isDigit( l.src[cursor] ) || 
-            ' \n\t'.includes(l.src[cursor]) || 
-            l.src[cursor] === '_'
-        )
-    ){
-        cursor++;
-    }
-    let value = l.src.slice(l.i, cursor);
-
-    // iterate over the FixedTokenKind enum
-    for (let key of Object.keys(OprTokenKind)) {
-        if (value === key) {
+const opr = (l: LexingContext): Token | null => {
+    for (let opr of OprTokenKind) {
+        if (l.src.startsWith(opr, l.i)) {
             let token = {
-                kind: key,
-                value: value,
+                kind: opr,
+                value: opr,
                 i: l.i,
                 line: l.line
             } as Token;
-            l.i = cursor;
+            l.i += opr.length;
             return token;
         }
     }
-    
-    let token = {
-        kind: 'ILLEGAL',
-        value: value,
-        i: l.i,
-        line: l.line
-    } as Token;
-    l.i = cursor;
-    return token;
+    return null;
 }
 
 const number = (l: LexingContext): Token => {

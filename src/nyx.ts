@@ -10,7 +10,7 @@ let src2 = `
     
     return z`
 
-let src = `66 != 67 > !2`
+let src = `fcall  ()`
 
 let parsingStart = Date.now();
 

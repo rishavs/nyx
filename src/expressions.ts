@@ -1,4 +1,4 @@
-import { type ExprNode, type UnaryNode, type BinaryNode, type GroupingNode, type ExprNodeKind, type IdentifierNode, type NilNode, type NumberNode } from './ast';
+import { type ExprNode, type UnaryNode, type BinaryNode, type GroupingNode, type ExprNodeKind, type IdentifierNode, type NilNode, type NumberNode, type FunCallNode } from './ast';
 import { type CompilingError, type ParsingContext } from './types';
 
 // expression     → equality ;
@@ -7,11 +7,15 @@ import { type CompilingError, type ParsingContext } from './types';
 // term           → factor ( ( "-" | "+" ) factor )* ;
 // factor         → unary ( ( "/" | "*" ) unary )* ;
 // unary          → ( "!" | "-" ) unary | primary ;
-// primary        → NUMBER | "(" expression ")" ;
-
-// TODO - ad the i, & line info to the nodes
+// primary        → NUMBER | "(" expression ")" | functionCall ;
+// functionCall   → IDENTIFIER "(" arguments? ")" ;
+// arguments      → expression ( "," expression )* ;
 
 export const expression = (p: ParsingContext): ExprNode | CompilingError => {
+    return equality(p);
+}
+
+const equality = (p: ParsingContext): ExprNode | CompilingError => {
     let left = comparison(p);
     if ('category' in left) return left; // propagate error
 
@@ -26,6 +30,8 @@ export const expression = (p: ParsingContext): ExprNode | CompilingError => {
             left: left,
             operator: token.kind,
             right: right,
+            i: token.i,
+            line: token.line,
         } as BinaryNode;
         token = p.tokens[p.i];
     }
@@ -47,6 +53,8 @@ const comparison = (p: ParsingContext): ExprNode | CompilingError => {
             left: left,
             operator: token.kind,
             right: right,
+            i: token.i,
+            line: token.line,
         } as BinaryNode;
         token = p.tokens[p.i];
     }
@@ -68,6 +76,8 @@ const term = (p: ParsingContext): ExprNode | CompilingError => {
             left: left,
             operator: token.kind,
             right: right,
+            i: token.i,
+            line: token.line,
         } as BinaryNode;
         token = p.tokens[p.i];
     }
@@ -89,6 +99,8 @@ const factor = (p: ParsingContext): ExprNode | CompilingError => {
             left: left,
             operator: token.kind,
             right: right,
+            i: token.i,
+            line: token.line,
         } as BinaryNode;
         token = p.tokens[p.i];
     }
@@ -105,6 +117,8 @@ const unary = (p: ParsingContext): ExprNode | CompilingError => {
             kind: 'UNARY',
             operator: token.kind,
             right: right,
+            i: token.i,
+            line: token.line,
         } as UnaryNode;
     }
     return primary(p);
@@ -114,6 +128,8 @@ const primary = (p: ParsingContext): ExprNode | CompilingError => {
     switch (token.kind) {
         case 'NUMBER':
             return number(p);
+        case 'IDENTIFIER':
+            return functionCall(p);
         case '(':
             return grouping(p);
         default:
@@ -137,6 +153,71 @@ const number = (p: ParsingContext): NumberNode => {
     } as NumberNode;
 }
 
+const functionCall = (p: ParsingContext): ExprNode | CompilingError => {
+    let token = p.tokens[p.i];
+    if (token.kind !== 'IDENTIFIER') {
+        return {
+            category: 'Parsing',
+            msg: `Expected function name, found ${token.kind}`,
+            i: token.i,
+            line: token.line,
+        } as CompilingError;
+    }
+
+    const functionName = token.value;
+    p.i++; // consume the identifier
+
+    token = p.tokens[p.i];
+    if (token.kind !== '(') {
+        return {
+            category: 'Parsing',
+            msg: `Expected '(', found ${token.kind}`,
+            i: token.i,
+            line: token.line,
+        } as CompilingError;
+    }
+    p.i++; // consume the '('
+
+    const args = [];
+    if (p.tokens[p.i].kind !== ')') { // Check if there are any arguments
+        // Parse the first argument
+        let arg = expression(p);
+        if ('category' in arg) return arg; // propagate error
+        args.push(arg);
+
+        // Now, parse subsequent arguments if any
+        while (p.tokens[p.i] && p.tokens[p.i].kind === ',') {
+            p.i++; // Correctly consume ',' before parsing the next argument
+            arg = expression(p);
+            if ('category' in arg) return arg; // propagate error
+            args.push(arg);
+        }
+    }
+
+    token = p.tokens[p.i];
+    if (token.kind !== ')') {
+        return {
+            category: 'Parsing',
+            msg: `Expected ')', found ${token.kind}`,
+            i: token.i,
+            line: token.line,
+        } as CompilingError;
+    }
+    p.i++; // consume the ')'
+
+    return {
+        kind: 'FUNCALL',
+        id: {
+            kind: 'IDENTIFIER',
+            isQualified: false,
+            value: functionName,
+        } as IdentifierNode,
+        args: args,
+        i: token.i,
+        line: token.line,
+    } as FunCallNode; // Assuming FunctionCallNode is defined appropriately
+}
+
 const grouping = (p: ParsingContext): GroupingNode | CompilingError => {
     p.i++; // consume the left parenthesis
     let expr = expression(p);
@@ -155,100 +236,8 @@ const grouping = (p: ParsingContext): GroupingNode | CompilingError => {
     return {
         kind: 'GROUPING',
         expression: expr,
+        i: token.i,
+        line: token.line,
     } as GroupingNode;
 }
 
-
-
-
-// export const parse_expression = (p: ParsingContext): ExprNode | CompilingError => {
-//     let token = p.tokens[p.i];
-//     let left, right : ExprNode | CompilingError;
-
-//     switch (token.kind) {
-//         // Parse Identifiers & Function calls
-//         case 'IDENTIFIER':
-//             return {
-//                 kind: 'IDENTIFIER',
-//                 isQualified: false, // or true, depending on your language semantics
-//                 name: token.value,
-//             } as IdentifierNode;
-        
-//         // Parse Literals
-//         case 'NUMBER':
-//             let number = {
-//                 kind: 'NUMBER',
-//                 value: token.value,
-//             } as NumberNode;
-//             p.i++; // consume the number
-
-//             token = p.tokens[p.i];
-//             if (token && (
-//                 token.kind === '+')
-//             ) { 
-//                 return parse_binary(p, number)
-//             }
-//             return number;
-    
-//         // Parse Unary Expressions
-//         case '!':
-//         case '-':
-//             p.i++; // consume the operator
-//             right = parse_expression(p);
-//             if ('category' in right) return right; // propagate error. no way to check types
-//             return {
-//                 kind: 'UNARY',
-//                 operator: token.kind,
-//                 right: right,
-//             } as UnaryNode;
-
-        
-                
-//         // Parse Grouping Expressions
-//         case '(':
-//             p.i++; // consume the left parenthesis
-//             let grouping = parse_grouping(p);
-//             return grouping;
-
-//         default:
-//             return {
-//                 category: 'Parsing',
-//                 msg: `Unexpected token: ${token.kind}`,
-//                 i: token.i,
-//                 line: token.line,
-//             } as CompilingError;
-//     }
-// }
-
-// const parse_binary = (p: ParsingContext, left: ExprNode): ExprNode | CompilingError => {
-    
-//     let currentToken = p.tokens[p.i];
-//     p.i++; // consume the operator
-
-//     let right = parse_expression(p);
-//     if ('category' in right) return right; // propagate error
-//     return {
-//         kind: 'BINARY',
-//         left: left,
-//         operator: currentToken.value,
-//         right: right,
-//     } as BinaryNode;
-// }
-
-// const parse_grouping = (p: ParsingContext): ExprNode | CompilingError => {
-//     let expr = parse_expression(p);
-//     if ('category' in expr) return expr; // propagate error
-//     if (p.tokens[p.i].kind !== ')') {
-//         return {
-//             category: 'Parsing',
-//             msg: `Expected right parenthesis, found ${p.tokens[p.i].kind}`,
-//             i: p.tokens[p.i].i,
-//             line: p.tokens[p.i].line,
-//         } as CompilingError;
-//     }
-//     p.i++; // consume the right parenthesis
-//     return {
-//         kind: 'GROUPING',
-//         expression: expr,
-//     } as GroupingNode;
-// }

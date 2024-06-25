@@ -1,57 +1,26 @@
-// export type TokenKind = 
-//     // Special Tokens
-//     'ILLEGAL' 
-//     // Keywords
-//     | 'let' | 'return'
-//     // Delimited Tokens
-//     | '(' | ')'
-//     // Literals
-//     | 'IDENTIFIER' | 'NUMBER'
-//     // Unary Operators
-//     | '!' | '-'
-//     // Binary Operators
-//     | '==' | '!=' | '<' | '<=' | '>' | '>=' | '+' | '-' | '*' | '/' | '&' | '|';
 
+export const KwdTokenKind = [
+    'let',
+    'return',
+]
 
-export const KwdTokenKind = {
-    'let'       : null,
-    'return'    : null,
-}
+export const OtherTokenKind = [
+    'ILLEGAL',
+    'NUMBER',
+    'IDENTIFIER',
+]
 
-export const OtherTokenKind = {
-    'ILLEGAL'   : null,
-    'NUMBER'    : null,
-    'IDENTIFIER': null,
-}
+export const OprTokenKind = [
+    // All 2-char operators
+    '==', '!=', '>=', '<=', '&&', '||', '++', '--', '**', '+=', '-=', '*=', '/=', '%=', '<<', '>>', '&=', '|=', '^=', '=>', 
 
-export const OprTokenKind = {
-    // unary 
-    '!' : null,
+    // All 1-char operators
+    '+', '-', '*', '/', '%', '>', '<', '!', '=', '&', '|', '^', '~', '?', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}',
 
-    // binary
-    '==' : null,
-    '!=' : null,
-    '<'  : null,
-    '<=' : null,
-    '>'  : null,
-    '>=' : null,
-    '+'  : null,
-    '-'  : null,
-    '*'  : null,
-    '/'  : null,
-    '&'  : null,
-    '|'  : null,
-
-    // delimiters
-    '(' : null,
-    ')' : null,
-
-    // Special
-    '=' : null,
-}
+]
 
 export type TokenKind = 
-    keyof typeof KwdTokenKind | keyof typeof OprTokenKind | keyof typeof OtherTokenKind;
+    typeof KwdTokenKind[number] | typeof OprTokenKind[number] | typeof OtherTokenKind[number];
 
 export type Token = {
     kind: TokenKind;
