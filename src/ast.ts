@@ -71,11 +71,13 @@ export type ExprNodeKind =
     | 'STRING'
     | 'BOOLEAN'
     | 'NIL'
+    | 'FUNCALL'
     | 'UNARY'
     | 'BINARY'
     | 'GROUPING';
 
 type BaseNode = {
+    ok:true;
     value: string;
     i: number;
     line: number;

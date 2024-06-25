@@ -3,11 +3,13 @@ import type { Token } from "./tokens";
 
 
 export type CompilingError = {
+    ok: false;
     category: string;
     msg: string;
     i: number;
     line: number;
 }
+
 export type LexingContext = {
     src: string;
     i: number;
@@ -27,4 +29,9 @@ export type ParsingContext = {
 export type ParsingResult = {
     root: RootNode;
     errors: CompilingError[];
+}
+
+export type ExprParsingResult = {
+    ok: boolean;
+    result : ExprNode | CompilingError | null;
 }

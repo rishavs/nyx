@@ -1,5 +1,6 @@
 import { expression } from "./expressions";
 import { lex_file } from "./lexer";
+import { parse_file } from "./parser";
 import type { ParsingContext } from "./types";
 
 let src2 = `
@@ -10,7 +11,7 @@ let src2 = `
     
     return z`
 
-let src = `fcall  ()`
+let src = `fcall `
 
 let parsingStart = Date.now();
 
@@ -34,7 +35,8 @@ let p: ParsingContext = {
     tokens: lexingResult.tokens,
     i: 0,
 }
-let parsingResult = expression(p);
+let parsingResult = parse_file(p);
+// let parsingResult = expression(p);
 let parsingEnd = Date.now();
 
 console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
