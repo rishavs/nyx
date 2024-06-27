@@ -11,7 +11,7 @@ let src2 = `
     
     return z`
 
-let src = `fcall `
+let src = `xxx (1, 9)`
 
 let parsingStart = Date.now();
 
@@ -35,9 +35,9 @@ let p: ParsingContext = {
     tokens: lexingResult.tokens,
     i: 0,
 }
-let parsingResult = parse_file(p);
+// let parsingResult = parse_file(p);
 // let parsingResult = expression(p);
 let parsingEnd = Date.now();
 
-console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
-console.log(JSON.stringify(parsingResult, null, 2));
+// console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
+// console.log(JSON.stringify(parsingResult, null, 2));

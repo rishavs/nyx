@@ -1,6 +1,6 @@
+import type { Token } from "./tokens";
 import type { ParsingContext } from "./types";
 
-// Extend Error
 class ParsingError extends Error {
     i: number;
     line: number;
@@ -11,22 +11,30 @@ class ParsingError extends Error {
         this.line = line;
     }
 }
-  
+
+type SyntaxError = {
+    ok: false;
+    message: string;
+    i: number;
+    line: number;
+}
 
 type BaseNode = {
     ok:true;
-    value: string;
-    i: number;
+    start: number;
+    end: number;
     line: number;
 }
 
 type IdentifierNode = BaseNode & {
     kind: 'IDENTIFIER';
     isQualified: boolean;
+    value: string;
 }
 
 type NumberNode = BaseNode & {
     kind: 'NUMBER';
+    value: string;
 }
 
 type FunCallNode = BaseNode & {
@@ -35,44 +43,57 @@ type FunCallNode = BaseNode & {
     args: ExprNode[];
 }
 
-type RootNode = {
+type RootNode = BaseNode & {
     kind: 'ROOT';
     statements: StmtNode[];
 }
 type ExprNode = NumberNode | IdentifierNode | FunCallNode
 type StmtNode = FunCallNode
 
+// If we just need to advance without expectations, we can just do p.i++
+const advance = (p: ParsingContext, expected: string): Token => {
+    let token = p.tokens[p.i];
+    let nextToken = p.tokens[p.i + 1];
+    if (!nextToken) 
+        throw new ParsingError(`Expecting a ${expected}, but reached end of input`, token.i, token.line);
+    
+    p.i++;
+    return p.tokens[p.i];
+}    
+const advanceAsExpected = (p: ParsingContext, expectedToken: string): Token => {
+    let token = p.tokens[p.i];
+    let nextToken = p.tokens[p.i + 1];
+    
+    if (!nextToken) 
+        throw new ParsingError(`Expecting a ${expectedToken}, but reached end of input`, token.i, token.line);
+    
+    if (token.kind !== expectedToken) 
+        throw new ParsingError(`Expecting a ${expectedToken}, but instead found ${token.kind}`, token.i, token.line);
+
+    p.i++;    
+    return p.tokens[p.i];
+}
 
 // for  now we will only handle Root Node & Return Node
-export const parse_file = (p: ParsingContext): RootNode => {
+export const parse_file = (p: ParsingContext): RootNode | SyntaxError => {
     let root = {
         kind: 'ROOT',
-        statements: []
+        statements: [] as StmtNode[],
+        ok: true,
+        start: 0,
+        end: 0,
     } as RootNode
-
     
-    if (p.tokens.length === 0) return {
-        ok: false,
-        msg: 'No tokens to parse',
-        i: 0,
-        line: 0
-    }
+    if (p.tokens.length == 0) return { ok: false, message: 'No tokens to parse', i: 0, line: 0 }
 
     while (p.i < p.tokens.length) {
         switch (p.tokens[p.i].kind) {
             case 'IDENTIFIER':
-                let result = funcall(p);
-                if (!result.ok) return result;
-                root.statements.push(result as FunCallNode);
+                root.statements.push(funcall(p) as FunCallNode)
                 break;
 
             default:
-                return {
-                    ok: false,
-                    msg: `Expecting a statement, but instead found ${p.tokens[p.i].kind}`,
-                    i: p.tokens[p.i].i,
-                    line: p.tokens[p.i].line
-                }
+                throw new ParsingError(`Expected a Statement, but instead found token: ${p.tokens[p.i].kind}`, p.tokens[p.i].i, p.tokens[p.i].line);
         }
         p.i++;
     }
@@ -80,62 +101,64 @@ export const parse_file = (p: ParsingContext): RootNode => {
     return root;
 }
 
-const funcall = (p: ParsingContext): FunCallNode | ParsingError  => {
-    let token = p.tokens[p.i];
+// As an ident token can either be an indent or a funcall, we will have to return null if it is not a funcall
+const funcall = (p: ParsingContext): FunCallNode | SyntaxError | null => {
+    let id = identifier(p) as IdentifierNode;
+    let token = p.tokens[p.i]; // the identifier
 
-    const functionName = token.value;
-    // p.i++; // consume the identifier
-    let nextToken = p.tokens[p.i + 1];
-
-    // If there is no '(' after the identifier, then it is not a function call
-    // instead it is just an identifier
-    if (!token) {
-        p.i--; // backtrack
-        token = p.tokens[p.i];
-        return {
-            ok: false,
-            msg: 'Unexpeted end of file',
-            i: token.i,
-            line: token.line
-        } as ParsingError
-    }
-
+    // if the next token is not '(', then it is not a function call
     if (!token || token.kind !== '(') {
-        return {
-            ok: false,
-            msg: 'Expected "(" after function name',
-            i: token.i,
-            line: token.line
-        }
+        return null
     }
-    p.i++; // consume the '('
 
     const args: ExprNode[] = [];
-    while (p.tokens[p.i].kind !== ')') {
-        let arg = expression(p);
-        if (arg && !arg.ok) return arg;
-        if (arg) args.push(arg as ExprNode);
-
-        if (p.tokens[p.i].kind === ',') p.i++; // consume the ','
-    }
-    p.i++; // consume the ')'
-
-    return {
+    let func = {
         ok: true,
         kind: 'FUNCALL',
-        id: {
-            kind: 'IDENTIFIER',
-            isQualified: false,
-            value: functionName,
-            i: token.i,
-            line: token.line,
-        } as IdentifierNode,
-        args
+        id: id,
+        args: args,
+        start: token.i,
+        end: token.i,
+        line: token.line
     } as FunCallNode
+
+    // consume the LParen. 
+    if(!p.tokens[p.i + 1] ) {
+        return {ok:false, message: 'Expected Function arguments but instead reached end of input', i: token.i, line: token.line}
+    }
+    p.i++; // now we are at the first argument or ')'
+
+    // if the next token is ')', then return the function without arguments
+    if (p.tokens[p.i].kind === ')') {
+        p.i++; // consume the ')'
+        func.end = p.tokens[p.i].i;
+        return func
+    }
+
+    // following comma is ok. Leading comma is not
+    if (token.kind !== ',') 
+        throw new ParsingError(`Expected a "(", but instead found ${token.kind}`, token.i, token.line);
+
+    // now we should only have arguments
+    while (true) {
+        if (p.tokens[p.i].kind === ',') {
+            p.i++ // consume the ','
+            
+        } else if (p.tokens[p.i].kind === ')') {
+            p.i++; // consume the ')'
+            break; // End of arguments
+        } else {
+            let arg = expression(p);
+            if (arg) args.push(arg as ExprNode);        
+        }
+    }
+    
+    return func
 }
 
-const expression = (p: ParsingContext): ExprNode | ParsingError | null => {
+const expression = (p: ParsingContext): ExprNode => {
     let token = p.tokens[p.i];
+    if (!token) throw new ParsingError('Expected Expression, but instead reached end of input', 0, 0);
 
     switch (token.kind) {
         case 'NUMBER':
@@ -145,14 +168,38 @@ const expression = (p: ParsingContext): ExprNode | ParsingError | null => {
             return funcall(p);
         
         default:
-            token = p.tokens[p.i];
-            return {
-                ok: false,
-                msg: `Unexpected token: ${token.kind}`,
-                i: token.i,
-                line: token.line
-            } as ParsingError
+            throw new ParsingError(`Unexpected token in expression: ${token.kind}`, token.i, token.line);
     }
+}
+
+const identifier = (p: ParsingContext): IdentifierNode => {
+    let token = p.tokens[p.i];
+    let id = {
+        kind: 'IDENTIFIER',
+        isQualified: false,
+        value: token.value,
+        i: token.i,
+        line: token.line,
+    } as IdentifierNode
+    p.i++; // consume the identifier
+
+    // handle qualified identifiers
+    while (true) {
+        token = p.tokens[p.i ];
+
+        if (!token) break;
+        if (token.kind === '.') {
+            id.isQualified = true;
+            token = advance(p, '.'); // consume the '.'
+            token = advance(p, 'IDENTIFIER'); // consume the identifier
+            id.value += '.' + token.value;
+            id.i = token.i;
+            id.line = token.line;
+        } else {
+            break;
+        }
+    }
+    return id;
 }
 
 const number = (p: ParsingContext): NumberNode => {
@@ -160,7 +207,6 @@ const number = (p: ParsingContext): NumberNode => {
     p.i++; // consume the number
 
     return {
-        ok: true,
         kind: 'NUMBER',
         value: token.value,
         i: token.i,

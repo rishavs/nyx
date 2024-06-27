@@ -45,24 +45,30 @@ export const lex_file = (src: string): LexingResult => {
 
             case isSpecialChar(c):
                 token = opr(l)
-                if (token) result.tokens.push(token);
+                if (token) {
+                    result.tokens.push(token);
+                } else {
+                    let error = {
+                        msg: `Unexpected character: ${c}`,
+                        start: l.i,
+                        end: l.i,
+                        line: l.line
+                    } as CompilingError;
+                    result.errors.push(error);
+ 
+                    l.i++;
+                }               
                 break;
 
             default:
                 let error = {
                     msg: `Unexpected character: ${c}`,
-                    i: l.i,
+                    start: l.i,
+                    end: l.i,
                     line: l.line
                 } as CompilingError;
                 result.errors.push(error);
 
-                token = {
-                    kind: 'ILLEGAL',
-                    value: c,
-                    i: l.i,
-                    line: l.line
-                } as Token;
-                result.tokens.push(token);
                 l.i++;
                 break;
         }
@@ -72,14 +78,18 @@ export const lex_file = (src: string): LexingResult => {
 }
 
 const opr = (l: LexingContext): Token | null => {
+    let token = {
+        kind: 'ILLEGAL',
+        value: '',
+        start: l.i,
+        end: l.i,
+        line: l.line
+    } as Token;
+    
     for (let opr of OprTokenKind) {
         if (l.src.startsWith(opr, l.i)) {
-            let token = {
-                kind: opr,
-                value: opr,
-                i: l.i,
-                line: l.line
-            } as Token;
+            token.kind = opr;
+            token.value = opr;
             l.i += opr.length;
             return token;
         }
@@ -88,36 +98,38 @@ const opr = (l: LexingContext): Token | null => {
 }
 
 const number = (l: LexingContext): Token => {
-    let cursor = l.i;
+    let token = {
+        kind: 'INT',
+        value: '',
+        start: l.i,
+        end: l.i,
+        line: l.line
+    } as Token;
+
+    token.end = l.i;
     let isFloat = false;
-    let value = '';
     while (
-        cursor < l.src.length && 
-        (isDigit(l.src[cursor]) || l.src[cursor] === '.' || l.src[cursor] === '_' )
+        token.end < l.src.length && 
+        (isDigit(l.src[token.end]) || l.src[token.end] === '.' || l.src[token.end] === '_' )
     ) {
-        if (l.src[cursor] === '_') {
-            cursor++;
+        if (l.src[token.end] === '_') {
+            token.end++;
             continue;
         }
-        if (l.src[cursor] === '.') {
+        if (l.src[token.end] === '.') {
             if (isFloat) {
                 break;
             }
             isFloat = true;
+            token.kind = 'FLOAT';
         }
-        value += l.src[cursor];
-        cursor++;
+        token.value += l.src[token.end];
+        token.end++;
     }
-    let token = {
-        kind: 'NUMBER',
-        value: value,
-        i: l.i,
-        line: l.line
-    } as Token;
-    l.i = cursor;
+    l.i = token.end;
+    token.end--;
     return token;
 }
-
 
 const ws = (l: LexingContext) => {
     let cursor = l.i;
@@ -128,44 +140,33 @@ const ws = (l: LexingContext) => {
         cursor++;
     }
     l.i = cursor;
-    // return {
-    //     kind: SpecialTokenKind.WS,
-    //     value: '',
-    //     i: l.i,
-    //     line: l.line
-    // };
 }
 
 const kwdOrId = (l: LexingContext): Token => {
-    let cursor = l.i;
-    while (
-        cursor < l.src.length && 
-        (isAlphabet(l.src[cursor]) || isDigit(l.src[cursor]) || l.src[cursor] === '_' )
-    ) {
-        cursor++;
-    }
-    let value = l.src.slice(l.i, cursor);
-
-    // iterate over the FixedTokenKind enum
-    for (let key of Object.keys(KwdTokenKind)) {
-        if (value === key) {
-            let token = {
-                kind: key,
-                value: value,
-                i: l.i,
-                line: l.line
-            } as Token;
-            l.i = cursor;
-            return token;
-        }
-    }
-    
     let token = {
         kind: 'IDENTIFIER' ,
-        value: value,
-        i: l.i,
+        value: '',
+        start: l.i,
+        end: l.i,
         line: l.line
     } as Token;
-    l.i = cursor;
+
+    while (
+        token.end < l.src.length && 
+        (isAlphabet(l.src[token.end]) || isDigit(l.src[token.end]) || l.src[token.end] === '_' )
+    ) {
+        token.end++;
+    }
+    token.value = l.src.slice(l.i, token.end);
+
+    // iterate over the FixedTokenKind enum and check if the token is a keyword
+    for (let key of Object.keys(KwdTokenKind)) {
+        if (token.value === key) {
+            token.kind = key as Token['kind'];
+            break;
+        }
+    }
+    l.i = token.end;
+    token.end--;
     return token;
 }

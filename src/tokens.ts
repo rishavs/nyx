@@ -25,6 +25,7 @@ export type TokenKind =
 export type Token = {
     kind: TokenKind;
     value: string;
-    i: number;
+    start: number;
+    end: number;
     line: number;
 }

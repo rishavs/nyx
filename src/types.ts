@@ -6,7 +6,8 @@ export type CompilingError = {
     ok: false;
     category: string;
     msg: string;
-    i: number;
+    start: number;
+    end: number;
     line: number;
 }
 
