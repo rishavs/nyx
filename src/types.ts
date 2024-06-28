@@ -3,7 +3,6 @@ import type { Token } from "./tokens";
 
 
 export type CompilingError = {
-    ok: false;
     category: string;
     msg: string;
     start: number;
@@ -32,7 +31,16 @@ export type ParsingResult = {
     errors: CompilingError[];
 }
 
+// Expected expectedTokenKind for expectedSyntax, but instead found got
+// Expected expectedSyntax, but instead found got
+export type UnexpectedSyntax = {
+    ok: false;
+    expectedSyntax: string;
+    expectedTokenKind?: string;
+    got: Token;
+}
+
 export type ExprParsingResult = {
     ok: boolean;
-    result : ExprNode | CompilingError | null;
+    result : ExprNode | UnexpectedSyntax | null;
 }

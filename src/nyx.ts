@@ -11,7 +11,7 @@ let src2 = `
     
     return z`
 
-let src = `xxx (1, 9)`
+let src = `xxx ((x) , y .  z, 2, 3,)`
 
 let parsingStart = Date.now();
 
@@ -36,8 +36,8 @@ let p: ParsingContext = {
     i: 0,
 }
 // let parsingResult = parse_file(p);
-// let parsingResult = expression(p);
+let parsingResult = expression(p);
 let parsingEnd = Date.now();
 
-// console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
-// console.log(JSON.stringify(parsingResult, null, 2));
+console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
+console.log(JSON.stringify(parsingResult, null, 2));

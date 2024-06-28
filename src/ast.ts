@@ -1,36 +1,28 @@
-export enum SpecialNodeKind {
-    ROOT,
-    BLOCK,
+type BaseNode = {
+    ok: true;
+    start: number;
+    end: number;
+    line: number;
 }
 
 // ---------------------------
 // Statements
 // ---------------------------
-
-export enum StmtNodeKind {
-    DECLARE,    // 'let x' where x gets the initial value of the Type
-    ASSIGN,     // 'let x = 1'
-    REASSIGN,   // 'x = 2'
-    RETURN,     // 'return x'
-}
-
-
-export type RootNode = {
-    kind: SpecialNodeKind.ROOT;
+export type RootNode = BaseNode & {
+    kind: 'ROOT';
     statements: StmtNode[];
 }
 
-export type BlockNode = {
-    kind: SpecialNodeKind.BLOCK;
+export type BlockNode = BaseNode & {
+    kind: 'BLOCK';
     statements: StmtNode[];
 }
 
-export type ReturnNode = {
-    kind: StmtNodeKind.RETURN;
+export type ReturnNode = BaseNode & {
+    kind: 'RETURN';
     expression: ExprNode;
 }
 
-export type StmtNode = ReturnNode;
 
 // export type AssignNode = {
 //     kind: StmtNodeKind.ASSIGN;
@@ -51,7 +43,6 @@ export type StmtNode = ReturnNode;
 //     expression: ExprNode;
 // }
 
-// export type StmtNode = AssignNode | DeclareNode;
 
 // ---------------------------
 // Expressions
@@ -65,45 +56,20 @@ export type StmtNode = ReturnNode;
 //                | primary ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
 
-export type ExprNodeKind =
-    'IDENTIFIER'
-    | 'NUMBER'
-    | 'STRING'
-    | 'BOOLEAN'
-    | 'NIL'
-    | 'FUNCALL'
-    | 'UNARY'
-    | 'BINARY'
-    | 'GROUPING';
-
-type BaseNode = {
-    ok:true;
-    value: string;
-    i: number;
-    line: number;
-}
 
 export type IdentifierNode = BaseNode & {
     kind: 'IDENTIFIER';
     isQualified: boolean;
+    value: string;
 }
 
-export type NumberNode = BaseNode & {
-    kind: 'NUMBER';
+export type IntNode = BaseNode & {
+    kind: 'INT';
+    value: string;
 }
-
-export type StringNode = BaseNode & {
-    kind: 'STRING';
-    isStatic: boolean;
-    isInterpolated: boolean;
-}
-
-export type BooleanNode = BaseNode & {
-    kind: 'BOOLEAN';
-}
-
-export type NilNode = BaseNode & {
-    kind: 'NIL';
+export type FloatNode = BaseNode & {
+    kind: 'FLOAT';
+    value: string;
 }
 
 export type FunCallNode = BaseNode & {
@@ -112,33 +78,8 @@ export type FunCallNode = BaseNode & {
     args: ExprNode[];
 }
 
-export type UnaryNode = BaseNode & {
-    kind: 'UNARY';
-    operator: string;
-    right: ExprNode;
-}
 
-export type BinaryNode = BaseNode & {
-    kind: 'BINARY';
-    left: ExprNode;
-    operator: string;
-    right: ExprNode;
-}
-
-export type GroupingNode = BaseNode & {
-    kind: 'GROUPING';
-    expression: ExprNode;
-}
-
-export type ExprNode = 
-    IdentifierNode 
-    | NumberNode 
-    | StringNode
-    | BooleanNode
-    | NilNode
-    | FunCallNode
-    | UnaryNode 
-    | BinaryNode 
-    | GroupingNode;
-
+export type ExprNode = IntNode | FloatNode | IdentifierNode | FunCallNode
+export type StmtNode = FunCallNode
+ 
 // export type Node = StmtNode | ExprNode;
