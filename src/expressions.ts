@@ -1,4 +1,4 @@
-import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode } from './ast';
+import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type FunCallNode } from './ast';
 import { type ParsingContext, type UnexpectedSyntax } from './types';
 
 // expression     → equality ;
@@ -11,7 +11,27 @@ import { type ParsingContext, type UnexpectedSyntax } from './types';
 // functionCall   → IDENTIFIER "(" arguments? ")" ;
 // arguments      → expression ( "," expression )* ;
 
-const failedExpectation = (p: ParsingContext, expectedSyntax: string, expectedTokenKind?: string): UnexpectedSyntax =>  {
+//  -----------------------------------
+// expression     → assignment ;
+
+// assignment     → ( call "." )? IDENTIFIER "=" assignment
+//                | logicOr;
+
+// logicOr       → logicAnd ( "or" logicAnd )* ;
+// logicAnd      → equality ( "and" equality )* ;
+// equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+// comparison     → addition ( ( ">" | ">=" | "<" | "<=" ) addition )* ;
+// addition       → multiplication ( ( "-" | "+" ) multiplication )* ;
+// multiplication → unary ( ( "/" | "*" ) unary )* ;
+
+// unary          → ( "!" | "-" ) unary | call ;
+// call           → primary (
+//                    ( "[" genericArgs "]" )? "(" expressionList? ")"
+//                    | "." IDENTIFIER
+//                  )* ;
+// primary        → "true" | "false" | NUMBER | "(" expression ")"
+
+export const failedExpectation = (p: ParsingContext, expectedSyntax: string, expectedTokenKind?: string): UnexpectedSyntax =>  {
     return {
         ok: false,
         expectedSyntax,
@@ -38,7 +58,7 @@ const int = (p: ParsingContext): IntNode => {
         } as IntNode
 }
 
-const float = (p: ParsingContext): FloatNode | null => {
+const float = (p: ParsingContext): FloatNode => {
     let token = p.tokens[p.i];
     p.i++; // consume the number
     return {
@@ -52,7 +72,7 @@ const float = (p: ParsingContext): FloatNode | null => {
 }
 
 
-const identifier = (p: ParsingContext): IdentifierNode | UnexpectedSyntax => {
+export const identifier = (p: ParsingContext): IdentifierNode | UnexpectedSyntax => {
     let cursor = p.i;
     let token = p.tokens[cursor];
     let id = {
@@ -108,7 +128,7 @@ const grouping = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
 }
 
 
-const listOfArgs = (p: ParsingContext): ExprNode[] | UnexpectedSyntax => {
+export const listOfArgs = (p: ParsingContext): ExprNode[] | UnexpectedSyntax => {
     p.i++; // consume the '('
     let token = p.tokens[p.i];
     if (!token) return failedExpectation(p, 'Argument or Expression');
@@ -369,12 +389,13 @@ const primary = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
         case 'INT':
             return int(p); // propagate result/error
 
+        case 'FLOAT':
+            return float(p); // propagate result/error
+
         // TODO - separate identifier from function call
         case 'IDENTIFIER':
             let id = identifier(p); // propagate result/error
-            console.log (p.tokens[p.i])
             if (id && !id.ok) return id;
-            console.log (p.tokens[p.i])
 
             token = p.tokens[p.i];
             if (token && token.kind === '(') {
@@ -388,7 +409,7 @@ const primary = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
                     start: id.start,
                     end: args[args.length - 1].end,
                     line: id.line
-                } as ExprNode
+                } as FunCallNode
             }
             return id;
 

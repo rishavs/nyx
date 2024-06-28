@@ -73,15 +73,6 @@ export const lex_file = (src: string): LexingResult => {
                 break;
         }
     }
-    let eos = {
-        kind: 'EOS',
-        value: '',
-        start: l.i,
-        end: l.i,
-        line: l.line
-    } as Token;
-    result.tokens.push(eos);
-    
     return result;
 }
 
