@@ -1,3 +1,4 @@
+import { generate } from "./codegen";
 import { expression } from "./expressions";
 import { lex_file } from "./lexer";
 import { parse_file } from "./parser";
@@ -12,7 +13,7 @@ let src2 = `
     
     return z`
 
-let src = `xxx ((x) , y .  z, 2, 3,)`
+let src = `exit (3)`
 
 let parsingStart = Date.now();
 
@@ -42,3 +43,9 @@ let parsingEnd = Date.now();
 
 console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
 console.log(JSON.stringify(parsingResult, null, 2));
+
+if (!parsingResult.ok) {
+    console.error(parsingResult);
+    process.exit(1);
+}
+await generate(parsingResult);
