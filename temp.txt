@@ -1,0 +1,10 @@
+module resolution:
+1. list all the files being imported
+2. If filenames are unique, each file name can be the module name.
+If any of the files have same filename
+    1. determine common path for all same files and then trim it
+    2. add the truncated relative filepath and name to the module name
+    3. we should now have only unique module names 
+
+Ref:
+https://github.com/ronami/minipack/blob/master/src/minipack.js

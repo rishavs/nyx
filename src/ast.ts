@@ -10,7 +10,8 @@ type BaseNode = {
 // ---------------------------
 export type RootNode = BaseNode & {
     kind: 'ROOT';
-    statements: StmtNode[];
+    // importStmts: ImportNode[];
+    block: BlockNode;
 }
 
 export type BlockNode = BaseNode & {

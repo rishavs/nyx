@@ -2,8 +2,17 @@ import type { BlockNode, ExprNode, FunCallNode, RootNode, StmtNode } from "./ast
 import { identifier, listOfArgs, failedExpectation } from "./expressions";
 import type { ParsingContext, UnexpectedSyntax } from "./types";
 
-export const root = (p: ParsingContext): BlockNode | UnexpectedSyntax => {
-    return block(p);
+export const root = (p: ParsingContext): RootNode | UnexpectedSyntax => {
+    let bl = block(p);
+    if (!bl.ok) return bl;
+    return {
+        ok: true,
+        kind: 'ROOT',
+        block: bl,
+        start: bl.start,
+        end: bl.end,
+        line: bl.line
+    }
 }
 
 export const block = (p: ParsingContext): BlockNode | UnexpectedSyntax => {

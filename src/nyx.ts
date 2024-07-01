@@ -1,4 +1,4 @@
-import { generate } from "./codegen";
+import { gen_c99, gen_root } from "./codegen";
 import { expression } from "./expressions";
 import { lex_file } from "./lexer";
 import { parse_file } from "./parser";
@@ -13,7 +13,7 @@ let src2 = `
     
     return z`
 
-let src = `exit (3)`
+let src = `exit (3, 7.88_7)`
 
 let parsingStart = Date.now();
 
@@ -48,4 +48,7 @@ if (!parsingResult.ok) {
     console.error(parsingResult);
     process.exit(1);
 }
-await generate(parsingResult);
+let code = gen_root(parsingResult);
+console.log(`------------- Codegen : ${Date.now() - parsingEnd}ms ---------------`);    
+console.log(code);
+gen_c99(parsingResult)
