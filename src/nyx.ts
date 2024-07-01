@@ -13,7 +13,8 @@ let src2 = `
     
     return z`
 
-let src = `exit (3, 7.88_7)`
+let src = `exit (3, 7.88_7)
+do_something (2, 5)`
 
 let parsingStart = Date.now();
 
