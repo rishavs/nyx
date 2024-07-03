@@ -8,3 +8,6 @@ If any of the files have same filename
 
 Ref:
 https://github.com/ronami/minipack/blob/master/src/minipack.js
+
+Stack based only for collections which are FIXED & SMALL (256 bytes?). These will be passed by value.
+Else created on heap and passed by reference.

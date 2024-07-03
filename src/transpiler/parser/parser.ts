@@ -1,8 +1,9 @@
-import type { BlockNode, ExprNode, FunCallNode, RootNode, StmtNode } from "./ast";
-import { identifier, listOfArgs, failedExpectation } from "./expressions";
-import type { ParsingContext, UnexpectedSyntax } from "./types";
+import type { RootNode, BlockNode, StmtNode } from "../ast";
+import type { ParsingContext } from "../defs";
+import type { TranspilingError } from "../errors";
+import { statement } from "./statements";
 
-export const root = (p: ParsingContext): RootNode | UnexpectedSyntax => {
+export const parse_file = (p: ParsingContext): RootNode | TranspilingError => {
     let bl = block(p);
     if (!bl.ok) return bl;
     return {
@@ -15,7 +16,7 @@ export const root = (p: ParsingContext): RootNode | UnexpectedSyntax => {
     }
 }
 
-export const block = (p: ParsingContext): BlockNode | UnexpectedSyntax => {
+export const block = (p: ParsingContext): BlockNode | TranspilingError => {
     let token = p.tokens[p.i];
     let stmts: StmtNode[] = [];
     while (true) {
@@ -25,6 +26,7 @@ export const block = (p: ParsingContext): BlockNode | UnexpectedSyntax => {
         let stmt = statement(p); // propagate result/error
         if (stmt) {
             if (!stmt.ok) {
+                // recover error
                 return stmt;
             } else {
                 stmts.push(stmt);
@@ -43,36 +45,6 @@ export const block = (p: ParsingContext): BlockNode | UnexpectedSyntax => {
     }
 }
 
-export const statement = (p: ParsingContext): StmtNode | UnexpectedSyntax  => {
-    let token = p.tokens[p.i];
-    console.log('statement', token)
-    switch (token.kind) {
-
-        case 'IDENTIFIER':
-            let id = identifier(p); // propagate result/error
-            if (id && !id.ok) return id;
-
-            token = p.tokens[p.i];
-            if (token && token.kind === '(') {
-                let args = listOfArgs(p); // propagate result/error
-                if (args && !Array.isArray(args)) return args;
-                return {
-                    ok: true,
-                    kind: 'FUNCALL',
-                    id: id,
-                    args: args,
-                    start: id.start,
-                    end: args[args.length - 1].end,
-                    line: id.line
-                } as FunCallNode
-            }
-            return failedExpectation(p, 'Statement')
-
-        default:
-            token = p.tokens[p.i];
-            return failedExpectation(p, 'Statement')
-    }
-}
 // program        → declaration* EOF ;
 
 

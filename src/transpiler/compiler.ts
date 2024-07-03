@@ -1,0 +1,1 @@
+// this code compiles the c99 code into exe | dynamic lib | static lib

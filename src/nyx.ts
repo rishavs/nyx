@@ -1,55 +1,68 @@
-import { gen_c99, gen_root } from "./codegen";
-import { expression } from "./expressions";
-import { lex_file } from "./lexer";
-import { parse_file } from "./parser";
-import { root } from "./statements";
-import type { ParsingContext } from "./types";
+import { transpile_file } from "./transpiler/transpiler";
 
-let src2 = `
-    let z
-    let x = 1
-    let y = 2
-    z = x + y
-    
-    return z`
-
-let src = `exit (3, 7.88_7)
-do_something (2, 5)`
-
-let parsingStart = Date.now();
-
-let lexingResult = lex_file(src);
-let lexingEnd = Date.now();
-
-
-console.log(`------------- Lexing : ${lexingEnd - parsingStart}ms ---------------`);
-for (let token of lexingResult.tokens) {
-    console.log(JSON.stringify(token));
-}
-
-if (lexingResult.errors.length > 0) {
-    for (let error of lexingResult.errors) {
-        console.error(error);
+let args = Bun.argv.slice(2);
+if (args.length === 0) {
+    console.log("Seawitch Programming Language");
+    console.log("Version: 0.0.1");
+    console.log("Usage: seawitch [options] <file>");
+    console.log("Options:");
+    console.log("  -h, --help\t\tPrint this help message");
+    console.log("  -v, --version\t\tPrint version information");
+} else if (args.length === 2 && args[0] === "run") {   
+    let filepath = args[1];
+    // check if file exists
+    const file = Bun.file(filepath);
+    if (! await file.exists()) {
+        console.log("Error: File not found");
     }
-    process.exit(1);
+    // Check if file is a seawitch file *.sea
+    if (!filepath.endsWith(".sea")) {
+        console.log("Error: Invalid file type. Seawitch files must have a .sea extension");
+    }
+
+    console.log("Compiling file: " + filepath);
+    
+    // Transpile file
+    let tres = transpile_file(await file.text());
+    process.exit(tres ? 0 : 1);
+
+    // Compile file
+    // Execute file
+
+} else {
+    console.log("Invalid arguments");
 }
 
-let p: ParsingContext = {
-    tokens: lexingResult.tokens,
-    i: 0,
-}
-let parsingResult = root(p);
-// let parsingResult = expression(p);
-let parsingEnd = Date.now();
+// #include <stdio.h>
+// #include <string.h>
+// #include <time.h>
 
-console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
-console.log(JSON.stringify(parsingResult, null, 2));
+// #include "../include/seawitch.h"
+// #include "../include/compiler.h"
 
-if (!parsingResult.ok) {
-    console.error(parsingResult);
-    process.exit(1);
-}
-let code = gen_root(parsingResult);
-console.log(`------------- Codegen : ${Date.now() - parsingEnd}ms ---------------`);    
-console.log(code);
-gen_c99(parsingResult)
+
+// int main(int argc, char* argv[]) {
+
+//     if (argc == 1) {
+//         printf("Seawitch Programming Language\n");
+//         printf("Version: %s\n", SEAWITCH_VERSION);
+//         printf("Usage: hexal [options] <file>\n");
+//         printf("Options:\n");
+//         printf("  -h, --help\t\tPrint this help message\n");
+//         printf("  -v, --version\t\tPrint version information\n");
+//         return 0;
+//     } else if (argc == 3 && strcmp(argv[1], "run") == 0) {
+//         printf("Compiling project with entrypoint file: %s\n", argv[2]);
+//         char* filepath = argv[2];
+        
+//         int compiler_res = compile_file( filepath);
+//         return compiler_res;
+        
+//     } else {
+//         printf("Invalid arguments\n");
+//         return 1;
+//     }
+
+//     return 0;
+// }
+

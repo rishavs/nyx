@@ -1,14 +1,6 @@
 import type { ExprNode, RootNode } from "./ast";
+import type { TranspilingError } from "./errors";
 import type { Token } from "./tokens";
-
-
-export type CompilingError = {
-    category: string;
-    msg: string;
-    start: number;
-    end: number;
-    line: number;
-}
 
 export type LexingContext = {
     src: string;
@@ -18,7 +10,7 @@ export type LexingContext = {
 
 export type LexingResult = {
     tokens: Token[];
-    errors: CompilingError[];
+    errors: TranspilingError[];
 }
 
 export type ParsingContext = {
@@ -28,7 +20,7 @@ export type ParsingContext = {
 
 export type ParsingResult = {
     root: RootNode;
-    errors: CompilingError[];
+    errors: TranspilingError[];
 }
 
 // Expected expectedTokenKind for expectedSyntax, but instead found got

@@ -1,4 +1,4 @@
-import type { BlockNode, ExprNode, FloatNode, FunCallNode, IntNode, RootNode, StmtNode } from "./ast";
+import type { BlockNode, ExprNode, FloatNode, FunCallNode, IntNode, RootNode, StmtNode } from "./transpiler/ast";
 
 export const gen_c99 = (ast: RootNode) => {
     let cMainFile = './oven/main.c';

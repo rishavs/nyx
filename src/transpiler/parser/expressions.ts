@@ -1,5 +1,6 @@
-import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type FunCallNode } from './ast';
-import { type ParsingContext, type UnexpectedSyntax } from './types';
+import type { ParsingContext, UnexpectedSyntax } from '../defs';
+import { raiseUnexpectedEndOfInput, raiseUnexpectedTokenError, type TranspilingError } from '../errors';
+import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type FunCallNode } from '../ast';
 
 // expression     → equality ;
 // equality       → comparison ( ( "!=" | "==" ) comparison )* ;
@@ -31,154 +32,31 @@ import { type ParsingContext, type UnexpectedSyntax } from './types';
 //                  )* ;
 // primary        → "true" | "false" | NUMBER | "(" expression ")"
 
-export const failedExpectation = (p: ParsingContext, expectedSyntax: string, expectedTokenKind?: string): UnexpectedSyntax =>  {
-    return {
-        ok: false,
-        expectedSyntax,
-        expectedTokenKind,
-        got: p.tokens[p.i]
-    } as UnexpectedSyntax
-}
+// -----------------------------------
+// Nil	nil
+// Bool	true, false
+// Integers	18, -12, 19_i64, 14_u32,64_u8
+// Floats	1.0, 1.0_f32, 1e10, -0.5
+// Char	'a', '\n', 'あ'
+// String	"foo\tbar", %("あ"), %q(foo #{foo})
+// Symbol	:symbol, :"foo bar"
+// Array	[1, 2, 3], [1, 2, 3] of Int32, %w(one two three)
+// Array-like	Set{1, 2, 3}
+// Hash	{"foo" => 2}, {} of String => Int32
+// Hash-like	MyType{"foo" => "bar"}
+// Range	1..9, 1...10, 0..var
+// Regex	/(foo)?bar/, /foo #{foo}/imx, %r(foo/)
+// Tuple	{1, "hello", 'x'}
+// NamedTuple	{name: "Crystal", year: 2011}, {"this is a key": 1}
+// Proc	->(x : Int32, y : Int32) { x + y }
+// Command	`echo foo`, %x(echo foo)
 
-export const expression = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
+
+export const expression = (p: ParsingContext): ExprNode | TranspilingError => {
     return primary(p);
 }
 
 
-const int = (p: ParsingContext): IntNode => {
-    let token = p.tokens[p.i];
-    p.i++; // consume the number
-    return {
-            ok: true,
-            kind: 'INT',
-            value: token.value,
-            start: token.start,
-            end: token.end,
-            line: token.line
-        } as IntNode
-}
-
-const float = (p: ParsingContext): FloatNode => {
-    let token = p.tokens[p.i];
-    p.i++; // consume the number
-    return {
-        ok: true,
-        kind: 'FLOAT',
-        value: token.value,
-        start: token.start,
-        end: token.end,
-        line: token.line
-    } as FloatNode
-}
-
-
-export const identifier = (p: ParsingContext): IdentifierNode | UnexpectedSyntax => {
-    let cursor = p.i;
-    let token = p.tokens[cursor];
-    let id = {
-        ok: true,
-        kind: 'IDENTIFIER',
-        isQualified: false,
-        value: token.value,
-        start: token.start,
-        end: token.end,
-        line: token.line,
-    } as IdentifierNode
-
-    cursor++; // consume the identifier
-
-    // handle qualified identifiers
-    while (true) {
-        token = p.tokens[cursor];
-        if (token && token.kind === '.') {
-            cursor++; // consume the '.'
-            token = p.tokens[cursor];
-            if (!token || token.kind !== 'IDENTIFIER') {
-                return failedExpectation(p, 'Qualified Name', 'IDENTIFIER')
-            }     
-            id.isQualified = true;
-            id.value += '.' + token.value;
-            id.end = token.end;
-            cursor++; // consume the identifier
-        } else {
-            id.end = token.end - 1;
-            break;
-        }
-    }
-    p.i = cursor;
-    return id;
-}
-
-const grouping = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
-    p.i++; // consume the left parenthesis
-    let token = p.tokens[p.i];
-
-    let expr = expression(p);
-    if (!expr) return failedExpectation(p, 'Expression');
-    if (expr && !expr.ok) return expr; // propagate error
-    
-
-    // If expression parsed, the next token should be a right parenthesis
-    token = p.tokens[p.i];
-    if (token && token.kind === ')') {
-        p.i++; // consume the right parenthesis
-        return expr
-    }
-    return failedExpectation(p, 'Grouped Expression', ')');
-}
-
-
-export const listOfArgs = (p: ParsingContext): ExprNode[] | UnexpectedSyntax => {
-    p.i++; // consume the '('
-    let token = p.tokens[p.i];
-    if (!token) return failedExpectation(p, 'Argument or Expression');
-
-    let args: ExprNode[] = [];
-    if (token.kind === ')') {
-        p.i++; // consume the ')'
-        return args; // early return with empty list
-    }
-
-    // a leading comma is fine
-    if (token.kind === ',') {
-        p.i++; // consume the ','
-        token = p.tokens[p.i];
-        if (!token) return failedExpectation(p, 'Argument or Expression');
-    }
-
-    // Parse the first argument
-    let arg = expression(p);
-    if (!arg) return failedExpectation(p, 'Argument');
-    if (arg && !arg.ok) return arg; // propagate error
-    args.push(arg);
-
-    // Now, parse subsequent arguments if any
-    while (true) {
-        token = p.tokens[p.i];
-        if (!token) return failedExpectation(p, 'Argument or Expression');
-        if (token.kind === ',') {
-            p.i++; // Correctly consume ',' before parsing the next argument
-            token = p.tokens[p.i];
-            if (!token) return failedExpectation(p, 'Argument or Expression');
-
-            // following comma is fine. if the next token is ')', then we are done
-            if (token.kind === ')') {
-                p.i++; // consume the ','
-                break;
-            }
-            arg = expression(p);
-            if (!arg) return failedExpectation(p, 'Argument');
-            if (arg && !arg.ok) return arg; // propagate error
-            args.push(arg);
-        } else if (token.kind === ')') {
-            p.i++; // consume the ')'
-            break;
-        } else {
-            return failedExpectation(p, 'Argument or Expression');
-        }
-    }
-    return args;
-}
 
 // const functionCall = (p: ParsingContext): ExprParsingResult => {
 //     let token = p.tokens[p.i];
@@ -383,7 +261,7 @@ export const listOfArgs = (p: ParsingContext): ExprNode[] | UnexpectedSyntax => 
 
 
 
-const primary = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
+const primary = (p: ParsingContext): ExprNode | TranspilingError => {
     let token = p.tokens[p.i];
     switch (token.kind) {
         case 'INT':
@@ -418,6 +296,141 @@ const primary = (p: ParsingContext): ExprNode | UnexpectedSyntax => {
         
         default:
             token = p.tokens[p.i];
-            return failedExpectation(p, 'Expression')
+            return raiseUnexpectedTokenError(p, 'Expression')
     }
+}
+
+
+const grouping = (p: ParsingContext): ExprNode | TranspilingError => {
+    p.i++; // consume the left parenthesis
+    let token = p.tokens[p.i];
+
+    let expr = expression(p);
+    if (!expr.ok) return expr; // propagate error
+    
+
+    // If expression parsed, the next token should be a right parenthesis
+    token = p.tokens[p.i];
+    if (token && token.kind === ')') {
+        p.i++; // consume the right parenthesis
+        return expr
+    }
+    return raiseUnexpectedTokenError(p, 'Grouped Expression', ')');
+}
+
+
+export const listOfArgs = (p: ParsingContext): ExprNode[] | TranspilingError => {
+    p.i++; // consume the '('
+    let token = p.tokens[p.i];
+    if (!token) return raiseUnexpectedEndOfInput(p, 'Argument or Expression');
+
+    let args: ExprNode[] = [];
+    if (token.kind === ')') {
+        p.i++; // consume the ')'
+        return args; // early return with empty list
+    }
+
+    // a leading comma is fine
+    if (token.kind === ',') {
+        p.i++; // consume the ','
+        token = p.tokens[p.i];
+        if (!token) return raiseUnexpectedEndOfInput(p, 'Argument or Expression');
+    }
+
+    // Parse the first argument
+    let arg = expression(p);
+    if (!arg.ok) return arg; // propagate error
+    args.push(arg);
+
+    // Now, parse subsequent arguments if any
+    while (true) {
+        token = p.tokens[p.i];
+        if (!token) return raiseUnexpectedEndOfInput(p, 'Argument or Expression');
+        if (token.kind === ',') {
+            p.i++; // Correctly consume ',' before parsing the next argument
+            token = p.tokens[p.i];
+            if (!token) return raiseUnexpectedEndOfInput(p, 'Argument or Expression');
+
+            // following comma is fine. if the next token is ')', then we are done
+            if (token.kind === ')') {
+                p.i++; // consume the ','
+                break;
+            }
+            arg = expression(p);
+            if (!arg.ok) return arg; // propagate error
+            args.push(arg);
+        } else if (token.kind === ')') {
+            p.i++; // consume the ')'
+            break;
+        } else {
+            return raiseUnexpectedTokenError(p, 'Argument or Expression');
+        }
+    }
+    return args;
+}
+
+
+
+const int = (p: ParsingContext): IntNode => {
+    let token = p.tokens[p.i];
+    p.i++; // consume the number
+    return {
+            ok: true,
+            kind: 'INT',
+            value: token.value,
+            start: token.start,
+            end: token.end,
+            line: token.line
+        } as IntNode
+}
+
+const float = (p: ParsingContext): FloatNode => {
+    let token = p.tokens[p.i];
+    p.i++; // consume the number
+    return {
+        ok: true,
+        kind: 'FLOAT',
+        value: token.value,
+        start: token.start,
+        end: token.end,
+        line: token.line
+    } as FloatNode
+}
+
+
+export const identifier = (p: ParsingContext): IdentifierNode | TranspilingError => {
+    let cursor = p.i;
+    let token = p.tokens[cursor];
+    let id = {
+        ok: true,
+        kind: 'IDENTIFIER',
+        isQualified: false,
+        value: token.value,
+        start: token.start,
+        end: token.end,
+        line: token.line,
+    } as IdentifierNode
+
+    cursor++; // consume the identifier
+
+    // handle qualified identifiers
+    while (true) {
+        token = p.tokens[cursor];
+        if (token && token.kind === '.') {
+            cursor++; // consume the '.'
+            token = p.tokens[cursor];
+            if (!token || token.kind !== 'IDENTIFIER') {
+                return raiseUnexpectedTokenError(p, 'Qualified Name', 'IDENTIFIER')
+            }     
+            id.isQualified = true;
+            id.value += '.' + token.value;
+            id.end = token.end;
+            cursor++; // consume the identifier
+        } else {
+            id.end = token.end - 1;
+            break;
+        }
+    }
+    p.i = cursor;
+    return id;
 }

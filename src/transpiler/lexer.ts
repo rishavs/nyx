@@ -1,5 +1,6 @@
 import { KwdTokenKind, OprTokenKind, type Token } from "./tokens";
-import type { LexingResult, LexingContext, CompilingError } from "./types";
+import type { LexingResult, LexingContext } from "./defs";
+import { raiseIllegalTokenError } from "./errors";
 
 // Character definitions
 // TODO - lexer broken for consequtive operators
@@ -13,12 +14,8 @@ const isDigit = (c: string): boolean =>
 const isSpecialChar = (c: string): boolean =>
     !isAlphabet(c) && !isDigit(c) && !' \n\t'.includes(c) && c !== '_';
 
-export const lex_file = (src: string): LexingResult => {
-    let l: LexingContext = {
-        src: src,
-        i: 0,
-        line: 0,
-    };
+export const lex_file = (l: LexingContext): LexingResult => {
+
     let result : LexingResult= {
         tokens: [],
         errors: []
@@ -29,7 +26,7 @@ export const lex_file = (src: string): LexingResult => {
         let token: Token | null;
 
         switch (true) {
-            case ' \n\t'.includes(c):
+            case ' \n\t\r'.includes(c):
                 ws(l);
                 break;
 
@@ -48,33 +45,19 @@ export const lex_file = (src: string): LexingResult => {
                 if (token) {
                     result.tokens.push(token);
                 } else {
-                    let error = {
-                        msg: `Unexpected character: ${c}`,
-                        start: l.i,
-                        end: l.i,
-                        line: l.line
-                    } as CompilingError;
-                    result.errors.push(error);
- 
+                    result.errors.push(raiseIllegalTokenError(l));
                     l.i++;
                 }               
                 break;
 
             default:
-                let error = {
-                    msg: `Unexpected character: ${c}`,
-                    start: l.i,
-                    end: l.i,
-                    line: l.line
-                } as CompilingError;
-                result.errors.push(error);
-
+                result.errors.push(raiseIllegalTokenError(l));
                 l.i++;
-                break;
         }
     }
     return result;
 }
+
 
 const opr = (l: LexingContext): Token | null => {
     let token = {
@@ -132,7 +115,7 @@ const number = (l: LexingContext): Token => {
 
 const ws = (l: LexingContext) => {
     let cursor = l.i;
-    while (cursor < l.src.length && ' \n\t'.includes(l.src[cursor]) ){
+    while (cursor < l.src.length && ' \n\t\r'.includes(l.src[cursor]) ){
         if (l.src[cursor] === '\n') {
             l.line++;
         }
@@ -158,10 +141,10 @@ const kwdOrId = (l: LexingContext): Token => {
     }
     token.value = l.src.slice(l.i, token.end);
 
-    // iterate over the FixedTokenKind enum and check if the token is a keyword
-    for (let key of Object.keys(KwdTokenKind)) {
-        if (token.value === key) {
-            token.kind = key as Token['kind'];
+    // iterate over the KwdTokenKind array and check if the token is a keyword
+    for (let kwd of KwdTokenKind) {
+        if (token.value === kwd) {
+            token.kind = kwd as Token['kind'];
             break;
         }
     }
