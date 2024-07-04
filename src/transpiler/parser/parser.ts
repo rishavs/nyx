@@ -16,23 +16,41 @@ export const parse_file = (p: ParsingContext): RootNode | TranspilingError => {
     }
 }
 
-export const block = (p: ParsingContext): BlockNode | TranspilingError => {
+export const block = (p: ParsingContext): BlockNode | TranspilingError[] => {
     let token = p.tokens[p.i];
     let stmts: StmtNode[] = [];
+    let errors: TranspilingError[] = [];
+
     while (true) {
         token = p.tokens[p.i];
         if (!token || p.i >= p.tokens.length ) break;
 
-        let stmt = statement(p); // propagate result/error
-        if (stmt) {
-            if (!stmt.ok) {
-                // recover error
-                return stmt;
+        try {
+            let stmt = statement(p); // propagate result/error
+            if (stmt) {
+                if (!stmt.ok) {
+                    // recover error
+                    errors.push(stmt);
+                } else {
+                    stmts.push(stmt);
+                }
             } else {
-                stmts.push(stmt);
+                break;
             }
-        } else {
-            break;
+        } catch (error) {
+            console.error(error); // Print the error
+            if (error instanceof Error) {
+                errors.push({
+                    ok: false,
+                    cat: 'SyntaxError',
+                    msg: error.message,
+                    start: p.tokens[p.i].start,
+                    end: p.tokens[p.i].end,
+                    line: p.tokens[p.i].line
+                });
+            }
+
+            // Recover from error
         }
     }
     return {

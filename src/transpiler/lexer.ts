@@ -1,6 +1,6 @@
 import { KwdTokenKind, OprTokenKind, type Token } from "./tokens";
 import type { LexingResult, LexingContext } from "./defs";
-import { raiseIllegalTokenError } from "./errors";
+import { SyntaxError, IllegalTokenError } from "./errors";
 
 // Character definitions
 // TODO - lexer broken for consequtive operators
@@ -15,8 +15,7 @@ const isSpecialChar = (c: string): boolean =>
     !isAlphabet(c) && !isDigit(c) && !' \n\t'.includes(c) && c !== '_';
 
 export const lex_file = (l: LexingContext): LexingResult => {
-
-    let result : LexingResult= {
+    let result: LexingResult = {
         tokens: [],
         errors: []
     };
@@ -25,39 +24,66 @@ export const lex_file = (l: LexingContext): LexingResult => {
         let c = l.src[l.i];
         let token: Token | null;
 
-        switch (true) {
-            case ' \n\t\r'.includes(c):
-                ws(l);
-                break;
+        try {
+            switch (true) {
+                case ' \n\t\r'.includes(c):
+                    ws(l);
+                    break;
 
-            case isAlphabet(c) || c === '_':
-                token = kwdOrId(l);
-                result.tokens.push(token);
-                break;
-
-            case isDigit(c):
-                token = number(l);
-                result.tokens.push(token);
-                break;
-
-            case isSpecialChar(c):
-                token = opr(l)
-                if (token) {
+                case isAlphabet(c) || c === '_':
+                    token = kwdOrId(l);
                     result.tokens.push(token);
-                } else {
-                    result.errors.push(raiseIllegalTokenError(l));
-                    l.i++;
-                }               
-                break;
+                    break;
 
-            default:
-                result.errors.push(raiseIllegalTokenError(l));
-                l.i++;
+                case isDigit(c):
+                    token = number(l);
+                    result.tokens.push(token);
+                    break;
+
+                case isSpecialChar(c):
+                    token = opr(l);
+                    if (token) {
+                        result.tokens.push(token);
+                    } else {
+                        throw new IllegalTokenError(l);
+                    }               
+                    break;
+
+                default:
+                    throw new IllegalTokenError(l);
+            }
+        } catch (error) {
+            console.error(error); // Print the error
+            if (error instanceof Error) {
+                console.log('Instance of Error');
+            }
+            if (error instanceof SyntaxError) {
+                console.log('Instance of SyntaxError');
+                let myErr : SyntaxError[] = []
+                myErr.push(error);
+                console.log(myErr);
+                console.log(myErr[0].name);
+                console.log(myErr[0].message);
+                console.log(myErr[0].start);
+                console.log(myErr[0].end);
+                console.log(myErr[0].cause);
+                console.log(myErr[0].stack);
+            }
+            if (error instanceof IllegalTokenError) {
+                result.errors.push({
+                    ok: false,
+                    cat: 'SyntaxError',
+                    msg: error.message,
+                    start: l.i,
+                    end: l.i,
+                    line: l.line
+                });
+            }
+            l.i++;
         }
     }
     return result;
 }
-
 
 const opr = (l: LexingContext): Token | null => {
     let token = {

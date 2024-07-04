@@ -5,7 +5,7 @@ import { identifier, listOfArgs } from "./expressions";
 
 export const statement = (p: ParsingContext): StmtNode | TranspilingError  => {
     let token = p.tokens[p.i];
-    console.log('statement', token)
+
     switch (token.kind) {
 
         case 'IDENTIFIER':
