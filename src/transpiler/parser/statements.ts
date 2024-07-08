@@ -1,6 +1,6 @@
-import type { StmtNode, FunCallNode } from "../ast";
+import type { StmtNode, FunCallNode, ExprNode } from "../ast";
 import type { ParsingContext } from "../defs";
-import { raiseUnexpectedTokenError, type TranspilingError } from "../errors";
+import { MissingSyntaxError, type TranspilingError } from "../errors";
 import { identifier, listOfArgs } from "./expressions";
 
 export const statement = (p: ParsingContext): StmtNode | TranspilingError  => {
@@ -10,12 +10,10 @@ export const statement = (p: ParsingContext): StmtNode | TranspilingError  => {
 
         case 'IDENTIFIER':
             let id = identifier(p); // propagate result/error
-            if (id && !id.ok) return id;
 
             token = p.tokens[p.i];
             if (token && token.kind === '(') {
-                let args = listOfArgs(p); // propagate result/error
-                if (args && !Array.isArray(args)) return args;
+                let args = listOfArgs(p) as ExprNode[]; // propagate result/error
                 return {
                     ok: true,
                     kind: 'FUNCALL',
@@ -26,10 +24,10 @@ export const statement = (p: ParsingContext): StmtNode | TranspilingError  => {
                     line: id.line
                 } as FunCallNode
             }
-            return raiseUnexpectedTokenError(p, 'Statement')
+            throw new MissingSyntaxError(p, 'Function Call Statement')
 
         default:
             token = p.tokens[p.i];
-            return raiseUnexpectedTokenError(p, 'Statement')
+            throw new MissingSyntaxError(p, 'Statement')
     }
 }

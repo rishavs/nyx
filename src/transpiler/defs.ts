@@ -10,7 +10,7 @@ export type LexingContext = {
 
 export type LexingResult = {
     tokens: Token[];
-    errors: TranspilingError[];
+    errors: SyntaxError[];
 }
 
 export type ParsingContext = {

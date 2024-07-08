@@ -55,25 +55,57 @@ export class UnclosedDelimiterError extends SyntaxError {
 // --------------------------------------
 // Parser Errors
 // --------------------------------------
-export const raiseUnexpectedTokenError = (p: ParsingContext, expectedSyntax: string, expectedTokenKind?: string): TranspilingError =>  {
-    return {
-        ok: false,
-        cat: 'SyntaxError',
-        msg: `Expected ${expectedTokenKind ?
-            expectedTokenKind + " for " :  ""}${expectedSyntax}, but instead found "${p.tokens[p.i].kind}"`,
-        start: p.tokens[p.i].start,
-        end: p.tokens[p.i].end,
-        line: p.tokens[p.i].line
-    } as TranspilingError
+export class MissingSyntaxError extends SyntaxError {
+    constructor(p: ParsingContext, expectedSyntax: string) {
+        let expected = `Expected ${expectedSyntax},`
+        let got = p.i < p.tokens.length 
+            ? `but instead found "${p.tokens[p.i].kind}"` 
+            : `but instead reached end of input`
+        super(expected + got, p.tokens[p.i].start, p.tokens[p.i].end, p.tokens[p.i].line);
+        this.name = this.name + ". Missing Syntax";
+        
+        // Modify the stack trace to exclude the constructor call
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, MissingSyntaxError);
+        }
+    }
 }
 
-export const raiseUnexpectedEndOfInput = (p: ParsingContext, expectedSyntax: string): TranspilingError => {
-    return {
-        ok: false,
-        cat: 'SyntaxError',
-        msg: `Expected ${expectedSyntax}, but instead found end of input`,
-        start: p.tokens[p.i].start,
-        end: p.tokens[p.i].end,
-        line: p.tokens[p.i].line
-    } as TranspilingError
+export class MissingTokenError extends SyntaxError {
+    constructor(p: ParsingContext, expectedSyntax: string, expectedTokenKind: string) {
+        let expected = `Expected ${expectedTokenKind} for ${expectedSyntax},`
+        let got = p.i < p.tokens.length
+            ? `but instead found "${p.tokens[p.i].kind}"`
+            : `but instead reached end of input`
+        super(expected + got, p.tokens[p.i].start, p.tokens[p.i].end, p.tokens[p.i].line);
+        this.name = this.name + ". Missing Token";
+        
+        // Modify the stack trace to exclude the constructor call
+        if (Error.captureStackTrace) {
+            Error.captureStackTrace(this, MissingTokenError);
+        }
+    }
 }
+
+// export const raiseUnexpectedTokenError = (p: ParsingContext, expectedSyntax: string, expectedTokenKind?: string): TranspilingError =>  {
+//     return {
+//         ok: false,
+//         cat: 'SyntaxError',
+//         msg: `Expected ${expectedTokenKind ?
+//             expectedTokenKind + " for " :  ""}${expectedSyntax}, but instead found "${p.tokens[p.i].kind}"`,
+//         start: p.tokens[p.i].start,
+//         end: p.tokens[p.i].end,
+//         line: p.tokens[p.i].line
+//     } as TranspilingError
+// }
+
+// export const raiseUnexpectedEndOfInput = (p: ParsingContext, expectedSyntax: string): TranspilingError => {
+//     return {
+//         ok: false,
+//         cat: 'SyntaxError',
+//         msg: `Expected ${expectedSyntax}, but instead found end of input`,
+//         start: p.tokens[p.i].start,
+//         end: p.tokens[p.i].end,
+//         line: p.tokens[p.i].line
+//     } as TranspilingError
+// }

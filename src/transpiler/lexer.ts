@@ -53,32 +53,7 @@ export const lex_file = (l: LexingContext): LexingResult => {
                     throw new IllegalTokenError(l);
             }
         } catch (error) {
-            console.error(error); // Print the error
-            if (error instanceof Error) {
-                console.log('Instance of Error');
-            }
-            if (error instanceof SyntaxError) {
-                console.log('Instance of SyntaxError');
-                let myErr : SyntaxError[] = []
-                myErr.push(error);
-                console.log(myErr);
-                console.log(myErr[0].name);
-                console.log(myErr[0].message);
-                console.log(myErr[0].start);
-                console.log(myErr[0].end);
-                console.log(myErr[0].cause);
-                console.log(myErr[0].stack);
-            }
-            if (error instanceof IllegalTokenError) {
-                result.errors.push({
-                    ok: false,
-                    cat: 'SyntaxError',
-                    msg: error.message,
-                    start: l.i,
-                    end: l.i,
-                    line: l.line
-                });
-            }
+            if (error instanceof SyntaxError) result.errors.push(error)
             l.i++;
         }
     }

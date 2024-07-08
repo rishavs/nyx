@@ -3,17 +3,22 @@ import type { ParsingContext } from "../defs";
 import type { TranspilingError } from "../errors";
 import { statement } from "./statements";
 
-export const parse_file = (p: ParsingContext): RootNode | TranspilingError => {
+export const parse_file = (p: ParsingContext): RootNode | TranspilingError[] => {
+    let errors : TranspilingError[] = [];
     let bl = block(p);
-    if (!bl.ok) return bl;
-    return {
-        ok: true,
-        kind: 'ROOT',
-        block: bl,
-        start: bl.start,
-        end: bl.end,
-        line: bl.line
+    if (!Array.isArray(bl)) {
+        return {
+            ok: true,
+            kind: 'ROOT',
+            block: bl,
+            start: bl.start,
+            end: bl.end,
+            line: bl.line
+        };
     }
+    // push all errors from bl to errors
+    errors.push(...bl);
+    return errors;
 }
 
 export const block = (p: ParsingContext): BlockNode | TranspilingError[] => {
@@ -51,6 +56,9 @@ export const block = (p: ParsingContext): BlockNode | TranspilingError[] => {
             }
 
             // Recover from error
+            while (p.i < p.tokens.length && p.tokens[p.i].kind !== 'end') {
+                p.i++;
+            }
         }
     }
     return {

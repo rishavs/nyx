@@ -1,11 +1,13 @@
-import type { BlockNode, ExprNode, FloatNode, FunCallNode, IntNode, RootNode, StmtNode } from "./transpiler/ast";
+import type { BlockNode, ExprNode, FloatNode, FunCallNode, IntNode, RootNode, StmtNode } from "../ast";
 
 export const gen_c99 = (ast: RootNode) => {
     let cMainFile = './oven/main.c';
     let cHeaderFile = './oven/main.h';
 
     let cMainContent = gen_root(ast);
+    console.log("Generated C99 code: \n", cMainContent);
     Bun.write(cMainFile, cMainContent);
+    Bun.write ('./oven/main.h', `#include <stdio.h>\n`);
 }
 
 export const gen_root = (ast: RootNode): string => {

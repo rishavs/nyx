@@ -1,4 +1,4 @@
-import { parseJsonText } from "typescript";
+import { gen_c99, gen_root } from "./codegen/generator";
 import type { LexingContext, ParsingContext } from "./defs";
 import { lex_file } from "./lexer";
 import { parse_file } from "./parser/parser";
@@ -17,6 +17,7 @@ export const transpile_file = (src: string): boolean => {
 
     if (lexingResult.errors.length > 0) {
         console.log(`Lexing Failed: ${lexingEnd - parsingStart}ms ---------------`);
+        console.log("Number of errors: ", lexingResult.errors.length)
 
         for (let error of lexingResult.errors) {
             console.error(error);
@@ -40,14 +41,14 @@ export const transpile_file = (src: string): boolean => {
     console.log(`------------- Parsing : ${parsingEnd - lexingEnd}ms ---------------`);
     console.log(JSON.stringify(parsingResult, null, 2));
 
-    // if (!parsingResult.ok) {
-    //     console.error(parsingResult);
-    //     process.exit(1);
-    // }
-    // let code = gen_root(parsingResult);
-    // console.log(`------------- Codegen : ${Date.now() - parsingEnd}ms ---------------`);    
-    // console.log(code);
-    // gen_c99(parsingResult)
+    if (Array.isArray(parsingResult)) {
+        console.error(parsingResult);
+        process.exit(1);
+    }
+    let code = gen_root(parsingResult);
+    console.log(`------------- Codegen : ${Date.now() - parsingEnd}ms ---------------`);    
+    console.log(code);
+    gen_c99(parsingResult)
 
     return transpilingResult;
 }
