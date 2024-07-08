@@ -1,13 +1,15 @@
 import type { BlockNode, ExprNode, FloatNode, FunCallNode, IntNode, RootNode, StmtNode } from "../ast";
 
-export const gen_c99 = (ast: RootNode) => {
-    let cMainFile = './oven/main.c';
-    let cHeaderFile = './oven/main.h';
+export const gen_c99 = async (ast: RootNode) => {
+    let cMainFile = 'oven/mainic.c';
+    let cHeaderFile = 'oven/main.h';
 
     let cMainContent = gen_root(ast);
     console.log("Generated C99 code: \n", cMainContent);
-    Bun.write(cMainFile, cMainContent);
-    Bun.write ('./oven/main.h', `#include <stdio.h>\n`);
+    let mainBytes = await Bun.write(cMainFile, cMainContent);
+    let headerBytes = await Bun.write (cHeaderFile, `#include <stdio.h>\n`);
+    console.log(`Wrote ${mainBytes} bytes to ${cMainFile}`);
+    console.log(`Wrote ${headerBytes} bytes to ${cHeaderFile}`);
 }
 
 export const gen_root = (ast: RootNode): string => {
