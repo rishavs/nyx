@@ -23,8 +23,8 @@ if (args.length === 0) {
     console.log("Compiling file: " + filepath);
     
     // Transpile file
-    let tres = transpile_file(await file.text());
-    process.exit(tres ? 0 : 1);
+    let res = await transpile_file(await file.text());
+    process.exit(res ? 0 : 1);
 
     // Compile file
     // Execute file

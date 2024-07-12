@@ -4,7 +4,7 @@ import { lex_file } from "./lexer";
 import { parse_file } from "./parser/parser";
 
 
-export const transpile_file = (src: string): boolean => {
+export const transpile_file = async (src: string) => {
     let parsingStart = Date.now();
     let l: LexingContext = {
         src: src,
@@ -48,7 +48,7 @@ export const transpile_file = (src: string): boolean => {
     let code = gen_root(parsingResult);
     console.log(`------------- Codegen : ${Date.now() - parsingEnd}ms ---------------`);    
     console.log(code);
-    gen_c99(parsingResult)
+    await gen_c99(parsingResult)
 
     return transpilingResult;
 }
