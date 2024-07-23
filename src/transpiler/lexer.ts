@@ -1,6 +1,6 @@
 import { KwdTokenKind, OprTokenKind, type Token } from "./tokens";
-import type { LexingResult, LexingContext } from "./defs";
-import { SyntaxError, IllegalTokenError } from "./errors";
+import { type LexingContext } from "./defs";
+import { IllegalTokenError, UnhandledError, UnclosedDelimiterError, type TranspilingError } from "./errors";
 
 // Character definitions
 // TODO - lexer broken for consequtive operators
@@ -14,50 +14,71 @@ const isDigit = (c: string): boolean =>
 const isSpecialChar = (c: string): boolean =>
     !isAlphabet(c) && !isDigit(c) && !' \n\t'.includes(c) && c !== '_';
 
-export const lex_file = (l: LexingContext): LexingResult => {
-    let result: LexingResult = {
-        tokens: [],
-        errors: []
-    };
+export const lex_file = (l: LexingContext): Token[] | TranspilingError[] => {
+    let tokens: Token[] = []
+    let errors: TranspilingError[] = []
 
-    while (l.i < l.src.length) {
+    while (l.i < l.src.length && errors.length === 0) {
         let c = l.src[l.i];
         let token: Token | null;
 
-        try {
-            switch (true) {
-                case ' \n\t\r'.includes(c):
-                    ws(l);
-                    break;
+        switch (true) {
+            case ' \n\t\r'.includes(c):
+                ws(l);
+                break;
 
-                case isAlphabet(c) || c === '_':
-                    token = kwdOrId(l);
-                    result.tokens.push(token);
-                    break;
+            case c === '-':
+                comment(l);
+                break;
 
-                case isDigit(c):
-                    token = number(l);
-                    result.tokens.push(token);
-                    break;
+            case isAlphabet(c) || c === '_':
+                token = kwdOrId(l);
+                tokens.push(token);
+                break;
 
-                case isSpecialChar(c):
-                    token = opr(l);
-                    if (token) {
-                        result.tokens.push(token);
-                    } else {
-                        throw new IllegalTokenError(l);
-                    }               
-                    break;
+            case isDigit(c):
+                token = number(l);
+                tokens.push(token);
+                break;
 
-                default:
-                    throw new IllegalTokenError(l);
-            }
-        } catch (error) {
-            if (error instanceof SyntaxError) result.errors.push(error)
-            l.i++;
+            case isSpecialChar(c):
+                token = opr(l);
+                if (token) {
+                    tokens.push(token);
+                } else {
+                    throw new IllegalTokenError(c, l.i, l.line);
+                }               
+                break;
+
+            default:
+                let error = new IllegalTokenError(c, l.i, l.line);
+                errors.push(error);
+                throw new IllegalTokenError(c, l.i, l.line);
         }
     }
-    return result;
+    
+    if (errors.length == 0) {
+        return tokens;
+    }
+    
+    return errors;
+}
+
+
+const comment = (l: LexingContext) => {
+    let cursor = l.i;
+    if (l.src.startsWith('-[', cursor)) {
+        let closing = l.src.indexOf(']-', cursor);
+        if (closing === -1) {
+            throw new UnclosedDelimiterError('Multiline Comment', ']-', l.i, l.line);
+        } 
+        l.i = closing + 2;
+        
+    } else if (l.src.startsWith('--', cursor)) {
+        let closing = l.src.indexOf('\n', cursor);
+        l.i = closing === -1 ? l.src.length : closing;
+
+    } 
 }
 
 const opr = (l: LexingContext): Token | null => {

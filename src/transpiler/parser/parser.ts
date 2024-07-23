@@ -1,73 +1,48 @@
-import type { RootNode, BlockNode, StmtNode } from "../ast";
+import { RootNode, BlockNode, StatementNode } from "../ast";
 import type { ParsingContext } from "../defs";
-import type { TranspilingError } from "../errors";
+import { UnhandledError,  TranspilingError } from "../errors";
 import { statement } from "./statements";
 
 export const parse_file = (p: ParsingContext): RootNode | TranspilingError[] => {
-    let errors : TranspilingError[] = [];
+    // Adding a try catch guard here for any unhandled errors
     let bl = block(p);
-    if (!Array.isArray(bl)) {
-        return {
-            ok: true,
-            kind: 'ROOT',
-            block: bl,
-            start: bl.start,
-            end: bl.end,
-            line: bl.line
-        };
-    }
-    // push all errors from bl to errors
-    errors.push(...bl);
-    return errors;
+    if (bl instanceof BlockNode) {
+        let rootNode = new RootNode(bl.at, bl.line, bl);
+        return rootNode;
+    } 
+    return bl;
 }
 
 export const block = (p: ParsingContext): BlockNode | TranspilingError[] => {
     let token = p.tokens[p.i];
-    let stmts: StmtNode[] = [];
+    let stmts: StatementNode[] = [];
     let errors: TranspilingError[] = [];
 
-    while (true) {
+    while (p.i < p.tokens.length) {
         token = p.tokens[p.i];
-        if (!token || p.i >= p.tokens.length ) break;
 
-        try {
-            let stmt = statement(p); // propagate result/error
-            if (stmt) {
-                if (!stmt.ok) {
-                    // recover error
-                    errors.push(stmt);
-                } else {
-                    stmts.push(stmt);
-                }
-            } else {
-                break;
-            }
-        } catch (error) {
-            console.error(error); // Print the error
-            if (error instanceof Error) {
-                errors.push({
-                    ok: false,
-                    cat: 'SyntaxError',
-                    msg: error.message,
-                    start: p.tokens[p.i].start,
-                    end: p.tokens[p.i].end,
-                    line: p.tokens[p.i].line
-                });
-            }
-
-            // Recover from error
-            while (p.i < p.tokens.length && p.tokens[p.i].kind !== 'end') {
-                p.i++;
-            }
+        let stmt = statement(p); 
+        if (stmt instanceof StatementNode) {
+            stmts.push(stmt);
+        // propagate result/error
+        } else if (stmt instanceof TranspilingError) {
+            errors.push(stmt);
+            recover(p);
+        } else {
+            errors.push(new UnhandledError(token.start, token.line));
+            recover(p);
         }
     }
-    return {
-        ok: true,
-        kind: 'BLOCK',
-        statements: stmts,
-        start: stmts[0].start,
-        end: stmts[stmts.length - 1].end,
-        line: stmts[0].line
+    if (errors.length === 0) {
+        return new BlockNode(stmts[0].at, stmts[0].line, stmts);
+    }
+    return errors;
+}
+
+
+export const recover = (p: ParsingContext) => {
+    while (p.i < p.tokens.length && p.tokens[p.i].kind !== 'end') {
+        p.i++;
     }
 }
 

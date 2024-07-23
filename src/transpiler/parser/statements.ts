@@ -1,33 +1,69 @@
-import type { StmtNode, FunCallNode, ExprNode } from "../ast";
 import type { ParsingContext } from "../defs";
-import { MissingSyntaxError, type TranspilingError } from "../errors";
-import { identifier, listOfArgs } from "./expressions";
+import { MissingSyntaxError, TranspilingError } from "../errors";
+import { expression, identifier, listOfArgs } from "./expressions";
+import { DeclarationNode, ExpressionNode, FunCallStmtNode, IdentifierNode, type StatementNode } from "../ast";
 
-export const statement = (p: ParsingContext): StmtNode | TranspilingError  => {
+export const statement = (p: ParsingContext): StatementNode | TranspilingError  => {
     let token = p.tokens[p.i];
 
-    switch (token.kind) {
+    if (token.kind == 'let') {
 
-        case 'IDENTIFIER':
-            let id = identifier(p); // propagate result/error
+        p.i++;
+        let id = identifier(p); // propagate result/error
+        if (id instanceof TranspilingError) {
+            return id;
+        }
 
-            token = p.tokens[p.i];
-            if (token && token.kind === '(') {
-                let args = listOfArgs(p) as ExprNode[]; // propagate result/error
-                return {
-                    ok: true,
-                    kind: 'FUNCALL',
-                    id: id,
-                    args: args,
-                    start: id.start,
-                    end: args[args.length - 1].end,
-                    line: id.line
-                } as FunCallNode
+        token = p.tokens[p.i];
+        if (token && token.kind === '=') {
+            p.i++;
+            if (! p.tokens[p.i] ) {
+                return new MissingSyntaxError('Statement', token.start, token.line, token.value);
             }
-            throw new MissingSyntaxError(p, 'Function Call Statement')
+            let expr = expression(p); 
+            if (expr instanceof ExpressionNode) {
+                return new DeclarationNode(id.at, id.line, true, id, expr);
+            }
+            return expr; // propagate result/error
+        } else {
+            return new MissingSyntaxError('Statement', token.start, token.line, token.value);
+        }
 
-        default:
-            token = p.tokens[p.i];
-            throw new MissingSyntaxError(p, 'Statement')
+    } else if (token.kind == 'IDENTIFIER') {
+        let id = identifier(p); // propagate result/error
+        if (id instanceof TranspilingError) {
+            return id;
+        }
+
+        token = p.tokens[p.i];
+        // Function call
+        if (token && token.kind === '(') {
+            let args = listOfArgs(p) as ExpressionNode[]; // propagate result/error
+            if (args instanceof TranspilingError) {
+                return args;
+            }
+
+            return new FunCallStmtNode(id.at, id.line, id, args);
+
+        // Reasignment
+        } else if (token && token.kind === '=') {
+            p.i++;
+            if (! p.tokens[p.i] ) {
+                return new MissingSyntaxError('Statement', token.start, token.line, token.value);
+            }
+            let expr = expression(p); 
+            if (expr instanceof ExpressionNode) {
+                return new DeclarationNode(id.at, id.line, false, id, expr);
+            }
+            return expr; // propagate result/error
+
+        } else {
+            // temp error for now
+            return new MissingSyntaxError('Statement', token.start, token.line, token.value);
+        }
+
+    } else {
+        token = p.tokens[p.i];
+        return new MissingSyntaxError('Statement', token.start, token.line, token.value);
     }
 }

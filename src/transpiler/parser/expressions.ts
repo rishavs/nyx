@@ -1,6 +1,3 @@
-import type { ParsingContext, UnexpectedSyntax } from '../defs';
-import { MissingSyntaxError, MissingTokenError, type TranspilingError } from '../errors';
-import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type FunCallNode } from '../ast';
 
 // expression     → equality ;
 // equality       → comparison ( ( "!=" | "==" ) comparison )* ;
@@ -11,6 +8,11 @@ import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type 
 // primary        → NUMBER | "(" expression ")" | functionCall ;
 // functionCall   → IDENTIFIER "(" arguments? ")" ;
 // arguments      → expression ( "," expression )* ;
+
+import { ExpressionNode, FloatNode, FunCallExprNode, IdentifierNode, IntNode } from "../ast";
+import type { ParsingContext } from "../defs";
+import { MissingSpecificTokenError, MissingSyntaxError, TranspilingError } from "../errors";
+import type { Token } from "../tokens";
 
 //  -----------------------------------
 // expression     → assignment ;
@@ -51,11 +53,167 @@ import { type ExprNode, type IdentifierNode, type IntNode, type FloatNode, type 
 // Proc	->(x : Int32, y : Int32) { x + y }
 // Command	`echo foo`, %x(echo foo)
 
+export const peekNext = (p: ParsingContext, kind: string): Token | null => {
+    let token = p.tokens[p.i + 1];
+    if (token && token.kind === kind) return token;
+    return null;
+}
+export const advance = (p: ParsingContext): Token | null => {
+    let token = p.tokens[p.i];
+    if (token) p.i++;
+    return token;
+}
 
-export const expression = (p: ParsingContext): ExprNode => {
+export const expression = (p: ParsingContext): ExpressionNode | TranspilingError => {
     return primary(p);
 }
 
+
+
+const primary = (p: ParsingContext): ExpressionNode | TranspilingError => {
+    let token = p.tokens[p.i];
+    switch (token.kind) {
+        case 'INT':
+            return int(p); // propagate result/error
+
+        case 'FLOAT':
+            return float(p); // propagate result/error
+
+        // TODO - separate identifier from function call
+        case 'IDENTIFIER':
+            let id = identifier(p); // propagate result/error
+            if (id instanceof TranspilingError) return id;
+
+            token = p.tokens[p.i];
+            if (token && token.kind === '(') {
+                let args = listOfArgs(p) as ExpressionNode[]; // propagate result/error
+                if (args instanceof TranspilingError) return args;
+                return new FunCallExprNode(id.at, id.line, id, args);
+            }
+            return id;
+
+        case '(':
+            return grouping(p);
+        
+        default:
+            token = p.tokens[p.i];
+            return new MissingSyntaxError('Expression', token.start, token.line, token.value);
+    }
+}
+
+
+const grouping = (p: ParsingContext): ExpressionNode | TranspilingError => {
+    let token = p.tokens[p.i];
+    let nextToken = p.tokens[p.i + 1];
+    if (!nextToken) return new MissingSyntaxError('Grouped Expression', token.start, token.line, token.value);
+
+    p.i++; // consume the left parenthesis
+
+    let expr = expression(p);
+    if (expr instanceof TranspilingError) return expr; // propagate error
+
+    // If expression parsed, the next token should be a right parenthesis
+    token = p.tokens[p.i];
+    if (token && token.kind === ')') {
+        p.i++; // consume the right parenthesis
+        return expr
+    }
+    return new MissingSpecificTokenError ('Grouped Expression', ')', token.start, token.line, token.value);
+}
+
+export const listOfArgs = (p: ParsingContext): ExpressionNode[] | TranspilingError => {
+    let token = p.tokens[p.i];
+    let nextToken = p.tokens[p.i + 1];
+    if (!nextToken) return new MissingSyntaxError('Function Arguments (Expressions)', token.start, token.line, token.value);
+    p.i++; // consume the '('
+
+    let args: ExpressionNode[] = [];
+    if (token.kind === ')') {
+        p.i++; // consume the ')'
+        return args; // early return with empty list
+    }
+
+    // a leading comma is fine
+    if (token.kind === ',') {
+        nextToken = p.tokens[p.i + 1];
+        if (!nextToken) return new MissingSyntaxError('Function Arguments (Expressions)', token.start, token.line, token.value);
+
+        p.i++; // consume the ','
+        token = p.tokens[p.i];
+    }
+    let expr = expression(p);
+    if (expr instanceof TranspilingError) return expr; // propagate error
+    // Parse the first argument
+    args.push(expr);
+
+    // Now, parse subsequent arguments if any
+    while (p.tokens[p.i]) {
+        token = p.tokens[p.i];
+        if (token.kind === ',') {
+            nextToken = p.tokens[p.i + 1];
+            if (!nextToken) return new MissingSyntaxError('Function Arguments (Expressions)', token.start, token.line, token.value);
+
+            p.i++; // Correctly consume ',' before parsing the next argument
+            token = p.tokens[p.i];
+            nextToken = p.tokens[p.i + 1];
+            if (!nextToken) return new MissingSyntaxError('Function Arguments (Expressions)', token.start, token.line, token.value);
+
+            // following comma is fine. if the next token is ')', then we are done
+            if (token.kind === ')') {
+                p.i++; // consume the ','
+                break;
+            }
+            let expr = expression(p);
+            if (expr instanceof TranspilingError) return expr; // propagate error
+            args.push(expr);
+        } else if (token.kind === ')') {
+            p.i++; // consume the ')'
+            break;
+        } else {
+            return new MissingSpecificTokenError('Function Arguments (Expressions)', ',', token.start, token.line, token.value);
+        }
+    }
+    return args;
+}
+
+const int = (p: ParsingContext): IntNode => {
+    let token = p.tokens[p.i];
+    p.i++; // consume the number
+    return new IntNode(token.start, token.line, token.value);
+}
+
+const float = (p: ParsingContext): FloatNode => {
+    let token = p.tokens[p.i];
+    p.i++; // consume the number
+    return new FloatNode(token.start, token.line, token.value);
+}
+
+export const identifier = (p: ParsingContext): IdentifierNode | TranspilingError => {
+    let cursor = p.i;
+    let token = p.tokens[cursor];
+    let id = new IdentifierNode(p.tokens[cursor].start, p.tokens[cursor].line, false, p.tokens[cursor].value);
+
+    cursor++; // consume the identifier
+
+    // handle qualified identifiers
+    while (true) {
+        token = p.tokens[cursor];
+        if (token && token.kind === '.') {
+            cursor++; // consume the '.'
+            token = p.tokens[cursor];
+            if (!token || token.kind !== 'IDENTIFIER') {
+                return new MissingSpecificTokenError('Qualified Name', 'IDENTIFIER', token.start, token.line, token.value);
+            }     
+            id.isQualified = true;
+            id.value += '.' + token.value;
+            cursor++; // consume the identifier
+        } else {
+            break;
+        }
+    }
+    p.i = cursor;
+    return id;
+}
 
 
 // const functionCall = (p: ParsingContext): ExprParsingResult => {
@@ -81,14 +239,14 @@ export const expression = (p: ParsingContext): ExprNode => {
 //     }
 //     p.i++; // consume the '('
 
-//     const args: ExprNode[] = [];
+//     const args: ExpressionNode[] = [];
 //     if (p.tokens[p.i].kind !== ')') { // Check if there are any arguments
 //         // Parse the first argument
 //         let arg = expression(p);
 //         if (!arg.ok) return arg; // propagate error
         
 //         if (arg.result) {
-//             args.push(arg.result as ExprNode);
+//             args.push(arg.result as ExpressionNode);
 
 //             // Now, parse subsequent arguments if any
 //             while (p.tokens[p.i] && p.tokens[p.i].kind === ',') {
@@ -108,7 +266,7 @@ export const expression = (p: ParsingContext): ExprNode => {
 //                     }
 //                 }
 
-//                 args.push(arg.result as ExprNode);
+//                 args.push(arg.result as ExpressionNode);
 //             }
 //         }
 //     }
@@ -259,170 +417,3 @@ export const expression = (p: ParsingContext): ExprNode => {
 //     return primary(p);
 // }
 
-
-
-const primary = (p: ParsingContext): ExprNode => {
-    let token = p.tokens[p.i];
-    switch (token.kind) {
-        case 'INT':
-            return int(p); // propagate result/error
-
-        case 'FLOAT':
-            return float(p); // propagate result/error
-
-        // TODO - separate identifier from function call
-        case 'IDENTIFIER':
-            let id = identifier(p); // propagate result/error
-            if (id && !id.ok) return id;
-
-            token = p.tokens[p.i];
-            if (token && token.kind === '(') {
-                let args = listOfArgs(p) as ExprNode[]; // propagate result/error
-                return {
-                    ok: true,
-                    kind: 'FUNCALL',
-                    id: id,
-                    args: args,
-                    start: id.start,
-                    end: args[args.length - 1].end,
-                    line: id.line
-                } as FunCallNode
-            }
-            return id;
-
-        case '(':
-            return grouping(p);
-        
-        default:
-            token = p.tokens[p.i];
-            throw new MissingSyntaxError(p, 'Expression');
-    }
-}
-
-
-const grouping = (p: ParsingContext): ExprNode => {
-    p.i++; // consume the left parenthesis
-    let token = p.tokens[p.i];
-    let expr = expression(p);
-
-    // If expression parsed, the next token should be a right parenthesis
-    token = p.tokens[p.i];
-    if (token && token.kind === ')') {
-        p.i++; // consume the right parenthesis
-        return expr
-    }
-    throw new MissingTokenError (p, 'Grouped Expression', ')');
-}
-
-
-export const listOfArgs = (p: ParsingContext): ExprNode[] | TranspilingError => {
-    p.i++; // consume the '('
-    let token = p.tokens[p.i];
-    if (!token) throw new MissingSyntaxError(p, 'Function Arguments (Expressions)');
-
-    let args: ExprNode[] = [];
-    if (token.kind === ')') {
-        p.i++; // consume the ')'
-        return args; // early return with empty list
-    }
-
-    // a leading comma is fine
-    if (token.kind === ',') {
-        p.i++; // consume the ','
-        token = p.tokens[p.i];
-        if (!token) throw new MissingSyntaxError(p, 'Function Arguments (Expressions)');
-    }
-
-    // Parse the first argument
-    args.push(expression(p));
-
-    // Now, parse subsequent arguments if any
-    while (true) {
-        token = p.tokens[p.i];
-        if (!token) throw new MissingSyntaxError(p, 'Function Arguments (Expressions)');
-        if (token.kind === ',') {
-            p.i++; // Correctly consume ',' before parsing the next argument
-            token = p.tokens[p.i];
-            if (!token) throw new MissingSyntaxError(p, 'Function Arguments (Expressions)');
-
-            // following comma is fine. if the next token is ')', then we are done
-            if (token.kind === ')') {
-                p.i++; // consume the ','
-                break;
-            }
-            args.push(expression(p));
-        } else if (token.kind === ')') {
-            p.i++; // consume the ')'
-            break;
-        } else {
-            throw new MissingSyntaxError(p, 'Function Arguments (Expressions)');
-        }
-    }
-    return args;
-}
-
-
-
-const int = (p: ParsingContext): IntNode => {
-    let token = p.tokens[p.i];
-    p.i++; // consume the number
-    return {
-            ok: true,
-            kind: 'INT',
-            value: token.value,
-            start: token.start,
-            end: token.end,
-            line: token.line
-        } as IntNode
-}
-
-const float = (p: ParsingContext): FloatNode => {
-    let token = p.tokens[p.i];
-    p.i++; // consume the number
-    return {
-        ok: true,
-        kind: 'FLOAT',
-        value: token.value,
-        start: token.start,
-        end: token.end,
-        line: token.line
-    } as FloatNode
-}
-
-
-export const identifier = (p: ParsingContext): IdentifierNode => {
-    let cursor = p.i;
-    let token = p.tokens[cursor];
-    let id = {
-        ok: true,
-        kind: 'IDENTIFIER',
-        isQualified: false,
-        value: token.value,
-        start: token.start,
-        end: token.end,
-        line: token.line,
-    } as IdentifierNode
-
-    cursor++; // consume the identifier
-
-    // handle qualified identifiers
-    while (true) {
-        token = p.tokens[cursor];
-        if (token && token.kind === '.') {
-            cursor++; // consume the '.'
-            token = p.tokens[cursor];
-            if (!token || token.kind !== 'IDENTIFIER') {
-                throw new MissingTokenError(p, 'Qualified Name', 'IDENTIFIER')
-            }     
-            id.isQualified = true;
-            id.value += '.' + token.value;
-            id.end = token.end;
-            cursor++; // consume the identifier
-        } else {
-            id.end = token.end - 1;
-            break;
-        }
-    }
-    p.i = cursor;
-    return id;
-}

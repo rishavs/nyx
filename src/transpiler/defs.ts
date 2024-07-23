@@ -1,4 +1,4 @@
-import type { ExprNode, RootNode } from "./ast";
+import type { RootNode } from "./ast";
 import type { TranspilingError } from "./errors";
 import type { Token } from "./tokens";
 
@@ -7,10 +7,10 @@ export type LexingContext = {
     i: number;
     line: number;
 }
-
 export type LexingResult = {
+    ok: boolean;
     tokens: Token[];
-    errors: SyntaxError[];
+    errors: TranspilingError[];
 }
 
 export type ParsingContext = {
@@ -19,20 +19,25 @@ export type ParsingContext = {
 }
 
 export type ParsingResult = {
-    root: RootNode;
+    ok: boolean;
+    root: RootNode | null;
     errors: TranspilingError[];
 }
 
-// Expected expectedTokenKind for expectedSyntax, but instead found got
-// Expected expectedSyntax, but instead found got
-export type UnexpectedSyntax = {
-    ok: false;
-    expectedSyntax: string;
-    expectedTokenKind?: string;
-    got: Token;
-}
+export type TranspilingContext = {
+    file: string;
 
-export type ExprParsingResult = {
-    ok: boolean;
-    result : ExprNode | UnexpectedSyntax | null;
+    src: string;
+    i: number;
+    line: number;
+    lexingDuration: number;
+
+    tokens: Token[];
+    j: number
+    parsingDuration: number;
+
+    root?: RootNode;
+
+    transpilingDuration: number;
+    errors: TranspilingError[];
 }

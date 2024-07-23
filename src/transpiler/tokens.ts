@@ -20,6 +20,17 @@ export const OprTokenKind = [
     '^', '~', '?', ':', ';', ',', '.', '(', ')', '[', ']', '{', '}',
 ]
 
+export const DelimiterMap = {
+    '-[': ']-',
+
+    '(': ')',
+    '[': ']',
+    '{': '}',
+    '<': '>',
+    '"': '"',
+}
+
+
 export type TokenKind = 
     | typeof KwdTokenKind[number] 
     | typeof OprTokenKind[number] 

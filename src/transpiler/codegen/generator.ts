@@ -5,7 +5,6 @@ export const gen_c99 = async (ast: RootNode) => {
     let cHeaderFile = './oven/main.h';
 
     let cMainContent = gen_root(ast);
-    console.log("Generated C99 code: \n", cMainContent);
     let mainBytes = await Bun.write(cMainFile, cMainContent);
     let headerBytes = await Bun.write (cHeaderFile, `#include <stdio.h>\n`);
     console.log(`Wrote ${mainBytes} bytes to ${cMainFile}`);
