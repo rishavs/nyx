@@ -1,0 +1,256 @@
+#include "alloc.h"
+#include "compiler.h"
+#include "error.h"
+#include "messages.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_SOURCE_SIZE 4096
+
+static void print_errors(ErrorState *errors)
+{
+    error_unknown_if_none(errors);
+    fputs(errors->message, stderr);
+}
+
+static char *read_source(const char *path, ErrorState *errors)
+{
+    FILE *file = fopen(path, "rb");
+    char *source;
+    size_t length;
+    int next;
+
+    if (file == NULL) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE, path);
+        return NULL;
+    }
+
+    source = nippy_malloc(MAX_SOURCE_SIZE + 1);
+    if (source == NULL) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_BUFFER);
+        fclose(file);
+        return NULL;
+    }
+    length = fread(source, 1, MAX_SOURCE_SIZE, file);
+    if (ferror(file)) {
+        error_report(errors, MESSAGE_DRIVER_FAILED_TO_READ, path);
+        free(source);
+        fclose(file);
+        return NULL;
+    }
+    if (length == MAX_SOURCE_SIZE) {
+        next = fgetc(file);
+        if (next != EOF) {
+            error_report(errors, MESSAGE_DRIVER_SOURCE_TOO_LARGE, path,
+                         MAX_SOURCE_SIZE);
+            free(source);
+            fclose(file);
+            return NULL;
+        }
+        if (ferror(file)) {
+            error_report(errors, MESSAGE_DRIVER_FAILED_TO_READ, path);
+            free(source);
+            fclose(file);
+            return NULL;
+        }
+    }
+    /* A read-only stream's fclose can fail only after a failed read, which
+       the ferror checks above already reported, so treat it the same way. */
+    if (fclose(file) != 0) {
+        error_report(errors, MESSAGE_DRIVER_FAILED_TO_READ, path);
+        free(source);
+        return NULL;
+    }
+    if (memchr(source, '\0', length) != NULL) {
+        error_report(errors, MESSAGE_DRIVER_SOURCE_CONTAINS_NUL, path);
+        free(source);
+        return NULL;
+    }
+
+    source[length] = '\0';
+    return source;
+}
+
+static char *append_suffix(const char *path, const char *suffix)
+{
+    size_t path_length = strlen(path);
+    size_t suffix_length = strlen(suffix);
+    char *result = nippy_malloc(path_length + suffix_length + 1);
+
+    if (result != NULL) {
+        memcpy(result, path, path_length);
+        memcpy(result + path_length, suffix, suffix_length + 1);
+    }
+    return result;
+}
+
+static int write_file(const char *path, const char *contents)
+{
+    FILE *file = fopen(path, "w");
+    size_t length = strlen(contents);
+    int ok;
+
+    if (file == NULL) {
+        return 0;
+    }
+    ok = fwrite(contents, 1, length, file) == length;
+    if (fclose(file) != 0) {
+        ok = 0;
+    }
+    return ok;
+}
+
+static char *shell_quote(const char *text)
+{
+    size_t length = strlen(text);
+    char *quoted = nippy_malloc(length * 4 + 3);
+    char *out;
+
+    if (quoted == NULL) {
+        return NULL;
+    }
+    out = quoted;
+    *out++ = '\'';
+    while (*text != '\0') {
+        if (*text == '\'') {
+            memcpy(out, "'\\''", 4);
+            out += 4;
+        } else {
+            *out++ = *text;
+        }
+        text++;
+    }
+    *out++ = '\'';
+    *out = '\0';
+    return quoted;
+}
+
+static int build_binary(const char *c_path, const char *output_path,
+                        ErrorState *errors)
+{
+    char *quoted_c = shell_quote(c_path);
+    char *quoted_output = shell_quote(output_path);
+    size_t command_size;
+    char *command;
+    int status;
+
+    if (quoted_c == NULL || quoted_output == NULL) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_COMMAND);
+        free(quoted_c);
+        free(quoted_output);
+        return 0;
+    }
+    command_size = strlen(quoted_c) + strlen(quoted_output) + 64;
+    command = nippy_malloc(command_size);
+    if (command == NULL) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_COMMAND);
+        free(quoted_c);
+        free(quoted_output);
+        return 0;
+    }
+    snprintf(command, command_size, "cc -std=c11 -o %s %s", quoted_output, quoted_c);
+    status = system(command);
+    free(command);
+    free(quoted_c);
+    free(quoted_output);
+
+    if (status == -1) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_START_CC);
+        return 0;
+    }
+    if (status != 0) {
+        error_report(errors, MESSAGE_DRIVER_CC_FAILED);
+        return 0;
+    }
+    return 1;
+}
+
+/* Test hook: NIPPY_FAIL_ALLOC_AFTER makes the n-th allocation fail so the
+   suite can exercise the driver's out-of-memory paths. Unset in normal use. */
+static size_t fail_allocation_from_environment(void)
+{
+    const char *value = getenv("NIPPY_FAIL_ALLOC_AFTER");
+
+    if (value == NULL || *value == '\0') {
+        return NIPPY_ALLOC_NEVER;
+    }
+    return (size_t)strtoul(value, NULL, 10);
+}
+
+int main(int argc, char **argv)
+{
+    ErrorState errors;
+    CompilerConfig config;
+    CompilerResult compiled;
+    char *source;
+    char *c_path;
+    char *h_path;
+    const char *header_name;
+    const char *slash;
+    int succeeded = 0;
+
+    error_init(&errors);
+    nippy_alloc_fail_after(fail_allocation_from_environment());
+    if (argc != 3) {
+        error_report(&errors, MESSAGE_DRIVER_USAGE, argv[0]);
+        print_errors(&errors);
+        return 2;
+    }
+    errors.source_name = argv[1];
+
+    source = read_source(argv[1], &errors);
+    if (source == NULL) {
+        print_errors(&errors);
+        return 1;
+    }
+
+    c_path = append_suffix(argv[2], ".c");
+    h_path = append_suffix(argv[2], ".h");
+    if (c_path == NULL || h_path == NULL) {
+        error_report(&errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS);
+        free(source);
+        free(c_path);
+        free(h_path);
+        print_errors(&errors);
+        return 1;
+    }
+    slash = strrchr(h_path, '/');
+    header_name = slash == NULL ? h_path : slash + 1;
+    config.header_name = header_name;
+    config.source_name = argv[1];
+    compiled = compiler_compile(source, &config);
+    free(source);
+
+    if (!compiled.succeeded) {
+        if (compiled.error_message != NULL) {
+            fputs(compiled.error_message, stderr);
+        } else {
+            fprintf(stderr, "%s\n", MESSAGE_UNKNOWN_ERROR);
+        }
+        goto done;
+    }
+
+    if (!write_file(h_path, compiled.h_source)) {
+        error_report(&errors, MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, h_path);
+        goto report_driver_error;
+    }
+    if (!write_file(c_path, compiled.c_source)) {
+        error_report(&errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
+        goto report_driver_error;
+    }
+    if (!build_binary(c_path, argv[2], &errors)) {
+        goto report_driver_error;
+    }
+    succeeded = 1;
+    goto done;
+
+report_driver_error:
+    print_errors(&errors);
+done:
+    compiler_result_free(&compiled);
+    free(c_path);
+    free(h_path);
+    return succeeded ? 0 : 1;
+}

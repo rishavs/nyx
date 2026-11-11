@@ -1,0 +1,195 @@
+(* Nippy grammar, as implemented.
+
+   This is the accepted source language, not a wish list. When the parser
+   changes, this file changes with it. Semantics are in SEMANTICS.md.
+
+   Conventions:
+     - ISO/IEC 14977 EBNF: "..." is a terminal, { } repeats zero or more times,
+       [ ] is optional, ( ) groups, (* *) is a comment.
+     - Whitespace (space, tab, newline) separates tokens and is otherwise
+       insignificant. There is no preprocessor.
+     - Offsets in diagnostics are byte offsets into the source; line and column
+       are 1-based.
+     - The shape follows the Lua/Luau family: keyword-delimited blocks ending in
+       "end", no braces or semicolons, and type annotations written with ":".
+*)
+
+(* ---- program ---- *)
+
+program            = declaration, { declaration }, end-of-input ;
+
+declaration        = type-declaration
+                   | value-declaration
+                   | function-declaration ;
+
+(* ---- struct types ---- *)
+
+type-declaration   = "type", identifier, field, { field }, "end" ;
+
+field              = identifier, ":", type-name ;
+
+type-name          = identifier ;   (* "Int32", "Bool", or a declared struct
+                                       name; a field type is not yet allowed to
+                                       be a function type *)
+
+(* ---- values ---- *)
+
+value-declaration  = "var", identifier, [ ":", type ], "=", expression ;
+
+(* ---- functions ---- *)
+
+function-declaration = "fun", identifier, "(", [ parameter-list ], ")",
+                       ":", type, block, "end" ;
+
+parameter-list     = parameter, { ",", parameter } ;
+
+parameter          = identifier, ":", type ;
+
+(* ---- statements ---- *)
+
+block              = { statement } ;
+
+statement          = return-statement
+                   | if-statement
+                   | while-statement
+                   | break-statement
+                   | continue-statement ;
+
+return-statement   = "return", expression ;
+
+if-statement       = "if", expression, "then", block,
+                     { "elseif", expression, "then", block },
+                     [ "else", block ], "end" ;
+
+while-statement    = "while", expression, block, "end" ;
+
+break-statement    = "break" ;
+
+continue-statement = "continue" ;
+
+(* ---- types ---- *)
+
+type               = type-name
+                   | function-type ;
+
+(* Function types are structural. "Fun" is an identifier, but in type position
+   it starts a function type when followed by '<'. *)
+function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")", ":",
+                     type, ">" ;
+
+(* ---- expressions ---- *)
+
+(* Precedence, tightest first: unary, additive, relational, equality, &&, ||. *)
+expression         = logical-or ;
+
+logical-or         = logical-and, { "||", logical-and } ;
+
+logical-and        = equality, { "&&", equality } ;
+
+equality           = relational, { ( "==" | "!=" ), relational } ;
+
+relational         = additive, { ( "<" | "<=" | ">" | ">=" ), additive } ;
+
+additive           = unary, { "+", unary } ;
+
+unary              = "!", unary
+                   | primary ;
+
+primary            = integer-literal
+                   | boolean-literal
+                   | identifier
+                   | call
+                   | "(", expression, ")" ;
+
+(* A call's name is resolved by the checker: a struct type makes it a
+   constructor, a function or function-typed value makes it a function call.
+   Named arguments are accepted only by struct constructors. Arguments are
+   either all positional or all named; mixing them is a parse error. *)
+call               = identifier, "(", [ argument-list ], ")" ;
+
+argument-list      = argument, { ",", argument } ;
+
+argument           = named-argument
+                   | expression ;
+
+named-argument     = identifier, "=", expression ;
+
+(* ---- terminals ---- *)
+
+integer-literal    = digit, { digit } ;
+                     (* decimal only; must fit in a signed 32-bit int, so a
+                        larger literal is a lexer error, not a wrap-around *)
+
+boolean-literal    = "true" | "false" ;
+
+identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
+                     (* at most 31 characters. "var", "type", "fun", "return",
+                        "if", "then", "elseif", "else", "while", "break",
+                        "continue", "true", "false", and "end" are keywords and
+                        are not identifiers. Longer names are a lexer error *)
+
+letter-or-underscore = "A" | ... | "Z" | "a" | ... | "z" | "_" ;
+letter-or-digit-or-underscore = letter-or-underscore | digit ;
+digit              = "0" | ... | "9" ;
+
+(* ---- lexical structure ---- *)
+
+(* Keywords *)
+var                = "var" ;
+type               = "type" ;
+fun                = "fun" ;
+return             = "return" ;
+if                 = "if" ;
+then               = "then" ;
+elseif             = "elseif" ;
+else               = "else" ;
+while              = "while" ;
+break              = "break" ;
+continue           = "continue" ;
+true               = "true" ;
+false              = "false" ;
+end                = "end" ;
+
+(* Punctuation and operators *)
+":"                = ":" ;
+"="                = "=" ;
+"=="               = "==" ;
+"!="               = "!=" ;
+"("                = "(" ;
+")"                = ")" ;
+","                = "," ;
+"+"                = "+" ;
+"<"                = "<" ;
+"<="               = "<=" ;
+">"                = ">" ;
+">="               = ">=" ;
+"&&"               = "&&" ;
+"||"               = "||" ;
+"!"                = "!" ;
+
+(* end-of-input is the end of the source string. The driver rejects sources
+   larger than 4096 bytes and sources containing a NUL byte before lexing. *)
+
+(* ---- rejected forms worth naming ---- *)
+
+(* A bare expression is not a program:
+       13                      (* parser: expected 'var', 'type', or 'fun' ... *)
+   A type declaration needs at least one field:
+       type Point end          (* parser: expected at least one field ... *)
+   Field types other than Int32 or Bool are not yet accepted:
+       type Line x: Point end  (* checker: field 'x' must be Int32 or Bool *)
+   Function bodies contain statements, not raw expressions:
+       fun f(x:Int32):Int32 x end
+                               (* parser: expected a statement or 'end' ... *)
+   if needs then:
+       if x > 0 return 1 end   (* parser: expected 'then' ... *)
+   Conditions must be Bool:
+       if 1 then ... end       (* checker: condition must be Bool *)
+   break and continue need an enclosing while:
+       break                   (* checker: 'break' outside a loop *)
+   Every function must return on every path:
+       fun f(x:Int32):Int32
+         if x > 0 then return 1 end
+       end                     (* checker: function 'f' may reach the end
+                                  without returning *)
+*)
