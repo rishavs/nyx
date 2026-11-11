@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "compiler.h"
 #include "messages.h"
 
 #include <stdio.h>
@@ -12,7 +13,14 @@ static const char *const temporary_files[] = {
     "tests/.test-bin",
     "tests/.test-bin.c",
     "tests/.test-bin.h",
-    "tests/.test.log"
+    "tests/.test.log",
+    "tests/.test-runtime",
+    "tests/.test-runtime.c",
+    "tests/.test-runtime.h",
+    "tests/.test-runtime.log",
+    "tests/.test-runtime-main.c",
+    "tests/.test-runtime.o",
+    "tests/.test-runtime-main.o"
 };
 
 static void cleanup(void)
@@ -105,6 +113,206 @@ static int run_command(const char *command, const char *log)
 
     snprintf(buffer, sizeof(buffer), "%s > %s 2>&1", command, log);
     return system(buffer);
+}
+
+static int file_equals(const char *path, const char *expected)
+{
+    FILE *file = fopen(path, "r");
+    char buffer[1024];
+    size_t length;
+    int ok;
+
+    if (file == NULL) {
+        return 0;
+    }
+    length = fread(buffer, 1, sizeof(buffer) - 1, file);
+    buffer[length] = '\0';
+    ok = ferror(file) == 0 && fgetc(file) == EOF &&
+         strcmp(buffer, expected) == 0;
+    fclose(file);
+    return ok;
+}
+
+/* Compile `source` in memory, build the generated C, run it, and compare
+   stdout byte-for-byte. Tag tests and narrowing are runtime behaviour, so
+   golden C alone cannot prove them. */
+static TestResult run_generated(const char *source, const char *expected,
+                                const char *what)
+{
+    CompilerConfig config = {".test-runtime.h", "test.nip"};
+    CompilerResult compiled = compiler_compile(source, &config);
+    TestResult result = TEST_ERROR;
+    int status;
+
+    cleanup();
+    if (!compiled.succeeded) {
+        fprintf(stderr, "  %s did not compile: %s\n", what,
+                compiled.error_message == NULL ? "(no diagnostic)"
+                                               : compiled.error_message);
+        goto finished;
+    }
+    if (!write_text("tests/.test-runtime.h", compiled.h_source) ||
+        !write_text("tests/.test-runtime.c", compiled.c_source)) {
+        fprintf(stderr, "  %s: could not write the generated C\n", what);
+        goto finished;
+    }
+    status = run_command(
+        "cc -std=c11 -o tests/.test-runtime tests/.test-runtime.c",
+        "tests/.test-runtime.log");
+    if (status != 0) {
+        fprintf(stderr, "  %s: generated C did not build\n", what);
+        goto finished;
+    }
+    status = run_command("tests/.test-runtime", "tests/.test-runtime.log");
+    if (status != 0) {
+        fprintf(stderr, "  %s: program exited non-zero\n", what);
+        goto finished;
+    }
+    if (!file_equals("tests/.test-runtime.log", expected)) {
+        fprintf(stderr, "  %s: output did not match \"%s\"\n", what, expected);
+        goto finished;
+    }
+    result = TEST_PASS;
+
+finished:
+    compiler_result_free(&compiled);
+    cleanup();
+    return result;
+}
+
+/* Like run_generated, but links a small driver translation unit so runtime
+   behaviour can be observed through a plain C entry point. The driver gets the
+   generated header and may call Nippy functions by their source names. */
+static TestResult run_generated_driver(const char *source, const char *driver,
+                                       const char *expected, const char *what)
+{
+    CompilerConfig config = {".test-runtime.h", "test.nip"};
+    CompilerResult compiled = compiler_compile(source, &config);
+    TestResult result = TEST_ERROR;
+    int status;
+
+    cleanup();
+    if (!compiled.succeeded) {
+        fprintf(stderr, "  %s did not compile: %s\n", what,
+                compiled.error_message == NULL ? "(no diagnostic)"
+                                               : compiled.error_message);
+        goto finished;
+    }
+    if (!write_text("tests/.test-runtime.h", compiled.h_source) ||
+        !write_text("tests/.test-runtime.c", compiled.c_source) ||
+        !write_text("tests/.test-runtime-main.c", driver)) {
+        fprintf(stderr, "  %s: could not write the generated C\n", what);
+        goto finished;
+    }
+    /* The generated translation unit always defines main; rename it so the
+       driver's main can call the Nippy functions. */
+    status = run_command(
+        "cc -std=c11 -Dmain=nippy_generated_main -c tests/.test-runtime.c "
+        "-o tests/.test-runtime.o",
+        "tests/.test-runtime.log");
+    if (status == 0) {
+        status = run_command(
+            "cc -std=c11 -c tests/.test-runtime-main.c "
+            "-o tests/.test-runtime-main.o",
+            "tests/.test-runtime.log");
+    }
+    if (status == 0) {
+        status = run_command(
+            "cc -o tests/.test-runtime tests/.test-runtime.o "
+            "tests/.test-runtime-main.o",
+            "tests/.test-runtime.log");
+    }
+    if (status != 0) {
+        fprintf(stderr, "  %s: generated C did not build\n", what);
+        goto finished;
+    }
+    status = run_command("tests/.test-runtime", "tests/.test-runtime.log");
+    if (status != 0) {
+        fprintf(stderr, "  %s: program exited non-zero\n", what);
+        goto finished;
+    }
+    if (!file_equals("tests/.test-runtime.log", expected)) {
+        fprintf(stderr, "  %s: output did not match \"%s\"\n", what, expected);
+        goto finished;
+    }
+    result = TEST_PASS;
+
+finished:
+    compiler_result_free(&compiled);
+    cleanup();
+    return result;
+}
+
+/* ---- runtime semantics ---- */
+
+TestResult test_runtime_program_prints_value(void)
+{
+    return run_generated("var x : Int32 = 13\n", "13\n", "program 13");
+}
+
+TestResult test_runtime_union_narrowing(void)
+{
+    const char *source =
+        "fun make(x: Int32): Int32 | Nil\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "fun unwrap(v: Int32 | Nil): Int32\n"
+        "  if v.is<Int32>() then\n"
+        "    return v\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n"
+        "\n"
+        "fun compute(x: Int32): Int32\n"
+        "  return unwrap(make(x))\n"
+        "end\n";
+    const char *driver =
+        "#include <stdint.h>\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "int32_t compute(int32_t x);\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)compute(3));\n"
+        "    return 0;\n"
+        "}\n";
+
+    return run_generated_driver(source, driver, "3\n", "union narrowing");
+}
+
+TestResult test_runtime_generic_instantiations(void)
+{
+    const char *source =
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "fun flag(): Bool\n"
+        "  return identity(true)\n"
+        "end\n"
+        "\n"
+        "fun compute(x: Int32): Int32\n"
+        "  if flag() then\n"
+        "    return identity(x)\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n";
+    const char *driver =
+        "#include <stdint.h>\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "int32_t compute(int32_t x);\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)compute(3));\n"
+        "    return 0;\n"
+        "}\n";
+
+    return run_generated_driver(source, driver, "3\n",
+                                "generic instantiations");
 }
 
 /* ---- driver messages ---- */
@@ -314,31 +522,39 @@ static const char *const oom_source =
     "  y: Int32\n"
     "end\n"
     "\n"
+    "type Something = Int32 | Bool | Nil\n"
+    "\n"
+    "type Pair<A, B>\n"
+    "  first: A\n"
+    "  second: B\n"
+    "end\n"
+    "\n"
+    "fun identity<T>(x: T): T\n"
+    "  return x\n"
+    "end\n"
+    "\n"
+    "fun classify(x: Int32 | Bool | Nil): Int32\n"
+    "  if x.is<Int32>() then\n"
+    "    return x\n"
+    "  elseif x.is<Bool>() then\n"
+    "    if x then return 1 else return 0 end\n"
+    "  end\n"
+    "  return 0\n"
+    "end\n"
+    "\n"
     "fun add(x:Int32, y:Int32):Int32\n"
     "  return x + y\n"
     "end\n"
     "\n"
-    "fun positive(x:Int32):Bool\n"
-    "  if x > 0 then\n"
-    "    return true\n"
-    "  else\n"
-    "    return false\n"
-    "  end\n"
-    "end\n"
-    "\n"
-    "fun loop(x:Int32):Int32\n"
-    "  while x > 0\n"
-    "    break\n"
-    "  end\n"
-    "  return x\n"
-    "end\n"
-    "\n"
-    "var p1: Point = Point(1, 2)\n"
-    "var p2: Point = Point(x = 3, y = 4)\n"
-    "var n = add(7, 8)\n"
-    "var ok : Bool = positive(n)\n"
-    "var m = loop(n)\n"
-    "var f : Fun<(Int32, Int32):Int32> = add\n";
+    "var p: Something = 3\n"
+    "var q: Point = Point(1, 2)\n"
+    "var r = Pair(1, true)\n"
+    "var s: Int32 = identity(7)\n"
+    "var t: Int32 = classify(true)\n"
+    "var u: Int32 = add(1, 2)\n"
+    "var arena: Store = Store(16)\n"
+    "var stored: Handle<Int32> = arena.alloc<Int32>(1)\n"
+    "var byte_value: Byte = 7\n";
 
 /* Every allocation site must fail closed: a non-zero exit with a message on
    stderr, never a crash or a silently truncated artifact. */
@@ -533,9 +749,156 @@ finished:
     return result;
 }
 
+
+/* Compile and run a generated program that is expected to fail at runtime,
+   checking its diagnostic. */
+static TestResult run_generated_failure(const char *source,
+                                        const char *expected,
+                                        const char *what)
+{
+    CompilerConfig config = {".test-runtime.h", "test.nip"};
+    CompilerResult compiled = compiler_compile(source, &config);
+    TestResult result = TEST_ERROR;
+    int status;
+
+    cleanup();
+    if (!compiled.succeeded) {
+        fprintf(stderr, "  %s did not compile: %s\n", what,
+                compiled.error_message == NULL ? "(no diagnostic)"
+                                               : compiled.error_message);
+        goto finished;
+    }
+    if (!write_text("tests/.test-runtime.h", compiled.h_source) ||
+        !write_text("tests/.test-runtime.c", compiled.c_source)) {
+        fprintf(stderr, "  %s: could not write the generated C\n", what);
+        goto finished;
+    }
+    status = run_command(
+        "cc -std=c11 -o tests/.test-runtime tests/.test-runtime.c",
+        "tests/.test-runtime.log");
+    if (status != 0) {
+        fprintf(stderr, "  %s: generated C did not build\n", what);
+        goto finished;
+    }
+    status = run_command("tests/.test-runtime", "tests/.test-runtime.log");
+    if (status == 0) {
+        fprintf(stderr, "  %s: program unexpectedly succeeded\n", what);
+        goto finished;
+    }
+    if (!file_contains("tests/.test-runtime.log", expected)) {
+        fprintf(stderr, "  %s: missing runtime diagnostic\n", what);
+        goto finished;
+    }
+    result = TEST_PASS;
+
+finished:
+    compiler_result_free(&compiled);
+    cleanup();
+    return result;
+}
+
+TestResult test_runtime_store_alloc_read(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "var n: Int32 = s.alloc<Int32>(42).read()\n";
+
+    return run_generated(source, "42\n", "store alloc/read");
+}
+
+TestResult test_runtime_store_write(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "fun roundtrip(h: Handle<Int32>): Int32\n"
+        "  h.write(42)\n"
+        "  return h.read()\n"
+        "end\n"
+        "var n: Int32 = roundtrip(s.alloc<Int32>(0))\n";
+
+    return run_generated(source, "42\n", "store write");
+}
+
+TestResult test_runtime_store_byte(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "fun byte_ok(): Int32\n"
+        "  if s.alloc<Byte>(255).read() == 255 then\n"
+        "    return 1\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n"
+        "var n: Int32 = byte_ok()\n";
+
+    return run_generated(source, "1\n", "byte allocation");
+}
+
+TestResult test_runtime_store_growth(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "var a0: Handle<Int32> = s.alloc<Int32>(0)\n"
+        "var a1: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var a2: Handle<Int32> = s.alloc<Int32>(2)\n"
+        "var a3: Handle<Int32> = s.alloc<Int32>(3)\n"
+        "var a4: Handle<Int32> = s.alloc<Int32>(4)\n"
+        "var a5: Handle<Int32> = s.alloc<Int32>(5)\n"
+        "var a6: Handle<Int32> = s.alloc<Int32>(6)\n"
+        "var a7: Handle<Int32> = s.alloc<Int32>(7)\n"
+        "var a8: Handle<Int32> = s.alloc<Int32>(8)\n"
+        "var a9: Handle<Int32> = s.alloc<Int32>(9)\n"
+        "var a10: Handle<Int32> = s.alloc<Int32>(10)\n"
+        "var a11: Handle<Int32> = s.alloc<Int32>(11)\n"
+        "var a12: Handle<Int32> = s.alloc<Int32>(12)\n"
+        "var a13: Handle<Int32> = s.alloc<Int32>(13)\n"
+        "var a14: Handle<Int32> = s.alloc<Int32>(14)\n"
+        "var a15: Handle<Int32> = s.alloc<Int32>(15)\n"
+        "var a16: Handle<Int32> = s.alloc<Int32>(16)\n"
+        "var a17: Handle<Int32> = s.alloc<Int32>(17)\n"
+        "var a18: Handle<Int32> = s.alloc<Int32>(18)\n"
+        "var a19: Handle<Int32> = s.alloc<Int32>(19)\n"
+        "var n: Int32 = a19.read()\n";
+
+    return run_generated(source, "", "store growth");
+}
+
+TestResult test_runtime_stale_handle(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var h: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "s.reset()\n"
+        "var n: Int32 = h.read()\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
+                                 "stale handle");
+}
+
+
+TestResult test_runtime_two_stores(void)
+{
+    const char *source =
+        "var a: Store = Store(1)\n"
+        "var b: Store = Store(1)\n"
+        "var n: Int32 = a.alloc<Int32>(1).read() + "
+        "b.alloc<Int32>(2).read()\n";
+
+    return run_generated(source, "3\n", "two stores");
+}
+
 /* Every test in this suite, in run order. The table lives here so adding
    a test needs only its definition above and one entry below. */
 static const TestCase tests[] = {
+    {"runtime: program prints its value", test_runtime_program_prints_value},
+    {"runtime: union narrowing", test_runtime_union_narrowing},
+    {"runtime: generic instantiations", test_runtime_generic_instantiations},
+    {"runtime: store alloc/read", test_runtime_store_alloc_read},
+    {"runtime: store write", test_runtime_store_write},
+    {"runtime: store byte", test_runtime_store_byte},
+    {"runtime: store growth", test_runtime_store_growth},
+    {"runtime: stale handle", test_runtime_stale_handle},
+    {"runtime: two stores", test_runtime_two_stores},
     {"driver: could not open source", test_driver_could_not_open_source},
     {"driver: source too large", test_driver_source_too_large},
     {"driver: source contains NUL", test_driver_source_contains_nul},

@@ -29,24 +29,45 @@ typedef enum {
     TYPED_STRUCT_CONSTRUCTOR,
     TYPED_FUNCTION_CALL,
     TYPED_BINARY,
-    TYPED_UNARY
+    TYPED_UNARY,
+    TYPED_NIL_LITERAL,
+    TYPED_SUM_INJECT,
+    TYPED_SUM_PAYLOAD,
+    TYPED_IS,
+    TYPED_STORE_DECLARATION,
+    TYPED_STORE_ALLOC,
+    TYPED_STORE_RESET,
+    TYPED_HANDLE_READ,
+    TYPED_HANDLE_WRITE,
+    TYPED_EXPRESSION_STATEMENT
 } TypedNodeKind;
 
 typedef enum {
     NIPPY_TYPE_UNKNOWN,
     NIPPY_TYPE_INT32,
     NIPPY_TYPE_BOOL,
+    NIPPY_TYPE_BYTE,
+    NIPPY_TYPE_NIL,
     NIPPY_TYPE_STRUCT,
-    NIPPY_TYPE_FUNCTION
+    NIPPY_TYPE_FUNCTION,
+    NIPPY_TYPE_UNION,
+    NIPPY_TYPE_STORE,
+    NIPPY_TYPE_HANDLE
 } NippyType;
 
-/* A resolved type. Struct types refer to their name symbol; function types
-   refer to a signature record. The record holds indices only, never pointers,
-   so it can be stored inline in a List. */
+/* A resolved type. Struct types refer to their declaration name and, for an
+   instantiated generic, a run of type arguments. Union types refer to a
+   canonical run of alternatives. Function types refer to a signature record.
+   The record holds indices only, never pointers, so it can be stored inline in
+   a List. */
 typedef struct {
     NippyType kind;
     size_t name_index;      /* TYPED_NO_NODE unless NIPPY_TYPE_STRUCT */
     size_t signature_index; /* TYPED_NO_NODE unless NIPPY_TYPE_FUNCTION */
+    size_t first_child;     /* union alternatives or struct type arguments */
+    size_t child_count;
+    size_t declaration_node; /* TYPED_NO_NODE unless NIPPY_TYPE_STRUCT */
+    size_t source_name_index; /* source struct name, TYPED_NO_NODE otherwise */
 } TypedType;
 
 typedef struct {
@@ -72,6 +93,10 @@ typedef struct {
     size_t right_child;
     size_t children_start;
     size_t children_count;
+    /* Secondary type link for TYPED_IS (the tested type). */
+    size_t auxiliary_type;
+    /* Global store id for the store/handle nodes; TYPED_NO_NODE otherwise. */
+    size_t store_id;
 } TypedNode;
 
 typedef struct {
@@ -86,6 +111,8 @@ typedef struct {
     List types;
     List signatures;
     List signature_parameters;
+    /* Runs of type indices: union alternatives and struct type arguments. */
+    List type_children;
 } TypedProgram;
 
 void typed_program_init(TypedProgram *program);
@@ -106,6 +133,7 @@ bool typed_program_add_signature(TypedProgram *program,
                                  size_t *out_index);
 bool typed_program_add_signature_parameter(TypedProgram *program,
                                            size_t type_index);
+bool typed_program_add_type_child(TypedProgram *program, size_t type_index);
 bool typed_program_push_child(TypedProgram *program, size_t index);
 
 #endif

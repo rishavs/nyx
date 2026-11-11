@@ -11,6 +11,7 @@ void typed_program_init(TypedProgram *program)
     list_init(&program->types, sizeof(TypedType));
     list_init(&program->signatures, sizeof(TypedFunctionSignature));
     list_init(&program->signature_parameters, sizeof(size_t));
+    list_init(&program->type_children, sizeof(size_t));
 }
 
 void typed_program_free(TypedProgram *program)
@@ -25,6 +26,7 @@ void typed_program_free(TypedProgram *program)
     list_free(&program->types);
     list_free(&program->signatures);
     list_free(&program->signature_parameters);
+    list_free(&program->type_children);
 }
 
 const TypedNode *typed_program_node(const TypedProgram *program, size_t index)
@@ -113,6 +115,11 @@ bool typed_program_add_signature_parameter(TypedProgram *program,
                                            size_t type_index)
 {
     return list_push(&program->signature_parameters, &type_index);
+}
+
+bool typed_program_add_type_child(TypedProgram *program, size_t type_index)
+{
+    return list_push(&program->type_children, &type_index);
 }
 
 bool typed_program_push_child(TypedProgram *program, size_t index)

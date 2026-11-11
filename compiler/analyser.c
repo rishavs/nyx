@@ -13,6 +13,16 @@
 bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
 {
     size_t i;
+    size_t store_count = 0;
+
+    for (i = 0; i < program->roots.length; i++) {
+        size_t root = *(const size_t *)list_get(&program->roots, i);
+        const TypedNode *node = typed_program_node(program, root);
+
+        if (node != NULL && node->kind == TYPED_STORE_DECLARATION) {
+            store_count++;
+        }
+    }
 
     for (i = 0; i < program->roots.length; i++) {
         size_t root = *(const size_t *)list_get(&program->roots, i);
@@ -73,6 +83,55 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                             MESSAGE_ANALYSER_INVALID_TYPE_INDEX, i);
             return false;
         }
+        if (node->auxiliary_type != TYPED_NO_NODE &&
+            node->auxiliary_type >= program->types.length) {
+            error_report_at(errors, node->pos,
+                            MESSAGE_ANALYSER_INVALID_AUXILIARY_TYPE, i);
+            return false;
+        }
+        if (node->kind == TYPED_STORE_DECLARATION ||
+            node->kind == TYPED_STORE_ALLOC ||
+            node->kind == TYPED_STORE_RESET ||
+            node->kind == TYPED_HANDLE_READ ||
+            node->kind == TYPED_HANDLE_WRITE) {
+            if (node->store_id != TYPED_NO_NODE) {
+                if (node->store_id >= store_count) {
+                    error_report_at(errors, node->pos,
+                                    MESSAGE_ANALYSER_INVALID_STORE_ID, i);
+                    return false;
+                }
+            } else if (node->kind == TYPED_STORE_DECLARATION ||
+                       node->kind == TYPED_STORE_ALLOC ||
+                       node->kind == TYPED_STORE_RESET) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_STORE_ID, i);
+                return false;
+            }
+            if (typed_program_type(program, node->type_index) == NULL) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_TYPE_INDEX, i);
+                return false;
+            }
+        }
+        if (node->kind == TYPED_SUM_INJECT ||
+            node->kind == TYPED_SUM_PAYLOAD) {
+            const TypedType *type = typed_program_type(program,
+                                                       node->type_index);
+
+            if (type == NULL || node->integer_value < 0) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_TYPE_INDEX, i);
+                return false;
+            }
+            if (node->kind == TYPED_SUM_INJECT &&
+                (type->kind != NIPPY_TYPE_UNION ||
+                 (size_t)node->integer_value >= type->child_count)) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                                node->type_index);
+                return false;
+            }
+        }
     }
 
     for (i = 0; i < program->types.length; i++) {
@@ -86,6 +145,82 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             type->name_index >= program->symbols.length) {
             error_report(errors, MESSAGE_ANALYSER_INVALID_NAME_INDEX, i);
             return false;
+        }
+        if (type->kind == NIPPY_TYPE_STRUCT) {
+            size_t j;
+
+            if (type->source_name_index != TYPED_NO_NODE &&
+                type->source_name_index >= program->symbols.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_NAME_INDEX, i);
+                return false;
+            }
+            if (type->declaration_node == TYPED_NO_NODE ||
+                type->declaration_node >= program->nodes.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_DECLARATION, i);
+                return false;
+            }
+            {
+                const TypedNode *declaration = typed_program_node(
+                    program, type->declaration_node);
+
+                if (declaration == NULL ||
+                    declaration->kind != TYPED_TYPE_DECLARATION) {
+                    error_report(errors, MESSAGE_ANALYSER_INVALID_DECLARATION,
+                                 i);
+                    return false;
+                }
+            }
+            if (type->child_count != 0 &&
+                (type->first_child + type->child_count >
+                     program->type_children.length)) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
+                return false;
+            }
+            for (j = 0; j < type->child_count; j++) {
+                size_t argument = *(const size_t *)list_get(
+                    &program->type_children, type->first_child + j);
+
+                if (argument >= program->types.length) {
+                    error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                                 i);
+                    return false;
+                }
+            }
+        }
+        if (type->kind == NIPPY_TYPE_UNION) {
+            size_t j;
+
+            if (type->child_count < 2 ||
+                type->first_child + type->child_count >
+                    program->type_children.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
+                return false;
+            }
+            for (j = 0; j < type->child_count; j++) {
+                size_t alternative = *(const size_t *)list_get(
+                    &program->type_children, type->first_child + j);
+
+                if (alternative >= program->types.length) {
+                    error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                                 i);
+                    return false;
+                }
+            }
+        }
+        if (type->kind == NIPPY_TYPE_HANDLE) {
+            size_t element;
+
+            if (type->child_count != 1 ||
+                type->first_child >= program->type_children.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_HANDLE_TYPE, i);
+                return false;
+            }
+            element = *(const size_t *)list_get(&program->type_children,
+                                                type->first_child);
+            if (element >= program->types.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_HANDLE_TYPE, i);
+                return false;
+            }
         }
         if (type->kind == NIPPY_TYPE_FUNCTION &&
             type->signature_index >= program->signatures.length) {

@@ -30,7 +30,15 @@ typedef enum {
     AST_UNARY,
     AST_NAMED_ARG,
     AST_TYPE_NAME,
-    AST_TYPE_FUNCTION
+    AST_TYPE_FUNCTION,
+    AST_TYPE_UNION,
+    AST_TYPE_APPLICATION,
+    AST_TYPE_PARAMETER,
+    AST_TYPE_ALIAS,
+    AST_IS,
+    AST_MEMBER_CALL,
+    AST_EXPRESSION_STATEMENT,
+    AST_NIL_LITERAL
 } AstNodeKind;
 
 /* Names live inline: a List element may not hold a pointer, so a symbol is a
@@ -54,6 +62,8 @@ typedef struct {
     size_t right_child;
     size_t children_start;
     size_t children_count;
+    size_t type_parameters_start;
+    size_t type_parameters_count;
 } AstNode;
 
 typedef struct {
@@ -62,9 +72,13 @@ typedef struct {
     /* Indices into `nodes` of the top-level declarations, in source order. */
     List roots;
     /* Indices into `nodes` for variable-arity children: type declaration
-       fields, function parameters, call arguments, and function-type
-       parameters. */
+       fields, function parameters, call arguments, union alternatives, type
+       arguments, and function-type parameters. */
     List children;
+    /* Indices into `nodes` of AST_TYPE_PARAMETER declarations. Kept separate
+       from `children` so a generic declaration's value children and type
+       parameters never share a run. */
+    List type_parameters;
 } Ast;
 
 void ast_init(Ast *ast);
@@ -73,5 +87,6 @@ const AstNode *ast_get_node(const Ast *ast, size_t index);
 size_t ast_intern_symbol(Ast *ast, const char *text, size_t length);
 const char *ast_symbol_text(const Ast *ast, size_t index);
 bool ast_push_child(Ast *ast, size_t index);
+bool ast_push_type_parameter(Ast *ast, size_t index);
 
 #endif

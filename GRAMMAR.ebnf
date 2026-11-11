@@ -16,21 +16,27 @@
 
 (* ---- program ---- *)
 
-program            = declaration, { declaration }, end-of-input ;
+program            = item, { item }, end-of-input ;
+
+item               = declaration
+                   | expression-statement ;
 
 declaration        = type-declaration
                    | value-declaration
                    | function-declaration ;
 
-(* ---- struct types ---- *)
+(* ---- type declarations ---- *)
 
-type-declaration   = "type", identifier, field, { field }, "end" ;
+(* "type Name = T" is a transparent alias. "type Name Field* end" is a nominal
+   struct. A type declaration may be generic; the parameter list follows the
+   name in both forms. *)
+type-declaration   = "type", identifier, [ type-parameters ],
+                     ( "=", type
+                     | field, { field }, "end" ) ;
 
-field              = identifier, ":", type-name ;
+type-parameters    = "<", identifier, { ",", identifier }, ">" ;
 
-type-name          = identifier ;   (* "Int32", "Bool", or a declared struct
-                                       name; a field type is not yet allowed to
-                                       be a function type *)
+field              = identifier, ":", type ;
 
 (* ---- values ---- *)
 
@@ -38,8 +44,9 @@ value-declaration  = "var", identifier, [ ":", type ], "=", expression ;
 
 (* ---- functions ---- *)
 
-function-declaration = "fun", identifier, "(", [ parameter-list ], ")",
-                       ":", type, block, "end" ;
+function-declaration = "fun", identifier, [ type-parameters ],
+                       "(", [ parameter-list ], ")", ":", type,
+                       block, "end" ;
 
 parameter-list     = parameter, { ",", parameter } ;
 
@@ -53,7 +60,12 @@ statement          = return-statement
                    | if-statement
                    | while-statement
                    | break-statement
-                   | continue-statement ;
+                   | continue-statement
+                   | expression-statement ;
+
+(* The checker accepts an expression statement only when the expression is a
+   call; the value is discarded. *)
+expression-statement = expression ;
 
 return-statement   = "return", expression ;
 
@@ -69,8 +81,22 @@ continue-statement = "continue" ;
 
 (* ---- types ---- *)
 
-type               = type-name
-                   | function-type ;
+type               = union-type ;
+
+union-type         = primary-type, { "|", primary-type } ;
+
+primary-type       = type-name, [ "<", type-arguments, ">" ]
+                   | function-type
+                   | "(", type, ")" ;
+
+type-name          = identifier ;
+                     (* "Int32", "Bool", "Byte", "Nil", "Store", "Handle", a
+                        declared struct or alias, or a type parameter in scope.
+                        Store is only valid as the annotation on a store
+                        declaration; Handle needs exactly one type argument,
+                        whose type is a single sized type. *)
+
+type-arguments     = type, { ",", type } ;
 
 (* Function types are structural. "Fun" is an identifier, but in type position
    it starts a function type when followed by '<'. *)
@@ -79,7 +105,8 @@ function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")", ":",
 
 (* ---- expressions ---- *)
 
-(* Precedence, tightest first: unary, additive, relational, equality, &&, ||. *)
+(* Precedence, tightest first: is, unary, additive, relational, equality, &&,
+   ||. *)
 expression         = logical-or ;
 
 logical-or         = logical-and, { "||", logical-and } ;
@@ -93,16 +120,28 @@ relational         = additive, { ( "<" | "<=" | ">" | ">=" ), additive } ;
 additive           = unary, { "+", unary } ;
 
 unary              = "!", unary
-                   | primary ;
+                   | postfix ;
+
+(* `.is<T>()` is the only member operation. It binds tighter than unary. *)
+postfix            = primary, { ".", member-operation } ;
+
+member-operation   = "is", "<", type, ">", "(", ")"
+                   | identifier, [ "<", type, ">" ],
+                     "(", [ expression, { ",", expression } ], ")" ;
 
 primary            = integer-literal
                    | boolean-literal
+                   | nil-literal
                    | identifier
                    | call
                    | "(", expression, ")" ;
+(* "Store", "Byte", and "Handle" are ordinary identifiers; the checker gives
+   them their built-in meaning. *)
 
 (* A call's name is resolved by the checker: a struct type makes it a
    constructor, a function or function-typed value makes it a function call.
+   Generic struct constructors and generic function calls infer their type
+   arguments; there is no explicit type-argument syntax in expressions.
    Named arguments are accepted only by struct constructors. Arguments are
    either all positional or all named; mixing them is a parse error. *)
 call               = identifier, "(", [ argument-list ], ")" ;
@@ -122,11 +161,14 @@ integer-literal    = digit, { digit } ;
 
 boolean-literal    = "true" | "false" ;
 
+nil-literal        = "nil" ;
+
 identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
                      (* at most 31 characters. "var", "type", "fun", "return",
                         "if", "then", "elseif", "else", "while", "break",
-                        "continue", "true", "false", and "end" are keywords and
-                        are not identifiers. Longer names are a lexer error *)
+                        "continue", "true", "false", "nil", and "end" are
+                        keywords and are not identifiers. Longer names are a
+                        lexer error *)
 
 letter-or-underscore = "A" | ... | "Z" | "a" | ... | "z" | "_" ;
 letter-or-digit-or-underscore = letter-or-underscore | digit ;
@@ -148,6 +190,7 @@ break              = "break" ;
 continue           = "continue" ;
 true               = "true" ;
 false              = "false" ;
+nil                = "nil" ;
 end                = "end" ;
 
 (* Punctuation and operators *)
@@ -165,19 +208,55 @@ end                = "end" ;
 ">="               = ">=" ;
 "&&"               = "&&" ;
 "||"               = "||" ;
+"|"                = "|" ;
 "!"                = "!" ;
+"."                = "." ;
 
 (* end-of-input is the end of the source string. The driver rejects sources
    larger than 4096 bytes and sources containing a NUL byte before lexing. *)
+
+(* ---- stores ---- *)
+
+(* Syntactically a store is a value declaration whose annotation is Store and
+   whose initializer is Store(bytes):
+
+       var points: Store = Store(4096)
+
+   `bytes` is a constant Int32 expression (integer literals and +). Stores are
+   global, non-first-class, and allocated at program start. The methods are:
+
+       points.alloc<T>(value)   -> Handle<T>
+       points.reset()           -> Nil
+       handle.read()            -> T
+       handle.write(value)      -> Nil
+
+   T must be a single sized type: Int32, Bool, Byte, Nil, a struct or concrete
+   generic struct, or a Handle<U>. Unions, function types, and Store are not
+   allocation element types. *)
 
 (* ---- rejected forms worth naming ---- *)
 
 (* A bare expression is not a program:
        13                      (* parser: expected 'var', 'type', or 'fun' ... *)
-   A type declaration needs at least one field:
+   A struct declaration needs at least one field:
        type Point end          (* parser: expected at least one field ... *)
-   Field types other than Int32 or Bool are not yet accepted:
-       type Line x: Point end  (* checker: field 'x' must be Int32 or Bool *)
+   A generic type needs its arguments where it is named:
+       type Box<T> value: T end
+       var b: Box = Box(1)     (* checker: type 'Box' needs type arguments *)
+   A store needs its Store(bytes) initializer:
+       var s: Store = 16       (* checker: store 's' must be initialised ... *)
+   A store is not a value, parameter, field, or union alternative:
+       var t = s               (* checker: store 's' is not a value *)
+   alloc needs a single sized element type:
+       s.alloc<Int32 | Nil>(1) (* checker: Handle element type ... *)
+   read and write need a handle:
+       x.read()                (* checker: 'read' must be called on ... *)
+   An expression statement must be a call:
+       fun f(): Int32 1 end    (* checker: expression statement must be a call *)
+   Type arguments are inferred at calls, not written:
+       identity<Int32>(3)      (* checker: generic function 'identity' must be called *)
+   `.is<T>()` needs a single non-union target:
+       x.is<Int32 | Bool>()    (* checker: '.is<T>()' requires a single ... *)
    Function bodies contain statements, not raw expressions:
        fun f(x:Int32):Int32 x end
                                (* parser: expected a statement or 'end' ... *)
@@ -192,4 +271,6 @@ end                = "end" ;
          if x > 0 then return 1 end
        end                     (* checker: function 'f' may reach the end
                                   without returning *)
+   A type cannot contain itself by value:
+       type Loop = Loop | Int32 (* checker: type 'Loop' is defined recursively *)
 *)

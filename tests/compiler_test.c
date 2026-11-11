@@ -36,6 +36,68 @@ static void report_mismatch(const char *what, const char *artifact,
     fprintf(stderr, "    actual:   %.48s\n", actual + offset);
 }
 
+/* A large golden is split into several C string literals so no single literal
+   exceeds the ISO C minimum. */
+typedef struct {
+    const char *const *parts;
+    size_t count;
+} GoldenText;
+
+static size_t text_mismatch_offset(const char *actual, const GoldenText *golden)
+{
+    size_t offset = 0;
+    size_t i;
+
+    for (i = 0; i < golden->count; i++) {
+        const char *part = golden->parts[i];
+        size_t j;
+
+        for (j = 0; part[j] != '\0'; j++) {
+            if (actual[offset] != part[j]) {
+                return offset;
+            }
+            offset++;
+        }
+    }
+    return actual[offset] == '\0' ? (size_t)-1 : offset;
+}
+
+static TestResult compile_succeeds_parts(const char *source,
+                                         const GoldenText *expected_c,
+                                         const char *expected_h,
+                                         const char *what)
+{
+    CompilerResult result = compiler_compile(source, &test_config);
+    TestResult status = TEST_FAIL;
+    size_t offset;
+
+    if (!result.succeeded) {
+        fprintf(stderr, "  %s did not compile: %s\n", what,
+                result.error_message == NULL ? "(no diagnostic)"
+                                             : result.error_message);
+        goto finished;
+    }
+    offset = result.c_source == NULL
+                 ? 0
+                 : text_mismatch_offset(result.c_source, expected_c);
+    if (result.c_source == NULL || offset != (size_t)-1) {
+        fprintf(stderr,
+                "  %s: generated C source differs at byte %zu\n", what,
+                offset);
+        goto finished;
+    }
+    if (result.h_source == NULL || strcmp(result.h_source, expected_h) != 0) {
+        fprintf(stderr, "  %s: generated header does not match the golden\n",
+                what);
+        goto finished;
+    }
+    status = TEST_PASS;
+
+finished:
+    compiler_result_free(&result);
+    return status;
+}
+
 /* Compile `source` in memory and compare both generated artifacts against the
    golden text the test owns. No files and no subprocess. */
 static TestResult compile_succeeds(const char *source, const char *expected_c,
@@ -155,7 +217,7 @@ static const char golden_struct_h[] =
         "typedef struct {\n"
         "    int32_t x;\n"
         "    int32_t y;\n"
-        "} Point;\n"
+        "} nippy_gen_0;\n"
         "\n"
         "#endif\n";
 
@@ -166,13 +228,13 @@ static const char golden_values_c[] =
         "int main(void)\n"
         "{\n"
         "#line 6 \"test.nip\"\n"
-        "    Point p1 = (Point){ 1, 2 };\n"
+        "    nippy_gen_0 p1 = (nippy_gen_0){ 1, 2 };\n"
         "    (void)p1;\n"
         "#line 7 \"test.nip\"\n"
-        "    Point p2 = (Point){ 3, 4 };\n"
+        "    nippy_gen_0 p2 = (nippy_gen_0){ 3, 4 };\n"
         "    (void)p2;\n"
         "#line 8 \"test.nip\"\n"
-        "    Point p3 = (Point){ 6, 7 };\n"
+        "    nippy_gen_0 p3 = (nippy_gen_0){ 6, 7 };\n"
         "    (void)p3;\n"
         "    return 0;\n"
         "}\n";
@@ -188,7 +250,7 @@ static const char golden_values_h[] =
         "typedef struct {\n"
         "    int32_t x;\n"
         "    int32_t y;\n"
-        "} Point;\n"
+        "} nippy_gen_0;\n"
         "\n"
         "#endif\n";
 
@@ -515,7 +577,7 @@ static const char golden_bool_field_c[] =
         "int main(void)\n"
         "{\n"
         "#line 6 \"test.nip\"\n"
-        "    Flags f = (Flags){ true, 3 };\n"
+        "    nippy_gen_0 f = (nippy_gen_0){ true, 3 };\n"
         "    (void)f;\n"
         "    return 0;\n"
         "}\n";
@@ -531,7 +593,7 @@ static const char golden_bool_field_h[] =
         "typedef struct {\n"
         "    bool on;\n"
         "    int32_t count;\n"
-        "} Flags;\n"
+        "} nippy_gen_0;\n"
         "\n"
         "#endif\n";
 
@@ -627,6 +689,3499 @@ static const char golden_scattered_h[] =
         "\n"
         "#endif\n";
 
+/* ---- nil_return ---- */
+static const char golden_nil_return_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "nippy_nil nothing(void)\n"
+        "{\n"
+        "#line 2 \"test.nip\"\n"
+        "    return ((nippy_nil)0);\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_nil_return_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef nippy_nil (*nippy_fun_0)(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- union_vars ---- */
+static const char golden_union_vars_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_sum_3 a = ((nippy_sum_3){ .tag = 0, .value.v0 = 3 });\n"
+        "    (void)a;\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_sum_3 b = ((nippy_sum_3){ .tag = 1, .value.v1 = true });\n"
+        "    (void)b;\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_sum_3 c = ((nippy_sum_3){ .tag = 2 });\n"
+        "    (void)c;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_union_vars_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "        bool v1;\n"
+        "    } value;\n"
+        "} nippy_sum_3;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- union_canonical ---- */
+static const char golden_union_canonical_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    nippy_sum_2 a = ((nippy_sum_2){ .tag = 0, .value.v0 = 3 });\n"
+        "    (void)a;\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_sum_2 b = ((nippy_sum_2){ .tag = 1, .value.v1 = false });\n"
+        "    (void)b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_union_canonical_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "        bool v1;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- is_narrow ---- */
+static const char golden_is_narrow_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t classify(nippy_sum_3 x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    if ((x.tag == 0)) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        return (x.value.v0);\n"
+        "    } else {\n"
+        "#line 2 \"test.nip\"\n"
+        "        if ((x.tag == 1)) {\n"
+        "#line 5 \"test.nip\"\n"
+        "            if ((x.value.v1)) {\n"
+        "#line 6 \"test.nip\"\n"
+        "                return 1;\n"
+        "            } else {\n"
+        "#line 8 \"test.nip\"\n"
+        "                return 0;\n"
+        "            }\n"
+        "        } else {\n"
+        "#line 11 \"test.nip\"\n"
+        "            return 0;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 15 \"test.nip\"\n"
+        "    int32_t n = classify(((nippy_sum_3){ .tag = 0, .value.v0 = 3 }));\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_is_narrow_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "        bool v1;\n"
+        "    } value;\n"
+        "} nippy_sum_3;\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(nippy_sum_3);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_alias ---- */
+static const char golden_generic_alias_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_sum_2 a = ((nippy_sum_2){ .tag = 0, .value.v0 = 3 });\n"
+        "    (void)a;\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_sum_2 b = ((nippy_sum_2){ .tag = 1 });\n"
+        "    (void)b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_alias_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_struct ---- */
+static const char golden_generic_struct_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    nippy_gen_0 p = (nippy_gen_0){ 1, true };\n"
+        "    (void)p;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_struct_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t first;\n"
+        "    bool second;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_function ---- */
+static const char golden_generic_function_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(3);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_function_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_two_types ---- */
+static const char golden_generic_two_types_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "bool nippy_genfn_1(bool x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t a = nippy_genfn_0(1);\n"
+        "    (void)a;\n"
+        "#line 6 \"test.nip\"\n"
+        "    bool b = nippy_genfn_1(true);\n"
+        "    (void)b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_two_types_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "typedef bool (*nippy_fun_1)(bool);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_hof ---- */
+static const char golden_generic_hof_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 5 \"test.nip\"\n"
+        "int32_t inc(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 6 \"test.nip\"\n"
+        "    return (int32_t)((uint32_t)(x) + (uint32_t)(1));\n"
+        "}\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(nippy_fun_3 f, int32_t x)\n"
+        "{\n"
+        "    (void)f;\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return f(x);\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 9 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(inc, 1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_hof_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_2)(nippy_fun_1, int32_t);\n"
+        "typedef int32_t (*nippy_fun_3)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_nested ---- */
+static const char golden_generic_nested_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 7 \"test.nip\"\n"
+        "    nippy_sum_2 o = ((nippy_sum_2){ .tag = 0, .value.v0 = 3 });\n"
+        "    (void)o;\n"
+        "#line 8 \"test.nip\"\n"
+        "    nippy_gen_0 p = (nippy_gen_0){ o, false };\n"
+        "    (void)p;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_nested_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#line 2 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_sum_2 first;\n"
+        "    bool second;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_self ---- */
+static const char golden_generic_self_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return nippy_genfn_0(x);\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_self_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- union_field ---- */
+static const char golden_union_field_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_gen_0 h = (nippy_gen_0){ ((nippy_sum_2){ .tag = 1 }) };\n"
+        "    (void)h;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_union_field_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_sum_2 value;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- is_static ---- */
+static const char golden_is_static_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "bool yes(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return true;\n"
+        "}\n"
+        "\n"
+        "#line 5 \"test.nip\"\n"
+        "bool no(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 6 \"test.nip\"\n"
+        "    return false;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_is_static_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef bool (*nippy_fun_0)(int32_t);\n"
+        "typedef bool (*nippy_fun_1)(int32_t);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- is_nil ---- */
+static const char golden_is_nil_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "bool is_nil(nippy_sum_2 x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    if ((x.tag == 1)) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        return true;\n"
+        "    }\n"
+        "#line 5 \"test.nip\"\n"
+        "    return false;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_is_nil_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "typedef bool (*nippy_fun_0)(nippy_sum_2);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- union_struct ---- */
+static const char golden_union_struct_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 6 \"test.nip\"\n"
+        "nippy_gen_0 pick(nippy_sum_3 p)\n"
+        "{\n"
+        "    (void)p;\n"
+        "#line 7 \"test.nip\"\n"
+        "    if ((p.tag == 1)) {\n"
+        "#line 8 \"test.nip\"\n"
+        "        return (p.value.v1);\n"
+        "    }\n"
+        "#line 10 \"test.nip\"\n"
+        "    return (nippy_gen_0){ 0, 0 };\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 13 \"test.nip\"\n"
+        "    nippy_gen_0 q = pick(((nippy_sum_3){ .tag"
+        " = 1, .value.v1 = (nippy_gen_0){ 1, 2 } }));\n"
+        "    (void)q;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_union_struct_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t x;\n"
+        "    int32_t y;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        nippy_gen_0 v1;\n"
+        "    } value;\n"
+        "} nippy_sum_3;\n"
+        "\n"
+        "typedef nippy_gen_0 (*nippy_fun_0)(nippy_sum_3);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_struct_two ---- */
+static const char golden_generic_struct_two_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    nippy_gen_0 a = (nippy_gen_0){ 1, true };\n"
+        "    (void)a;\n"
+        "#line 7 \"test.nip\"\n"
+        "    nippy_gen_1 b = (nippy_gen_1){ true, 1 };\n"
+        "    (void)b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_struct_two_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t first;\n"
+        "    bool second;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    bool first;\n"
+        "    int32_t second;\n"
+        "} nippy_gen_1;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_struct_arg ---- */
+static const char golden_generic_struct_arg_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 6 \"test.nip\"\n"
+        "nippy_gen_0 nippy_genfn_1(nippy_gen_0 x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 7 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 10 \"test.nip\"\n"
+        "    nippy_gen_0 p = nippy_genfn_1((nippy_gen_0){ 1, 2 });\n"
+        "    (void)p;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_struct_arg_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t x;\n"
+        "    int32_t y;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "typedef nippy_gen_0 (*nippy_fun_0)(nippy_gen_0);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_two_params ---- */
+static const char golden_generic_two_params_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(int32_t a, bool b)\n"
+        "{\n"
+        "    (void)a;\n"
+        "    (void)b;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return a;\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(1, true);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_two_params_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t, bool);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_nested_call ---- */
+static const char golden_generic_nested_call_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t nippy_genfn_1(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "#line 5 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 6 \"test.nip\"\n"
+        "    return nippy_genfn_1(x);\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 9 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(3);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_nested_call_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- inject_call ---- */
+static const char golden_inject_call_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t take(nippy_sum_2 v)\n"
+        "{\n"
+        "    (void)v;\n"
+        "#line 2 \"test.nip\"\n"
+        "    if ((v.tag == 0)) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        return (v.value.v0);\n"
+        "    }\n"
+        "#line 5 \"test.nip\"\n"
+        "    return 0;\n"
+        "}\n"
+        "\n"
+        "#line 8 \"test.nip\"\n"
+        "int32_t pass(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 9 \"test.nip\"\n"
+        "    return take(((nippy_sum_2){ .tag = 0, .value.v0 = x }));\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 12 \"test.nip\"\n"
+        "    int32_t n = pass(3);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_inject_call_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(nippy_sum_2);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- union_field_int ---- */
+static const char golden_union_field_int_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_gen_0 h = (nippy_gen_0){"
+        " ((nippy_sum_2){ .tag = 0, .value.v0 = 3 }) };\n"
+        "    (void)h;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_union_field_int_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_sum_2 value;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_struct_named ---- */
+static const char golden_generic_struct_named_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    nippy_gen_0 p = (nippy_gen_0){ 1, true };\n"
+        "    (void)p;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_struct_named_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t first;\n"
+        "    bool second;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_struct_point ---- */
+static const char golden_generic_struct_point_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 11 \"test.nip\"\n"
+        "    nippy_gen_1 p = (nippy_gen_1){ (nippy_gen_0){ 1, 2 }, true };\n"
+        "    (void)p;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_struct_point_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t x;\n"
+        "    int32_t y;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#line 6 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_gen_0 first;\n"
+        "    bool second;\n"
+        "} nippy_gen_1;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- alias_chain ---- */
+static const char golden_alias_chain_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_sum_4 v = ((nippy_sum_4){ .tag = 1, .value.v1 = true });\n"
+        "    (void)v;\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_sum_4 n = ((nippy_sum_4){ .tag = 0, .value.v0 = 3 });\n"
+        "    (void)n;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_alias_chain_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "        bool v1;\n"
+        "    } value;\n"
+        "} nippy_sum_4;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_union_return ---- */
+static const char golden_generic_union_return_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "nippy_sum_2 nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return ((nippy_sum_2){ .tag = 0, .value.v0 = x });\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_sum_2 m = nippy_genfn_0(3);\n"
+        "    (void)m;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_generic_union_return_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        int32_t v0;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "typedef nippy_sum_2 (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- nil_field_param ---- */
+static const char golden_nil_field_param_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 5 \"test.nip\"\n"
+        "int32_t take(nippy_nil n)\n"
+        "{\n"
+        "    (void)n;\n"
+        "#line 6 \"test.nip\"\n"
+        "    return 0;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 9 \"test.nip\"\n"
+        "    nippy_gen_0 m = (nippy_gen_0){ ((nippy_nil)0) };\n"
+        "    (void)m;\n"
+        "#line 10 \"test.nip\"\n"
+        "    int32_t n = take(((nippy_nil)0));\n"
+        "    (void)n;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_nil_field_param_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_nil value;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(nippy_nil);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- store_alloc ---- */
+static const char *const golden_store_alloc_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_handle p = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)p;\n"
+        "#line 3 \"test.nip\"\n"
+        "    int32_t n = (*(int32_t *)nippy_handle_pointer(p, sizeof(int32_t)));\n"
+        "    (void)n;\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_store_alloc_c = {
+    golden_store_alloc_c_parts, 2
+};
+
+static const char golden_store_alloc_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- store_write_reset ---- */
+static const char *const golden_store_write_reset_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_handle p = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)p;\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_nil w = ((void)nippy_handle_write(p,"
+        " &(int32_t){ 2 }, sizeof(int32_t)), (nippy_nil)0);\n"
+        "    (void)w;\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_nil r = ((void)nippy_store_reset(&nippy_stores[0]), (nippy_nil)0);\n"
+        "    (void)r;\n",
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_store_write_reset_c = {
+    golden_store_write_reset_c_parts, 3
+};
+
+static const char golden_store_write_reset_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- byte_basics ---- */
+static const char golden_byte_basics_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    uint8_t b = 255;\n"
+        "    (void)b;\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_sum_3 c = ((nippy_sum_3){ .tag = 1, .value.v1 = 7 });\n"
+        "    (void)c;\n"
+        "#line 3 \"test.nip\"\n"
+        "    bool ok = (b == 255);\n"
+        "    (void)ok;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_byte_basics_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        uint8_t v1;\n"
+        "    } value;\n"
+        "} nippy_sum_3;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- byte_struct ---- */
+static const char golden_byte_struct_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_gen_0 b = (nippy_gen_0){ 200 };\n"
+        "    (void)b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_byte_struct_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    uint8_t value;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- handle_field ---- */
+static const char *const golden_handle_field_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "#line 6 \"test.nip\"\n"
+        "    nippy_handle p = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)p;\n"
+        "#line 7 \"test.nip\"\n"
+        "    nippy_gen_0 holder = (nippy_gen_0){ p };\n"
+        "    (void)holder;\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_handle_field_c = {
+    golden_handle_field_c_parts, 2
+};
+
+static const char golden_handle_field_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    nippy_handle h;\n"
+        "} nippy_gen_0;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- store_functions ---- */
+static const char *const golden_store_functions_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "#line 3 \"test.nip\"\n"
+        "nippy_handle make(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 4 \"test.nip\"\n"
+        "    return nippy_store_alloc(&nippy_stores[0], 0,"
+        " &(int32_t){ x }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "}\n"
+        "\n"
+        "#line 7 \"test.nip\"\n"
+        "int32_t read_it(nippy_handle h)\n"
+        "{\n"
+        "    (void)h;\n"
+        "#line 8 \"test.nip\"\n"
+        "    return (*(int32_t *)nippy_handle_pointer(h, sizeof(int32_t)));\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n",
+        "#line 11 \"test.nip\"\n"
+        "    int32_t n = read_it(make(42));\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_store_functions_c = {
+    golden_store_functions_c_parts, 3
+};
+
+static const char golden_store_functions_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef nippy_handle (*nippy_fun_0)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(nippy_handle);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- expression_statement ---- */
+static const char *const golden_expression_statement_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "#line 3 \"test.nip\"\n"
+        "nippy_nil clear(void)\n"
+        "{\n"
+        "#line 4 \"test.nip\"\n"
+        "    (void)(((void)nippy_store_reset(&nippy_stores[0]), (nippy_nil)0));\n"
+        "#line 5 \"test.nip\"\n"
+        "    return ((nippy_nil)0);\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_expression_statement_c = {
+    golden_expression_statement_c_parts, 2
+};
+
+static const char golden_expression_statement_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef nippy_nil (*nippy_fun_0)(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- top_level_reset ---- */
+static const char *const golden_top_level_reset_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 16);\n"
+        "#line 2 \"test.nip\"\n"
+        "    (void)(((void)nippy_store_reset(&nippy_stores[0]), (nippy_nil)0));\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_top_level_reset_c = {
+    golden_top_level_reset_c_parts, 2
+};
+
+static const char golden_top_level_reset_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- byte_equality ---- */
+static const char golden_byte_equality_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "bool is_seven(uint8_t b)\n"
+        "{\n"
+        "    (void)b;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return (b == 7);\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    bool ok = is_seven(7);\n"
+        "    (void)ok;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_byte_equality_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef bool (*nippy_fun_0)(uint8_t);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- alloc_byte ---- */
+static const char *const golden_alloc_byte_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 1);\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_handle b = nippy_store_alloc(&nippy_stores[0], 0,"
+        " &(uint8_t){ 255 }, sizeof(uint8_t), _Alignof(uint8_t));\n"
+        "    (void)b;\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_alloc_byte_c = {
+    golden_alloc_byte_c_parts, 2
+};
+
+static const char golden_alloc_byte_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- two_stores ---- */
+static const char *const golden_two_stores_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 2\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 1);\n"
+        "    nippy_store_init(&nippy_stores[1], 1);\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_handle p = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)p;\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_handle q = nippy_store_alloc(&nippy_stores[1],"
+        " 1, &(int32_t){ 2 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)q;\n"
+        "#line 5 \"test.nip\"\n",
+        "    int32_t n = (int32_t)((uint32_t)((*(int32_t *)nippy_handle_pointer(p,"
+        " sizeof(int32_t)))) + (uint32_t)((*(int32_t"
+        " *)nippy_handle_pointer(q, sizeof(int32_t)))));\n"
+        "    (void)n;\n"
+        "#line 6 \"test.nip\"\n"
+        "    (void)(((void)nippy_store_reset(&nippy_stores[0]), (nippy_nil)0));\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    nippy_store_free(&nippy_stores[1]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_two_stores_c = {
+    golden_two_stores_c_parts, 3
+};
+
+static const char golden_two_stores_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- store_size_expr ---- */
+static const char *const golden_store_size_expr_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 3);\n"
+        "#line 2 \"test.nip\"\n"
+        "    nippy_handle h = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)h;\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_store_size_expr_c = {
+    golden_store_size_expr_c_parts, 2
+};
+
+static const char golden_store_size_expr_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_handle ---- */
+static const char *const golden_generic_handle_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "#line 2 \"test.nip\"\n"
+        "int32_t nippy_genfn_0(nippy_handle h)\n"
+        "{\n"
+        "    (void)h;\n"
+        "#line 3 \"test.nip\"\n"
+        "    return (*(int32_t *)nippy_handle_pointer(h, sizeof(int32_t)));\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t n = nippy_genfn_0(nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 42 }, sizeof(int32_t), _Alignof(int32_t)));\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n",
+        "    nippy_store_init(&nippy_stores[0], 1);\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_generic_handle_c = {
+    golden_generic_handle_c_parts, 3
+};
+
+static const char golden_generic_handle_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(nippy_handle);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- generic_alloc ---- */
+static const char *const golden_generic_alloc_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "#line 2 \"test.nip\"\n"
+        "nippy_handle nippy_genfn_0(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 3 \"test.nip\"\n"
+        "    return nippy_store_alloc(&nippy_stores[0], 0,"
+        " &(int32_t){ x }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t n = (*(int32_t"
+        " *)nippy_handle_pointer(nippy_genfn_0(7), sizeof(int32_t)));\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n",
+        "    nippy_store_init(&nippy_stores[0], 1);\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_generic_alloc_c = {
+    golden_generic_alloc_c_parts, 3
+};
+
+static const char golden_generic_alloc_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef nippy_handle (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- handle_union ---- */
+static const char *const golden_handle_union_c_parts[] = {
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "#define NIPPY_STORE_COUNT 1\n"
+        "\n"
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n"
+        "\n"
+        "static void nippy_panic(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n"
+        "{\n"
+        "    size_t remainder;\n"
+        "\n"
+        "    if (alignment <= 1) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    remainder = offset % alignment;\n"
+        "    if (remainder == 0) {\n"
+        "        return offset;\n"
+        "    }\n"
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    return offset + (alignment - remainder);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n"
+        "{\n"
+        "    if (initial_bytes == 0) {\n"
+        "        initial_bytes = 1;\n"
+        "    }\n"
+        "    store->data = malloc(initial_bytes);\n"
+        "    if (store->data == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->used = 0;\n"
+        "    store->capacity = initial_bytes;\n"
+        "    store->generation = 1;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n"
+        "{\n"
+        "    size_t capacity;\n"
+        "    unsigned char *grown;\n"
+        "\n"
+        "    if (required <= store->capacity) {\n"
+        "        return;\n"
+        "    }\n"
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n"
+        "    while (capacity < required) {\n"
+        "        if (capacity > (size_t)-1 / 2) {\n"
+        "            nippy_panic(\"nippy: out of memory\");\n"
+        "        }\n"
+        "        capacity *= 2;\n"
+        "    }\n"
+        "    grown = realloc(store->data, capacity);\n"
+        "    if (grown == NULL) {\n"
+        "        nippy_panic(\"nippy: out of memory\");\n"
+        "    }\n"
+        "    store->data = grown;\n"
+        "    store->capacity = capacity;\n"
+        "}\n"
+        "\n"
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n"
+        "                                      const void *value, size_t size,\n"
+        "                                      size_t align)\n"
+        "{\n"
+        "    nippy_handle handle;\n"
+        "    size_t offset;\n"
+        "    size_t end;\n"
+        "\n"
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    if (size == 0) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n"
+        "    if (offset > (size_t)-1 - size) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    end = offset + size;\n"
+        "    nippy_store_reserve(store, end);\n"
+        "    memcpy(store->data + offset, value, size);\n"
+        "    store->used = end;\n"
+        "    handle.store = (uint32_t)id;\n"
+        "    handle.offset = offset;\n"
+        "    handle.generation = store->generation;\n"
+        "    return handle;\n"
+        "}\n"
+        "\n"
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n"
+        "                                           size_t size)\n"
+        "{\n"
+        "    nippy_store *store;\n"
+        "\n"
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n"
+        "        nippy_panic(\"nippy: invalid store id\");\n"
+        "    }\n"
+        "    store = &nippy_stores[handle.store];\n"
+        "    if (handle.generation != store->generation) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    if (handle.offset > store->used ||\n"
+        "        size > store->used - handle.offset) {\n"
+        "        nippy_panic(\"nippy: handle is out of range\");\n"
+        "    }\n"
+        "    return store->data + handle.offset;\n"
+        "}\n"
+        "\n"
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n"
+        "                               size_t size)\n"
+        "{\n"
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_reset(nippy_store *store)\n"
+        "{\n"
+        "    store->used = 0;\n"
+        "    if (store->generation == UINT64_MAX) {\n"
+        "        nippy_panic(\"nippy: stale handle\");\n"
+        "    }\n"
+        "    store->generation++;\n"
+        "}\n"
+        "\n"
+        "static void nippy_store_free(nippy_store *store)\n"
+        "{\n"
+        "    free(store->data);\n"
+        "    store->data = NULL;\n"
+        "    store->used = 0;\n"
+        "    store->capacity = 0;\n"
+        "    store->generation = 0;\n"
+        "    (void)nippy_store_reserve;\n"
+        "    (void)nippy_store_alloc;\n"
+        "    (void)nippy_handle_pointer;\n"
+        "    (void)nippy_handle_write;\n"
+        "    (void)nippy_store_reset;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    nippy_store_init(&nippy_stores[0], 1);\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_handle h = nippy_store_alloc(&nippy_stores[0],"
+        " 0, &(int32_t){ 1 }, sizeof(int32_t), _Alignof(int32_t));\n"
+        "    (void)h;\n"
+        "#line 4 \"test.nip\"\n"
+        "    nippy_sum_3 m = ((nippy_sum_3){ .tag = 1, .value.v1 = h });\n"
+        "    (void)m;\n"
+        "    nippy_store_free(&nippy_stores[0]);\n"
+        "    return 0;\n"
+        "}\n"
+};
+static const GoldenText golden_handle_union_c = {
+    golden_handle_union_c_parts, 2
+};
+
+static const char golden_handle_union_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        nippy_handle v1;\n"
+        "    } value;\n"
+        "} nippy_sum_3;\n"
+        "\n"
+        "#endif\n";
+
 /* ---- positive: each test owns its source and its expected generated C ---- */
 
 TestResult test_13_codegen(void)
@@ -643,8 +4198,8 @@ TestResult test_type_declaration_codegen(void)
         "  y: Int32\n"
         "end\n";
 
-    return compile_succeeds(source, golden_struct_c, golden_struct_h,
-                            "a type declaration");
+    return compile_succeeds(source, golden_struct_c,
+                            golden_struct_h, "a type declaration");
 }
 
 TestResult test_struct_values_codegen(void)
@@ -659,8 +4214,8 @@ TestResult test_struct_values_codegen(void)
         "var p2: Point = Point(x = 3, y = 4)\n"
         "var p3 = Point(6, 7)\n";
 
-    return compile_succeeds(source, golden_values_c, golden_values_h,
-                            "struct values and inference");
+    return compile_succeeds(source, golden_values_c,
+                            golden_values_h, "struct values and inference");
 }
 
 TestResult test_function_codegen(void)
@@ -672,8 +4227,8 @@ TestResult test_function_codegen(void)
         "\n"
         "var sum : Int32 = adder(1, 2)\n";
 
-    return compile_succeeds(source, golden_function_c, golden_function_h,
-                            "a function declaration");
+    return compile_succeeds(source, golden_function_c,
+                            golden_function_h, "a function declaration");
 }
 
 TestResult test_function_type_and_higher_order_codegen(void)
@@ -718,8 +4273,8 @@ TestResult test_recursive_function_codegen(void)
         "\n"
         "var zero : Int32 = 0\n";
 
-    return compile_succeeds(source, golden_recursive_c, golden_recursive_h,
-                            "a recursive function");
+    return compile_succeeds(source, golden_recursive_c,
+                            golden_recursive_h, "a recursive function");
 }
 
 TestResult test_if_elseif_else_codegen(void)
@@ -775,8 +4330,8 @@ TestResult test_bool_logic_codegen(void)
         "\n"
         "var n : Int32 = choose(!(1 == 2) && (2 < 3) || false)\n";
 
-    return compile_succeeds(source, golden_logic_c, golden_logic_h,
-                            "Bool type and logical operators");
+    return compile_succeeds(source, golden_logic_c,
+                            golden_logic_h, "Bool type and logical operators");
 }
 
 TestResult test_bool_struct_field_codegen(void)
@@ -789,8 +4344,8 @@ TestResult test_bool_struct_field_codegen(void)
         "\n"
         "var f : Flags = Flags(true, 3)\n";
 
-    return compile_succeeds(source, golden_bool_field_c, golden_bool_field_h,
-                            "a Bool struct field");
+    return compile_succeeds(source, golden_bool_field_c,
+                            golden_bool_field_h, "a Bool struct field");
 }
 
 TestResult test_whitespace_agnostic_codegen(void)
@@ -810,6 +4365,604 @@ TestResult test_whitespace_agnostic_codegen(void)
                                          "a whitespace-scattered program");
 
     return first == TEST_PASS && second == TEST_PASS ? TEST_PASS : TEST_FAIL;
+}
+
+TestResult test_nil_return_codegen(void)
+{
+    const char *source =
+        "fun nothing(): Nil\n"
+        "  return nil\n"
+        "end\n";
+
+    return compile_succeeds(source, golden_nil_return_c,
+                            golden_nil_return_h, "a Nil return");
+}
+
+TestResult test_union_vars_codegen(void)
+{
+    const char *source =
+        "type Something = Int32 | Bool | Nil\n"
+        "\n"
+        "var a: Something = 3\n"
+        "var b: Something = true\n"
+        "var c: Something = nil\n";
+
+    return compile_succeeds(source, golden_union_vars_c,
+                            golden_union_vars_h, "union injection");
+}
+
+TestResult test_union_canonical_codegen(void)
+{
+    const char *source =
+        "var a: Bool | Int32 = 3\n"
+        "var b: Int32 | Bool = false\n";
+
+    return compile_succeeds(source, golden_union_canonical_c,
+                            golden_union_canonical_h, "canonical union order");
+}
+
+TestResult test_is_narrow_codegen(void)
+{
+    const char *source =
+        "fun classify(x: Int32 | Bool | Nil): Int32\n"
+        "  if x.is<Int32>() then\n"
+        "    return x\n"
+        "  elseif x.is<Bool>() then\n"
+        "    if x then\n"
+        "      return 1\n"
+        "    else\n"
+        "      return 0\n"
+        "    end\n"
+        "  else\n"
+        "    return 0\n"
+        "  end\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = classify(3)\n";
+
+    return compile_succeeds(source, golden_is_narrow_c,
+                            golden_is_narrow_h, "is-test and narrowing");
+}
+
+TestResult test_generic_alias_codegen(void)
+{
+    const char *source =
+        "type Option<T> = T | Nil\n"
+        "\n"
+        "var a: Option<Int32> = 3\n"
+        "var b: Option<Int32> = nil\n";
+
+    return compile_succeeds(source, golden_generic_alias_c,
+                            golden_generic_alias_h, "a generic alias");
+}
+
+TestResult test_generic_struct_codegen(void)
+{
+    const char *source =
+        "type Pair<A, B>\n"
+        "  first: A\n"
+        "  second: B\n"
+        "end\n"
+        "\n"
+        "var p = Pair(1, true)\n";
+
+    return compile_succeeds(source, golden_generic_struct_c,
+                            golden_generic_struct_h, "a generic struct");
+}
+
+TestResult test_generic_function_codegen(void)
+{
+    const char *source =
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = identity(3)\n";
+
+    return compile_succeeds(source, golden_generic_function_c,
+                            golden_generic_function_h, "a generic function");
+}
+
+TestResult test_generic_two_types_codegen(void)
+{
+    const char *source =
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var a: Int32 = identity(1)\n"
+        "var b: Bool = identity(true)\n";
+
+    return compile_succeeds(source, golden_generic_two_types_c,
+                            golden_generic_two_types_h, "two generic instantiations");
+}
+
+TestResult test_generic_hof_codegen(void)
+{
+    const char *source =
+        "fun apply<T>(f: Fun<(T):T>, x: T): T\n"
+        "  return f(x)\n"
+        "end\n"
+        "\n"
+        "fun inc(x: Int32): Int32\n"
+        "  return x + 1\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = apply(inc, 1)\n";
+
+    return compile_succeeds(source, golden_generic_hof_c,
+                            golden_generic_hof_h, "a generic higher-order function");
+}
+
+TestResult test_generic_nested_codegen(void)
+{
+    const char *source =
+        "type Option<T> = T | Nil\n"
+        "type Pair<A, B>\n"
+        "  first: A\n"
+        "  second: B\n"
+        "end\n"
+        "\n"
+        "var o: Option<Int32> = 3\n"
+        "var p = Pair(o, false)\n";
+
+    return compile_succeeds(source, golden_generic_nested_c,
+                            golden_generic_nested_h, "nested generic types");
+}
+
+TestResult test_generic_self_codegen(void)
+{
+    const char *source =
+        "fun count<T>(x: T): T\n"
+        "  return count(x)\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = count(1)\n";
+
+    return compile_succeeds(source, golden_generic_self_c,
+                            golden_generic_self_h, "a recursive generic function");
+}
+
+TestResult test_union_field_codegen(void)
+{
+    const char *source =
+        "type Holder\n"
+        "  value: Int32 | Nil\n"
+        "end\n"
+        "\n"
+        "var h: Holder = Holder(nil)\n";
+
+    return compile_succeeds(source, golden_union_field_c,
+                            golden_union_field_h, "a union struct field");
+}
+
+TestResult test_is_static_codegen(void)
+{
+    const char *source =
+        "fun yes(x: Int32): Bool\n"
+        "  return x.is<Int32>()\n"
+        "end\n"
+        "\n"
+        "fun no(x: Int32): Bool\n"
+        "  return x.is<Bool>()\n"
+        "end\n";
+
+    return compile_succeeds(source, golden_is_static_c,
+                            golden_is_static_h, "statically decided is-tests");
+}
+
+TestResult test_is_nil_codegen(void)
+{
+    const char *source =
+        "fun is_nil(x: Int32 | Nil): Bool\n"
+        "  if x.is<Nil>() then\n"
+        "    return true\n"
+        "  end\n"
+        "  return false\n"
+        "end\n";
+
+    return compile_succeeds(source, golden_is_nil_c,
+                            golden_is_nil_h, "an is-Nil test");
+}
+
+TestResult test_union_struct_codegen(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "\n"
+        "fun pick(p: Point | Nil): Point\n"
+        "  if p.is<Point>() then\n"
+        "    return p\n"
+        "  end\n"
+        "  return Point(0, 0)\n"
+        "end\n"
+        "\n"
+        "var q: Point = pick(Point(1, 2))\n";
+
+    return compile_succeeds(source, golden_union_struct_c,
+                            golden_union_struct_h, "a struct union alternative");
+}
+
+TestResult test_generic_struct_two_codegen(void)
+{
+    const char *source =
+        "type Pair<A, B>\n"
+        "  first: A\n"
+        "  second: B\n"
+        "end\n"
+        "\n"
+        "var a = Pair(1, true)\n"
+        "var b = Pair(true, 1)\n";
+
+    return compile_succeeds(source, golden_generic_struct_two_c,
+                            golden_generic_struct_two_h,
+                            "two generic struct instantiations");
+}
+
+TestResult test_generic_struct_arg_codegen(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "\n"
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var p = identity(Point(1, 2))\n";
+
+    return compile_succeeds(source, golden_generic_struct_arg_c,
+                            golden_generic_struct_arg_h,
+                            "a generic function over a struct");
+}
+
+TestResult test_generic_two_params_codegen(void)
+{
+    const char *source =
+        "fun first<A, B>(a: A, b: B): A\n"
+        "  return a\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = first(1, true)\n";
+
+    return compile_succeeds(source, golden_generic_two_params_c,
+                            golden_generic_two_params_h,
+                            "a two-parameter generic function");
+}
+
+TestResult test_generic_nested_call_codegen(void)
+{
+    const char *source =
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "fun wrap<T>(x: T): T\n"
+        "  return identity(x)\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = wrap(3)\n";
+
+    return compile_succeeds(source, golden_generic_nested_call_c,
+                            golden_generic_nested_call_h,
+                            "a generic function calling a generic function");
+}
+
+TestResult test_inject_call_codegen(void)
+{
+    const char *source =
+        "fun take(v: Int32 | Nil): Int32\n"
+        "  if v.is<Int32>() then\n"
+        "    return v\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n"
+        "\n"
+        "fun pass(x: Int32): Int32\n"
+        "  return take(x)\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = pass(3)\n";
+
+    return compile_succeeds(source, golden_inject_call_c,
+                            golden_inject_call_h, "union injection at a call argument");
+}
+
+TestResult test_union_field_int_codegen(void)
+{
+    const char *source =
+        "type Holder\n"
+        "  value: Int32 | Nil\n"
+        "end\n"
+        "\n"
+        "var h: Holder = Holder(3)\n";
+
+    return compile_succeeds(source, golden_union_field_int_c,
+                            golden_union_field_int_h,
+                            "union injection into a struct field");
+}
+
+TestResult test_generic_struct_named_codegen(void)
+{
+    const char *source =
+        "type Pair<A, B>\n"
+        "  first: A\n"
+        "  second: B\n"
+        "end\n"
+        "\n"
+        "var p = Pair(first = 1, second = true)\n";
+
+    return compile_succeeds(source, golden_generic_struct_named_c,
+                            golden_generic_struct_named_h,
+                            "a named-argument generic constructor");
+}
+
+TestResult test_generic_struct_point_codegen(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "\n"
+        "type Pair<A, B>\n"
+        "  first: A\n"
+        "  second: B\n"
+        "end\n"
+        "\n"
+        "var p = Pair(Point(1, 2), true)\n";
+
+    return compile_succeeds(source, golden_generic_struct_point_c,
+                            golden_generic_struct_point_h,
+                            "a generic struct over a struct");
+}
+
+TestResult test_alias_chain_codegen(void)
+{
+    const char *source =
+        "type MaybeInt = Int32 | Nil\n"
+        "type Value = MaybeInt | Bool\n"
+        "\n"
+        "var v: Value = true\n"
+        "var n: Value = 3\n";
+
+    return compile_succeeds(source, golden_alias_chain_c, golden_alias_chain_h,
+                            "a chain of union aliases");
+}
+
+TestResult test_generic_union_return_codegen(void)
+{
+    const char *source =
+        "fun maybe<T>(x: T): T | Nil\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var m: Int32 | Nil = maybe(3)\n";
+
+    return compile_succeeds(source, golden_generic_union_return_c,
+                            golden_generic_union_return_h,
+                            "a generic union return");
+}
+
+TestResult test_nil_field_param_codegen(void)
+{
+    const char *source =
+        "type Marker\n"
+        "  value: Nil\n"
+        "end\n"
+        "\n"
+        "fun take(n: Nil): Int32\n"
+        "  return 0\n"
+        "end\n"
+        "\n"
+        "var m: Marker = Marker(nil)\n"
+        "var n: Int32 = take(nil)\n";
+
+    return compile_succeeds(source, golden_nil_field_param_c, golden_nil_field_param_h,
+                            "Nil in a field and a parameter");
+}
+
+TestResult test_store_alloc_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var n: Int32 = p.read()\n";
+
+    return compile_succeeds_parts(source, &golden_store_alloc_c, golden_store_alloc_h,
+                            "a store allocation and read");
+}
+
+TestResult test_store_write_reset_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var w: Nil = p.write(2)\n"
+        "var r: Nil = s.reset()\n";
+
+    return compile_succeeds_parts(source, &golden_store_write_reset_c,
+                            golden_store_write_reset_h,
+                            "store write and reset");
+}
+
+TestResult test_byte_basics_codegen(void)
+{
+    const char *source =
+        "var b: Byte = 255\n"
+        "var c: Byte | Nil = 7\n"
+        "var ok: Bool = b == 255\n";
+
+    return compile_succeeds(source, golden_byte_basics_c, golden_byte_basics_h,
+                            "Byte values and equality");
+}
+
+TestResult test_byte_struct_codegen(void)
+{
+    const char *source =
+        "type B\n"
+        "  value: Byte\n"
+        "end\n"
+        "\n"
+        "var b: B = B(200)\n";
+
+    return compile_succeeds(source, golden_byte_struct_c, golden_byte_struct_h,
+                            "a Byte struct field");
+}
+
+TestResult test_handle_field_codegen(void)
+{
+    const char *source =
+        "type Holder\n"
+        "  h: Handle<Int32>\n"
+        "end\n"
+        "\n"
+        "var s: Store = Store(16)\n"
+        "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var holder: Holder = Holder(p)\n";
+
+    return compile_succeeds_parts(source, &golden_handle_field_c, golden_handle_field_h,
+                            "a Handle struct field");
+}
+
+TestResult test_store_functions_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "\n"
+        "fun make(x: Int32): Handle<Int32>\n"
+        "  return s.alloc<Int32>(x)\n"
+        "end\n"
+        "\n"
+        "fun read_it(h: Handle<Int32>): Int32\n"
+        "  return h.read()\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = read_it(make(42))\n";
+
+    return compile_succeeds_parts(source, &golden_store_functions_c,
+                            golden_store_functions_h,
+                            "store use inside functions");
+}
+
+TestResult test_expression_statement_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "\n"
+        "fun clear(): Nil\n"
+        "  s.reset()\n"
+        "  return nil\n"
+        "end\n";
+
+    return compile_succeeds_parts(source, &golden_expression_statement_c,
+                            golden_expression_statement_h,
+                            "a call expression statement");
+}
+
+TestResult test_top_level_reset_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "s.reset()\n";
+
+    return compile_succeeds_parts(source, &golden_top_level_reset_c,
+                            golden_top_level_reset_h,
+                            "a top-level call statement");
+}
+
+TestResult test_byte_equality_codegen(void)
+{
+    const char *source =
+        "fun is_seven(b: Byte): Bool\n"
+        "  return b == 7\n"
+        "end\n"
+        "\n"
+        "var ok: Bool = is_seven(7)\n";
+
+    return compile_succeeds(source, golden_byte_equality_c, golden_byte_equality_h,
+                            "Byte equality with a literal");
+}
+
+TestResult test_alloc_byte_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "var b: Handle<Byte> = s.alloc<Byte>(255)\n";
+
+    return compile_succeeds_parts(source, &golden_alloc_byte_c, golden_alloc_byte_h,
+                            "allocating a Byte");
+}
+
+
+TestResult test_two_stores_codegen(void)
+{
+    const char *source =
+        "var a: Store = Store(1)\n"
+        "var b: Store = Store(1)\n"
+        "var p: Handle<Int32> = a.alloc<Int32>(1)\n"
+        "var q: Handle<Int32> = b.alloc<Int32>(2)\n"
+        "var n: Int32 = p.read() + q.read()\n"
+        "a.reset()\n";
+
+    return compile_succeeds_parts(source, &golden_two_stores_c, golden_two_stores_h,
+                            "two independent stores");
+}
+
+TestResult test_store_size_expr_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(1 + 2)\n"
+        "var h: Handle<Int32> = s.alloc<Int32>(1)\n";
+
+    return compile_succeeds_parts(source, &golden_store_size_expr_c,
+                            golden_store_size_expr_h,
+                            "a constant store size expression");
+}
+
+TestResult test_generic_handle_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "fun read_it<T>(h: Handle<T>): T\n"
+        "  return h.read()\n"
+        "end\n"
+        "var n: Int32 = read_it(s.alloc<Int32>(42))\n";
+
+    return compile_succeeds_parts(source, &golden_generic_handle_c,
+                                  golden_generic_handle_h,
+                                  "inference through Handle<T>");
+}
+
+TestResult test_generic_alloc_codegen(void)
+{
+    const char *source =
+        "var s: Store = Store(1)\n"
+        "fun alloc_one<T>(x: T): Handle<T>\n"
+        "  return s.alloc<T>(x)\n"
+        "end\n"
+        "var n: Int32 = alloc_one(7).read()\n";
+
+    return compile_succeeds_parts(source, &golden_generic_alloc_c,
+                                  golden_generic_alloc_h,
+                                  "allocating a generic value");
+}
+
+TestResult test_handle_union_codegen(void)
+{
+    const char *source =
+        "type MaybeHandle = Handle<Int32> | Nil\n"
+        "var s: Store = Store(1)\n"
+        "var h: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var m: MaybeHandle = h\n";
+
+    return compile_succeeds_parts(source, &golden_handle_union_c, golden_handle_union_h,
+                            "a Handle union alternative");
 }
 
 /* ---- lexer messages ---- */
@@ -847,8 +5000,8 @@ TestResult test_lexer_unexpected_byte(void)
 
 TestResult test_parser_expected_var_type_or_fun(void)
 {
-    return compile_fails("13\n", "a bare integer literal program",
-                             MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
+    return compile_fails(")\n", "a token that cannot start a declaration",
+                         MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
 }
 
 TestResult test_parser_expected_variable_name(void)
@@ -979,11 +5132,11 @@ TestResult test_parser_expected_return_type(void)
                              MESSAGE_PARSER_EXPECTED_RETURN_TYPE);
 }
 
-TestResult test_parser_expected_statement_or_end(void)
+TestResult test_checker_expression_statement(void)
 {
     return compile_fails("fun f(x:Int32):Int32 x end\n",
-                             "a non-statement in a function body",
-                             MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
+                         "a non-call expression statement",
+                         MESSAGE_CHECKER_EXPRESSION_STATEMENT);
 }
 
 TestResult test_parser_expected_end(void)
@@ -1205,14 +5358,6 @@ TestResult test_checker_operator_type(void)
         "fun f(p:P):P\n  return p + p\nend\n",
         "an operator applied to a non-Int32 value",
         MESSAGE_CHECKER_OPERATOR_TYPE, "+");
-}
-
-TestResult test_checker_field_type(void)
-{
-    return compile_fails(
-        "type Q x:Int32 end\ntype P y:Q end\n",
-        "a non-Int32 field type",
-        MESSAGE_CHECKER_FIELD_TYPE, "y");
 }
 
 TestResult test_checker_duplicate_name(void)
@@ -1757,8 +5902,10 @@ TestResult test_generator_unsupported_field(void)
     ErrorState errors;
     TypedNode field = {0};
     TypedNode type_decl = {0};
+    TypedType struct_type = {0};
     size_t field_index = 0;
     size_t decl_index = 0;
+    size_t struct_type_index = 0;
     size_t name;
     size_t int32_type;
     char *c_source = NULL;
@@ -1780,6 +5927,11 @@ TestResult test_generator_unsupported_field(void)
     type_decl.children_count = 1;
     typed_program_push(&program, &type_decl, &decl_index);
     list_push(&program.roots, &decl_index);
+    struct_type.kind = NIPPY_TYPE_STRUCT;
+    struct_type.name_index = name;
+    struct_type.declaration_node = decl_index;
+    struct_type.source_name_index = name;
+    typed_program_add_type(&program, &struct_type, &struct_type_index);
 
     if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
@@ -2069,6 +6221,712 @@ TestResult test_compiler_out_of_memory_is_reported(void)
     return TEST_PASS;
 }
 
+/* ---- type-system messages ---- */
+
+TestResult test_checker_generic_arity(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: T\n"
+        "end\n"
+        "\n"
+        "var b: Box = Box(1)\n";
+
+    return compile_fails(source, "a generic type without arguments",
+                         MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, "Box");
+}
+
+TestResult test_checker_type_not_generic(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "end\n"
+        "\n"
+        "var p: Point<Int32> = Point(1)\n";
+
+    return compile_fails(source, "arguments on a non-generic type",
+                         MESSAGE_CHECKER_TYPE_NOT_GENERIC, "Point");
+}
+
+TestResult test_checker_type_argument_count(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: T\n"
+        "end\n"
+        "\n"
+        "var b: Box<Int32, Bool> = Box(1)\n";
+
+    return compile_fails(source, "a generic type with too many arguments",
+                         MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT, "Box",
+                         (size_t)1, (size_t)2);
+}
+
+TestResult test_checker_duplicate_type_parameter(void)
+{
+    const char *source =
+        "type Pair<T, T>\n"
+        "  first: T\n"
+        "  second: T\n"
+        "end\n";
+
+    return compile_fails(source, "a duplicate type parameter",
+                         MESSAGE_CHECKER_DUPLICATE_TYPE_PARAMETER, "T");
+}
+
+TestResult test_checker_cannot_infer_type(void)
+{
+    const char *source =
+        "fun make<T>(): T\n"
+        "  return nil\n"
+        "end\n"
+        "\n"
+        "var x: Int32 = make()\n";
+
+    return compile_fails(source, "a call with no type to infer",
+                         MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "make");
+}
+
+TestResult test_checker_generic_as_value(void)
+{
+    const char *source =
+        "fun identity<T>(x: T): T\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var f = identity\n";
+
+    return compile_fails(source, "a generic function used as a value",
+                         MESSAGE_CHECKER_GENERIC_AS_VALUE, "identity");
+}
+
+TestResult test_checker_is_type_is_union(void)
+{
+    const char *source =
+        "fun f(x: Int32 | Bool): Int32\n"
+        "  if x.is<Int32 | Bool>() then\n"
+        "    return 0\n"
+        "  end\n"
+        "  return 1\n"
+        "end\n";
+
+    return compile_fails(source, "an is-test whose target is a union",
+                         MESSAGE_CHECKER_IS_TYPE_IS_UNION);
+}
+
+TestResult test_checker_recursive_alias(void)
+{
+    const char *source =
+        "type Loop = Loop | Int32\n"
+        "var x: Loop = 1\n";
+
+    return compile_fails(source, "a recursive alias",
+                         MESSAGE_CHECKER_RECURSIVE_TYPE, "Loop");
+}
+
+TestResult test_checker_nil_type_mismatch(void)
+{
+    return compile_fails("var x: Int32 = nil\n",
+                         "nil initialising an Int32",
+                         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "x",
+                         "Int32");
+}
+
+
+TestResult test_analyser_invalid_type_child(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    size_t type_index = 0;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = NIPPY_TYPE_UNION;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    type.first_child = 0;
+    type.child_count = 2;
+    if (!typed_program_add_type(&program, &type, &type_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_TYPE_CHILD, type_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid type child did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+TestResult test_analyser_invalid_declaration(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    size_t type_index = 0;
+    size_t name;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    name = typed_program_copy_symbol(&program, "Point", 5);
+    type.kind = NIPPY_TYPE_STRUCT;
+    type.name_index = name;
+    type.source_name_index = name;
+    type.declaration_node = 999;
+    if (!typed_program_add_type(&program, &type, &type_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_DECLARATION, type_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid declaration link did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+TestResult test_analyser_invalid_auxiliary_type(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType bool_type = {0};
+    TypedNode node = {0};
+    size_t bool_index = 0;
+    size_t node_index = 0;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    bool_type.kind = NIPPY_TYPE_BOOL;
+    bool_type.name_index = TYPED_NO_NODE;
+    bool_type.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &bool_type, &bool_index)) {
+        return TEST_ERROR;
+    }
+    node.kind = TYPED_IS;
+    node.type_index = bool_index;
+    node.auxiliary_type = 999;
+    node.name_index = TYPED_NO_NODE;
+    node.left_child = TYPED_NO_NODE;
+    node.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &node, &node_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_AUXILIARY_TYPE, node_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid auxiliary type did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+
+/* ---- new parser diagnostics ---- */
+
+TestResult test_parser_expected_type_parameter_name(void)
+{
+    return compile_fails("fun f<>(x:Int32):Int32\n  return x\nend\n",
+                         "an empty type parameter list",
+                         MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_NAME);
+}
+
+TestResult test_parser_expected_type_parameter_separator(void)
+{
+    return compile_fails("fun f<T U>(x:Int32):Int32\n  return x\nend\n",
+                         "type parameters without a separator",
+                         MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_SEPARATOR);
+}
+
+TestResult test_parser_expected_type_parameter_gt(void)
+{
+    return compile_fails("fun f<T", "a type parameter list without '>'",
+                         MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_GT);
+}
+
+TestResult test_parser_expected_type_argument(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: T\n"
+        "end\n"
+        "var b: Box<> = 1\n";
+
+    return compile_fails(source, "an empty type argument list",
+                         MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT);
+}
+
+TestResult test_parser_expected_type_argument_separator(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: T\n"
+        "end\n"
+        "var b: Box<Int32 Bool> = 1\n";
+
+    return compile_fails(source, "type arguments without a separator",
+                         MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_SEPARATOR);
+}
+
+TestResult test_parser_expected_type_argument_gt(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: T\n"
+        "end\n"
+        "var b: Box<Int32";
+
+    return compile_fails(source, "a type argument list without '>'",
+                         MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT);
+}
+
+TestResult test_parser_expected_union_alternative(void)
+{
+    return compile_fails("var x: Int32 | = 3\n",
+                         "a union without its second alternative",
+                         MESSAGE_PARSER_EXPECTED_UNION_ALTERNATIVE);
+}
+
+TestResult test_parser_expected_is_lt(void)
+{
+    return compile_fails("fun f(x:Int32):Bool\n  return x.is\nend\n",
+                         "an is-test without '<'",
+                         MESSAGE_PARSER_EXPECTED_IS_LT);
+}
+
+TestResult test_parser_expected_is_gt(void)
+{
+    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32\nend\n",
+                         "an is-test without '>'",
+                         MESSAGE_PARSER_EXPECTED_IS_GT);
+}
+
+TestResult test_parser_expected_is_lparen(void)
+{
+    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32> end\nend\n",
+                         "an is-test without '('",
+                         MESSAGE_PARSER_EXPECTED_IS_LPAREN);
+}
+
+TestResult test_parser_expected_is_rparen(void)
+{
+    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32>( end\nend\n",
+                         "an is-test without ')'",
+                         MESSAGE_PARSER_EXPECTED_IS_RPAREN);
+}
+
+TestResult test_parser_expected_member_name(void)
+{
+    return compile_fails("fun f(x:Int32):Bool\n  return x. end\nend\n",
+                         "a dot without a member name",
+                         MESSAGE_PARSER_EXPECTED_MEMBER_NAME);
+}
+
+TestResult test_checker_redefines_nil(void)
+{
+    return compile_fails("type Nil x: Int32 end\n",
+                         "a type declaration named Nil",
+                         MESSAGE_CHECKER_REDEFINES_NIL);
+}
+
+
+TestResult test_checker_function_field(void)
+{
+    const char *source =
+        "type Holder\n"
+        "  f: Fun<(Int32):Int32>\n"
+        "end\n";
+
+    return compile_fails(source, "a function-typed struct field",
+                         MESSAGE_CHECKER_FIELD_TYPE, "f");
+}
+
+TestResult test_checker_function_union_alternative(void)
+{
+    return compile_fails("type F = Fun<(Int32):Int32> | Nil\n",
+                         "a function-typed union alternative",
+                         MESSAGE_CHECKER_UNION_FUNCTION);
+}
+
+
+TestResult test_checker_recursive_struct(void)
+{
+    return compile_fails("type Box\n  value: Box\nend\n",
+                         "a recursive struct",
+                         MESSAGE_CHECKER_RECURSIVE_TYPE, "Box");
+}
+
+TestResult test_checker_recursive_generic_struct(void)
+{
+    const char *source =
+        "type Box<T>\n"
+        "  value: Box<T>\n"
+        "end\n"
+        "var b: Box<Int32> = Box(1)\n";
+
+    return compile_fails(source, "a recursive generic struct",
+                         MESSAGE_CHECKER_RECURSIVE_TYPE, "Box");
+}
+
+TestResult test_checker_union_injection_mismatch(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "end\n"
+        "type S = Int32 | Bool\n"
+        "var s: S = Point(1)\n";
+
+    return compile_fails(source, "an incompatible union initializer",
+                         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "s", "S");
+}
+
+
+TestResult test_checker_redefines_nil_variable(void)
+{
+    return compile_fails("var Nil = 1\n", "a variable named Nil",
+                         MESSAGE_CHECKER_DUPLICATE_NAME, "Nil");
+}
+
+TestResult test_checker_nil_as_value(void)
+{
+    return compile_fails("var x = Nil\n", "the Nil type used as a value",
+                         MESSAGE_CHECKER_TYPE_AS_VALUE, "Nil");
+}
+
+
+TestResult test_checker_construct_alias_union(void)
+{
+    const char *source =
+        "type S = Int32 | Bool\n"
+        "var s = S(1)\n";
+
+    return compile_fails(source, "constructing a union alias",
+                         MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT, "S");
+}
+
+TestResult test_checker_builtin_type_arguments(void)
+{
+    return compile_fails("var x: Int32<Bool> = 1\n",
+                         "type arguments on a builtin",
+                         MESSAGE_CHECKER_TYPE_NOT_GENERIC, "Int32");
+}
+
+TestResult test_checker_store_size_constant(void)
+{
+    const char *source =
+        "var n: Int32 = 4\n"
+        "var s: Store = Store(n)\n";
+
+    return compile_fails(source, "a non-constant store size",
+                         MESSAGE_CHECKER_STORE_SIZE);
+}
+
+TestResult test_checker_store_initializer(void)
+{
+    return compile_fails("var s: Store = 16\n",
+                         "a store without Store(bytes)",
+                         MESSAGE_CHECKER_STORE_INITIALIZER, "s");
+}
+
+TestResult test_checker_store_without_annotation(void)
+{
+    return compile_fails("var s = Store(16)\n",
+                         "Store(...) without a Store annotation",
+                         MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TestResult test_checker_store_as_value(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var t = s\n";
+
+    return compile_fails(source, "a store used as a value",
+                         MESSAGE_CHECKER_STORE_NOT_VALUE, "s");
+}
+
+TestResult test_checker_duplicate_store(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var s: Store = Store(16)\n";
+
+    return compile_fails(source, "a duplicate store",
+                         MESSAGE_CHECKER_DUPLICATE_NAME, "s");
+}
+
+TestResult test_checker_store_parameter(void)
+{
+    return compile_fails("fun f(x: Store): Int32\n  return 0\nend\n",
+                         "a Store parameter",
+                         MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TestResult test_checker_store_return(void)
+{
+    return compile_fails("fun f(): Store\n  return 0\nend\n",
+                         "a Store return type",
+                         MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TestResult test_checker_store_field(void)
+{
+    return compile_fails("type H\n  value: Store\nend\n",
+                         "a Store struct field",
+                         MESSAGE_CHECKER_FIELD_TYPE, "value");
+}
+
+TestResult test_checker_store_union(void)
+{
+    return compile_fails("type S = Store | Nil\n",
+                         "a Store union alternative",
+                         MESSAGE_CHECKER_UNION_FUNCTION);
+}
+
+TestResult test_checker_store_type_arguments(void)
+{
+    return compile_fails("var s: Store<Int32> = Store(16)\n",
+                         "type arguments on Store",
+                         MESSAGE_CHECKER_TYPE_NOT_GENERIC, "Store");
+}
+
+TestResult test_checker_alloc_type_argument(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.alloc(1)\n";
+
+    return compile_fails(source, "alloc without a type argument",
+                         MESSAGE_CHECKER_ALLOC_TYPE_ARG);
+}
+
+TestResult test_checker_alloc_union(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.alloc<Int32 | Nil>(1)\n";
+
+    return compile_fails(source, "alloc of a union",
+                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+}
+
+TestResult test_checker_alloc_store(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.alloc<Store>(nil)\n";
+
+    return compile_fails(source, "alloc of a Store",
+                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+}
+
+TestResult test_checker_alloc_count(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.alloc<Int32>()\n";
+
+    return compile_fails(source, "alloc with no value",
+                         MESSAGE_CHECKER_ALLOC_ARG_COUNT);
+}
+
+TestResult test_checker_alloc_value_type(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.alloc<Int32>(true)\n";
+
+    return compile_fails(source, "alloc with the wrong value type",
+                         MESSAGE_CHECKER_ALLOC_ARG_TYPE, "Int32");
+}
+
+TestResult test_checker_handle_element(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var h: Handle<Int32 | Nil> = s.alloc<Int32>(1)\n";
+
+    return compile_fails(source, "a union handle element",
+                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+}
+
+TestResult test_checker_unknown_store(void)
+{
+    return compile_fails("var p = nope.alloc<Int32>(1)\n",
+                         "an unknown store",
+                         MESSAGE_CHECKER_UNKNOWN_STORE, "nope");
+}
+
+TestResult test_checker_reset_args(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var r: Nil = s.reset(1)\n";
+
+    return compile_fails(source, "reset with an argument",
+                         MESSAGE_CHECKER_MEMBER_ARGS, "reset");
+}
+
+TestResult test_checker_reset_type_argument(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var r: Nil = s.reset<Int32>()\n";
+
+    return compile_fails(source, "reset with a type argument",
+                         MESSAGE_CHECKER_MEMBER_TYPE_ARG, "reset");
+}
+
+TestResult test_checker_read_on_non_handle(void)
+{
+    const char *source =
+        "var x: Int32 = 1\n"
+        "var y: Int32 = x.read()\n";
+
+    return compile_fails(source, "read on an Int32",
+                         MESSAGE_CHECKER_MEMBER_RECEIVER, "read");
+}
+
+TestResult test_checker_write_type(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "var w: Nil = p.write(true)\n";
+
+    return compile_fails(source, "write with the wrong value type",
+                         MESSAGE_CHECKER_WRITE_TYPE);
+}
+
+TestResult test_checker_byte_range(void)
+{
+    return compile_fails("var b: Byte = 300\n",
+                         "a byte literal out of range",
+                         MESSAGE_CHECKER_BYTE_RANGE, 300);
+}
+
+TestResult test_checker_unknown_member(void)
+{
+    const char *source =
+        "var s: Store = Store(16)\n"
+        "var p = s.foo()\n";
+
+    return compile_fails(source, "an unknown member",
+                         MESSAGE_CHECKER_UNKNOWN_MEMBER, "foo");
+}
+
+TestResult test_generator_store_runtime_messages(void)
+{
+    CompilerConfig config = {"test.h", "test.nip"};
+    CompilerResult result = compiler_compile(
+        "var s: Store = Store(16)\nvar p: Handle<Int32> = s.alloc<Int32>(1)\n",
+        &config);
+    int ok;
+
+    if (!result.succeeded) {
+        compiler_result_free(&result);
+        return TEST_FAIL;
+    }
+    ok = result.c_source != NULL &&
+         strstr(result.c_source, MESSAGE_RUNTIME_OUT_OF_MEMORY) != NULL &&
+         strstr(result.c_source, MESSAGE_RUNTIME_STALE_HANDLE) != NULL &&
+         strstr(result.c_source, MESSAGE_RUNTIME_HANDLE_BOUNDS) != NULL &&
+         strstr(result.c_source, MESSAGE_RUNTIME_STORE_RANGE) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  generated store runtime lacks a diagnostic\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_analyser_invalid_store_id(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType store_type = {0};
+    TypedNode declaration = {0};
+    size_t type_index = 0;
+    size_t node_index = 0;
+    size_t name;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    store_type.kind = NIPPY_TYPE_STORE;
+    store_type.name_index = TYPED_NO_NODE;
+    store_type.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &store_type, &type_index)) {
+        return TEST_ERROR;
+    }
+    name = typed_program_copy_symbol(&program, "s", 1);
+    declaration.kind = TYPED_STORE_DECLARATION;
+    declaration.type_index = type_index;
+    declaration.store_id = 1;
+    declaration.integer_value = 16;
+    declaration.name_index = name;
+    declaration.left_child = TYPED_NO_NODE;
+    declaration.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &declaration, &node_index) ||
+        !list_push(&program.roots, &node_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_STORE_ID, node_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid store id did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+TestResult test_analyser_invalid_handle_type(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType handle = {0};
+    size_t type_index = 0;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    handle.kind = NIPPY_TYPE_HANDLE;
+    handle.name_index = TYPED_NO_NODE;
+    handle.signature_index = TYPED_NO_NODE;
+    handle.first_child = 0;
+    handle.child_count = 0;
+    if (!typed_program_add_type(&program, &handle, &type_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_HANDLE_TYPE, type_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid handle type did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
 /* Every test in this suite, in run order. The table lives here so adding
    a test needs only its definition above and one entry below. */
 static const TestCase tests[] = {
@@ -2091,6 +6949,48 @@ static const TestCase tests[] = {
     {"Bool struct field generates the golden C", test_bool_struct_field_codegen},
     {"newline and whitespace variants generate the golden C",
      test_whitespace_agnostic_codegen},
+    {"inference through Handle<T>", test_generic_handle_codegen},
+    {"allocating a generic value", test_generic_alloc_codegen},
+    {"a Handle union alternative", test_handle_union_codegen},
+    {"two independent stores", test_two_stores_codegen},
+    {"a constant store size expression", test_store_size_expr_codegen},
+
+    {"a store allocation and read", test_store_alloc_codegen},
+    {"store write and reset", test_store_write_reset_codegen},
+    {"Byte values and equality", test_byte_basics_codegen},
+    {"a Byte struct field", test_byte_struct_codegen},
+    {"a Handle struct field", test_handle_field_codegen},
+    {"store use inside functions", test_store_functions_codegen},
+    {"a call expression statement", test_expression_statement_codegen},
+    {"a top-level call statement", test_top_level_reset_codegen},
+    {"Byte equality with a literal", test_byte_equality_codegen},
+    {"allocating a Byte", test_alloc_byte_codegen},
+    {"a generic union return", test_generic_union_return_codegen},
+    {"Nil in a field and a parameter", test_nil_field_param_codegen},
+    {"a named-argument generic constructor", test_generic_struct_named_codegen},
+    {"a generic struct over a struct", test_generic_struct_point_codegen},
+    {"a chain of union aliases", test_alias_chain_codegen},
+    {"a two-parameter generic function", test_generic_two_params_codegen},
+    {"a generic function calling a generic function", test_generic_nested_call_codegen},
+    {"union injection at a call argument", test_inject_call_codegen},
+    {"union injection into a struct field", test_union_field_int_codegen},
+    {"statically decided is-tests", test_is_static_codegen},
+    {"an is-Nil test", test_is_nil_codegen},
+    {"a struct union alternative", test_union_struct_codegen},
+    {"two generic struct instantiations", test_generic_struct_two_codegen},
+    {"a generic function over a struct", test_generic_struct_arg_codegen},
+    {"a Nil return", test_nil_return_codegen},
+    {"union injection", test_union_vars_codegen},
+    {"canonical union order", test_union_canonical_codegen},
+    {"is-test and narrowing", test_is_narrow_codegen},
+    {"a generic alias", test_generic_alias_codegen},
+    {"a generic struct", test_generic_struct_codegen},
+    {"a generic function", test_generic_function_codegen},
+    {"two generic instantiations", test_generic_two_types_codegen},
+    {"a generic higher-order function", test_generic_hof_codegen},
+    {"nested generic types", test_generic_nested_codegen},
+    {"a recursive generic function", test_generic_self_codegen},
+    {"a union struct field", test_union_field_codegen},
     {"lexer: integer literal out of range", test_lexer_integer_out_of_range},
     {"lexer: identifier too long", test_lexer_identifier_too_long},
     {"lexer: unexpected character", test_lexer_unexpected_character},
@@ -2118,7 +7018,7 @@ static const TestCase tests[] = {
     {"parser: expected parameter separator",
      test_parser_expected_parameter_separator},
     {"parser: expected return type", test_parser_expected_return_type},
-    {"parser: expected statement or end", test_parser_expected_statement_or_end},
+    {"checker: expression statement must be a call", test_checker_expression_statement},
     {"parser: expected end", test_parser_expected_end},
     {"parser: expected then", test_parser_expected_then},
     {"parser: expected rparen", test_parser_expected_rparen},
@@ -2151,7 +7051,6 @@ static const TestCase tests[] = {
     {"checker: function argument type", test_checker_function_arg_type},
     {"checker: return type mismatch", test_checker_return_type_mismatch},
     {"checker: operator type", test_checker_operator_type},
-    {"checker: field type", test_checker_field_type},
     {"checker: duplicate name", test_checker_duplicate_name},
     {"checker: duplicate parameter", test_checker_duplicate_parameter},
     {"checker: condition type", test_checker_condition_type},
@@ -2185,6 +7084,66 @@ static const TestCase tests[] = {
     {"generator: unsupported type", test_generator_unsupported_type},
     {"generator: unsupported statement", test_generator_unsupported_statement},
     {"compiler: injected out of memory", test_compiler_out_of_memory_is_reported},
+    {"checker: generic type without arguments", test_checker_generic_arity},
+    {"checker: type arguments on non-generic type", test_checker_type_not_generic},
+    {"checker: generic type argument count", test_checker_type_argument_count},
+    {"checker: duplicate type parameter", test_checker_duplicate_type_parameter},
+    {"checker: cannot infer type parameter", test_checker_cannot_infer_type},
+    {"checker: generic function as value", test_checker_generic_as_value},
+    {"checker: is-test target is a union", test_checker_is_type_is_union},
+    {"checker: recursive alias", test_checker_recursive_alias},
+    {"checker: nil type mismatch", test_checker_nil_type_mismatch},
+    {"analyser: invalid type child", test_analyser_invalid_type_child},
+    {"analyser: invalid declaration", test_analyser_invalid_declaration},
+    {"analyser: invalid auxiliary type", test_analyser_invalid_auxiliary_type},
+    {"parser: type parameter name", test_parser_expected_type_parameter_name},
+    {"parser: type parameter separator", test_parser_expected_type_parameter_separator},
+    {"parser: type parameter gt", test_parser_expected_type_parameter_gt},
+    {"parser: type argument", test_parser_expected_type_argument},
+    {"parser: type argument separator", test_parser_expected_type_argument_separator},
+    {"parser: type argument gt", test_parser_expected_type_argument_gt},
+    {"parser: union alternative", test_parser_expected_union_alternative},
+    {"parser: is lt", test_parser_expected_is_lt},
+    {"parser: is gt", test_parser_expected_is_gt},
+    {"parser: is lparen", test_parser_expected_is_lparen},
+    {"parser: is rparen", test_parser_expected_is_rparen},
+    {"parser: member name", test_parser_expected_member_name},
+    {"checker: redefines Nil", test_checker_redefines_nil},
+    {"checker: function field", test_checker_function_field},
+    {"checker: function union alternative", test_checker_function_union_alternative},
+    {"checker: recursive struct", test_checker_recursive_struct},
+    {"checker: recursive generic struct", test_checker_recursive_generic_struct},
+    {"checker: incompatible union injection", test_checker_union_injection_mismatch},
+    {"checker: variable named Nil", test_checker_redefines_nil_variable},
+    {"checker: Nil as a value", test_checker_nil_as_value},
+    {"checker: construct union alias", test_checker_construct_alias_union},
+    {"checker: builtin type arguments", test_checker_builtin_type_arguments},
+    {"store: size must be constant", test_checker_store_size_constant},
+    {"store: initializer must be Store(bytes)", test_checker_store_initializer},
+    {"store: missing annotation", test_checker_store_without_annotation},
+    {"store: not a value", test_checker_store_as_value},
+    {"store: duplicate name", test_checker_duplicate_store},
+    {"store: parameter type", test_checker_store_parameter},
+    {"store: return type", test_checker_store_return},
+    {"store: struct field", test_checker_store_field},
+    {"store: union alternative", test_checker_store_union},
+    {"store: type arguments", test_checker_store_type_arguments},
+    {"store: alloc type argument", test_checker_alloc_type_argument},
+    {"store: alloc union", test_checker_alloc_union},
+    {"store: alloc Store", test_checker_alloc_store},
+    {"store: alloc argument count", test_checker_alloc_count},
+    {"store: alloc value type", test_checker_alloc_value_type},
+    {"store: handle element", test_checker_handle_element},
+    {"store: unknown store", test_checker_unknown_store},
+    {"store: reset arguments", test_checker_reset_args},
+    {"store: reset type argument", test_checker_reset_type_argument},
+    {"store: read on non-handle", test_checker_read_on_non_handle},
+    {"store: write type", test_checker_write_type},
+    {"byte: literal range", test_checker_byte_range},
+    {"store: unknown member", test_checker_unknown_member},
+    {"store: runtime diagnostics emitted", test_generator_store_runtime_messages},
+    {"analyser: invalid store id", test_analyser_invalid_store_id},
+    {"analyser: invalid handle type", test_analyser_invalid_handle_type},
 };
 
 int main(void)

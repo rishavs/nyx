@@ -10,8 +10,9 @@
    `nippy_alloc_fail_after(n)` makes the next `n` allocations succeed and the
    one after that fail, after which the hook disables itself. Failing exactly
    one allocation at a time lets a test see the diagnostic that failure
-   produces. Passing `NIPPY_ALLOC_NEVER` disables the hook. The hook is always compiled in: it costs one counter comparison and
-   keeps the failure paths executable instead of dead code. */
+   produces. Passing `NIPPY_ALLOC_NEVER` disables the hook. The hook is always
+   compiled in: it costs one counter comparison and keeps the failure paths
+   executable instead of dead code. */
 /* "Never fail" sentinel for nippy_alloc_fail_after. */
 #define NIPPY_ALLOC_NEVER ((size_t)-1)
 

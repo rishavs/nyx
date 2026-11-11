@@ -88,15 +88,24 @@ stored inline in `Ast.nodes` and refer to each other by index, with
 `AST_NO_NODE` (`(size_t)-1`) meaning "no child". Top-level declarations are
 recorded in `Ast.roots`, in source order.
 
-Nodes whose arity varies — type declarations, function declarations, blocks,
-`if` branches, call arguments, and function-type parameters — store their
-children as one contiguous run of indices in `Ast.children`, recorded by
-`children_start` and `children_count`. A child expression or statement can
-therefore push its own nodes without splitting its parent's run: every
-variable-arity node appends its run only after all of its children have been
-parsed. Binary, unary, control-flow condition, and leaf nodes use
-`left_child`/`right_child` directly. This keeps the flat-index model intact
+Nodes whose arity varies — struct fields, function parameters, blocks, `if`
+branches, call arguments, union alternatives, type arguments, and function-type
+parameters — store their children as one contiguous run of indices in
+`Ast.children`, recorded by `children_start` and `children_count`. A child
+expression or statement can therefore push its own nodes without splitting its
+parent's run: every variable-arity node appends its run only after all of its
+children have been parsed. Binary, unary, control-flow condition, and leaf nodes
+use `left_child`/`right_child` directly. This keeps the flat-index model intact
 without adding sibling links or pointers.
+
+Type expressions are parsed recursively: `AST_TYPE_NAME`, `AST_TYPE_UNION`,
+`AST_TYPE_APPLICATION`, `AST_TYPE_FUNCTION`, and parenthesized groups. A
+declaration of the form `type Name = Type` becomes `AST_TYPE_ALIAS`; the
+field form remains `AST_TYPE_DECLARATION`. Generic declarations put their type
+parameters in a separate `Ast.type_parameters` run, recorded on the declaration
+by `type_parameters_start`/`type_parameters_count`. A value postfix
+`.is<T>()` becomes `AST_IS`; `nil` becomes `AST_NIL_LITERAL`. Parentheses are
+flattened away during parsing.
 
 Function bodies are blocks of statements. `if`/`elseif`/`else` is parsed as an
 `AST_IF` whose children are the then-block and optional else-block; an
@@ -118,54 +127,91 @@ whole construct has been parsed, which keeps each node's child run adjacent.
 Reads the syntax tree through a `const` pointer and writes a separate
 `TypedProgram`. It does the semantic work the later stages must not repeat:
 
-- resolves type names against the built-in `Int32` and `Bool`, a table of
-  declared struct types, and structural function types;
+- resolves type expressions against built-ins (`Int32`, `Bool`, `Byte`, `Nil`,
+  `Store`, `Handle`), declared structs and aliases, generic applications,
+  unions, and structural function types;
+- expands aliases under a type-parameter environment, instantiates generic
+  structs on demand, flattens/deduplicates/sorts union alternatives, and interns
+  structurally identical unions;
+- rejects duplicate top-level names, duplicate parameters and type parameters,
+  redefinitions of a built-in, generic-arity mistakes, and by-value recursive
+  types;
 - builds `TypedType`, `TypedFunctionSignature`, and signature-parameter records
-  in `TypedProgram`, resolving nested function types before the signature that
-  contains them;
-- rejects duplicate top-level names, duplicate parameters, and shadowing of
-  `Int32` or `Bool`;
-- checks constructor arity, field names, and argument types, for both
-  positional and named argument lists;
+  in `TypedProgram`; a struct type carries its concrete declaration node and a
+  generic instantiation carries its type-argument run;
+- checks constructor arity, field names, and argument types, for both positional
+  and named argument lists; generic constructors infer their type arguments from
+  the arguments;
 - checks function-call arity and argument types against the callee's function
   type, including calls through function-typed variables and parameters;
-- types boolean literals and the comparison, equality, and logical operators;
-- checks that `if` and `while` conditions are `Bool`;
-- checks every `return` expression against the function's return type, and
-  rejects `break`/`continue` outside a loop;
+- types boolean and nil literals, `.is<T>()`, and the comparison, equality, and
+  logical operators;
+- checks `if`/`while` conditions are `Bool`;
+- checks every `return` expression against the return type, and rejects
+  `break`/`continue` outside a loop;
 - proves that every function returns on every path, using the structured
   statement tree (a `while` never guarantees a return);
-- infers a variable's type from its initialiser when the declaration omits it,
-  and checks agreement when both sides state a type;
+- infers a variable's type from its initializer when the annotation is omitted,
+  and checks assignability when both sides state a type;
+- injects an alternative value into a union at initializers, returns, call
+  arguments, and constructor arguments;
+- narrows `name` to `T` inside the then-block of `if name.is<T>() then`, and
+  emits a payload projection node for uses of the narrowed name;
+- types store declarations, records their ids and constant byte sizes, and
+  makes store names visible to function bodies without making them values;
+- types `alloc<T>(value)`, `reset()`, `read()`, and `write(value)`; checks that
+  an allocation element is a single sized type; builds `Handle<T>` records;
+- types integer literals as `Byte` in Byte contexts and range-checks them;
+- rejects store/function field and union-alternative types, and Store in
+  parameters, returns, and ordinary values;
+- monomorphizes generic functions: a call infers type arguments from the value
+  arguments, checks the generic body under that concrete binding (with a fresh
+  AST-to-typed mapping), and emits a concrete function. Recursive calls reuse
+  the in-progress instantiation;
 - copies every name it keeps into `TypedProgram.symbols`, so the typed program
   outlives the syntax tree.
 
-The type table is a `List` of `TypeEntry` records searched linearly: names are
-compared as strings, and there is no hashing yet. Function and variable tables
-are also linear `List`s. Function types are compared structurally, so two
-independently written `Fun<(Int32):Int32>` annotations are the same type.
+The checker owns four linear tables: declared types (`TypeEntry`), functions
+(`FunctionEntry`), program-level variables, and the current function's
+parameters, plus linear instantiation tables for generic structs and functions.
+Type identity is structural for unions and functions and nominal for structs.
+Union alternatives are stored in a canonical order, so structural equality is a
+linear walk.
 
 ### Analyser
 
 A read-only pass over the typed program that validates its internal links:
 root indices, direct child indices, variable-arity child indices, symbol
-indices, type indices, and function-signature links. It produces no artifact,
-because memory and ownership analysis does not exist yet. When the
-bidirectional-pointer rules land, this stage either refines the typed program or
-is split out into a distinct analysis artifact — it must not become a second
-mutation pass over the syntax tree, which it never receives.
+indices, type indices, function-signature links, union and struct type-child runs, struct
+declaration links, handle element types, store ids, and the auxiliary type on an
+`.is` test. It
+produces no artifact, because memory and ownership analysis does not exist yet.
+When the bidirectional-pointer rules land, this stage either refines the typed
+program or is split out into a distinct analysis artifact — it must not become a
+second mutation pass over the syntax tree, which it never receives.
 
 ### Generator
 
 Consumes the typed program only. It emits:
 
 - **the header**, holding the generated include guard, `<stdbool.h>`,
-  `<stdint.h>`, one `typedef struct` per declared type, one function-pointer
-  `typedef` per function signature (`nippy_fun_N`), and — when the program is a
-  single integer variable — the declaration of `nippy_program_value`;
-- **the source**, holding `#include "<generated header>"`, one function
-  definition per declared function, one `#line` directive per emitted
-  declaration or statement, the variable initialisers, and `main`.
+  `<stdint.h>`, `<stddef.h>` when a store or handle is present, the
+  `nippy_nil` typedef when Nil is used, the opaque `nippy_handle` and
+  `nippy_store` records, one `typedef struct` per struct type and generic
+  instantiation, one tagged `typedef struct` per union type, one
+  function-pointer `typedef` per function signature (`nippy_fun_N`), and — when
+  the program is a single integer variable — the declaration of
+  `nippy_program_value`;
+- **the source**, holding `#include "<generated header>"`, the arena runtime
+  when a store is declared, one function definition per non-generic function
+  and per concrete generic instantiation, one `#line` directive per emitted
+  declaration or statement, the variable initializers, store init/free calls,
+  call statements, and `main`.
+
+Type definitions are emitted from `TypedProgram.types` in index order. The
+checker creates types bottom-up, so this order is topological and every type
+appears after the types it mentions. Type-declaration nodes that are also
+program roots are skipped during the root pass to avoid emitting them twice.
 
 Generated C is internal IR. It is not required to be human-readable or
 formatted, and its text is not a stable interface. It *is* required to compile
@@ -175,8 +221,22 @@ declaration and statement emitted is preceded by `#line <line> "<source>"` so a
 C-compiler diagnostic points back at the Nippy source. Function types are
 emitted as typedefs so every generated declaration is a simple `type name` pair,
 including function-typed parameters and variables. `Bool` maps to `bool`;
-`if`, `while`, `break`, and `continue` are emitted as the corresponding C
-statements, and `elseif` chains are emitted as nested `else { if ... }` blocks.
+`Nil` maps to a one-byte `nippy_nil`; a union is a `uint32_t tag` plus a union
+of payload members named by alternative position. `if`, `while`, `break`, and
+`continue` are emitted as the corresponding C statements, and `elseif` chains
+are emitted as nested `else { if ... }` blocks. A `TYPED_SUM_INJECT` becomes a
+compound literal, `TYPED_IS` becomes a tag comparison (or a literal when the
+checker decided it statically), and `TYPED_SUM_PAYLOAD` reads the payload member
+directly.
+
+A `TYPED_STORE_DECLARATION` becomes an entry in the global store table and an
+init call at the start of `main`; it is never a C local. `TYPED_STORE_ALLOC`
+calls the arena allocator with `sizeof(T)` and `_Alignof(T)`, `TYPED_HANDLE_READ`
+dereferences the checked handle pointer, `TYPED_STORE_RESET` clears the store and
+bumps its generation, and `TYPED_HANDLE_WRITE` copies through the checked
+pointer. The runtime grows by doubling, retains capacity on reset, and panics
+deterministically on OOM, stale handles, invalid store ids, and out-of-range
+handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`.
 
 Because the number of declarations and fields is not fixed, the generator
 composes text in a growable `TextBuffer` and validates every interpolated
@@ -225,6 +285,17 @@ Fixed-size records and buffers are used where the size is a hard language limit:
 `Token.text`, `AstSymbol.text`, and `TypedSymbol.text` are
 `char[NIPPY_IDENTIFIER_MAX]`, and `ErrorState.message` is a fixed
 `ERROR_MESSAGE_CAPACITY` (4096) byte buffer whose truncation is handled.
+
+`Ast` keeps a separate `type_parameters` run because a generic declaration's
+value children and type parameters must not share one run. `TypedType` records a
+union's alternatives, a struct instantiation's type arguments, or a
+`Handle<T>`'s element type as a run in `TypedProgram.type_children`, a struct's
+concrete declaration node, and the source name used for generic inference.
+`TypedNode.store_id` links a store declaration, allocation, or reset to its
+global store. The checker keeps its declared-type,
+function, variable, struct-instantiation, and function-instantiation tables as
+linear `List`s of fixed-size records; a `List` element never owns another
+`List`.
 
 Two structures sit outside `List` by design:
 
@@ -277,3 +348,23 @@ never pointers.
 - The type, function, and variable tables are linear string searches.
 - Function types are emitted as one typedef per signature occurrence, so
   duplicate but structurally identical typedefs are common.
+- Generic calls only infer type arguments from value arguments. A type
+  parameter that appears only in a union or alias application with unbound
+  parameters is not inferable, and there is no explicit call-site type-argument
+  syntax.
+- Generic functions are checked per instantiation, so a generic function that is
+  never called is not body-checked and produces no code.
+- `.is<T>()` requires a single non-union target; union-subset tests and
+  narrowing of the else branch are not implemented.
+- A generic constructor infers from its arguments only; there is no
+  expected-type propagation from a variable annotation.
+- A union value is not assignable to a different union; there is no subset
+  widening.
+- Function-typed struct fields and union alternatives are rejected, because type
+  definitions are emitted before function-pointer typedefs.
+- Stores are global and non-first-class: no local store, no store parameter or
+  return, and no copy. There is no per-object free; reset is the only
+  deallocation. Allocation failure aborts rather than returning a value.
+- Handles are opaque; index, store id, and generation are not exposed. `read`
+  and `write` copy values; scoped access does not exist yet.
+- Byte supports equality only; arithmetic and Byte/Int32 conversion are absent.

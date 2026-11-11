@@ -194,8 +194,9 @@ and to names by index.
 typedef struct {
     List nodes;
     List symbols;
-    List roots;      /* indices into nodes */
-    List children;   /* indices into nodes, for variable-arity children */
+    List roots;           /* indices into nodes */
+    List children;        /* indices into nodes, for variable-arity children */
+    List type_parameters; /* indices into nodes, for generic declarations */
 } Ast;
 
 typedef struct {
@@ -206,13 +207,23 @@ typedef struct {
     List types;                /* TypedType records */
     List signatures;           /* TypedFunctionSignature records */
     List signature_parameters; /* indices into types */
+    List type_children;        /* indices into types: union alternatives and
+                                  struct type arguments */
 } TypedProgram;
 ```
 
 `AstNode` and `TypedNode` carry `left_child`/`right_child` for direct links and
 `children_start`/`children_count` for a run of variable-arity children in the
-owning `children` list. Function bodies and `if`/`while` bodies are block nodes;
-block statements and `if` branches are stored in `children`.
+owning `children` list. `AstNode` additionally carries
+`type_parameters_start`/`type_parameters_count`, indexing `Ast.type_parameters`
+(used by generic struct, alias, and function declarations; 0/0 when absent).
+`AST_MEMBER_CALL` stores its receiver in `left_child`, its optional type
+argument in `right_child`, its method name in `name_index`, and its positional
+arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
+expression in `left_child`; the checker accepts it only for call expressions.
+`TypedNode.auxiliary_type` holds the tested type for a `TYPED_IS` node and is
+`TYPED_NO_NODE` otherwise. Function bodies and `if`/`while` bodies are block
+nodes; block statements and `if` branches are stored in `children`.
 `TYPED_NO_NODE`/`AST_NO_NODE` means "no node".
 
 Resolved types are records in `TypedProgram.types`:
@@ -222,14 +233,23 @@ typedef enum {
     NIPPY_TYPE_UNKNOWN,
     NIPPY_TYPE_INT32,
     NIPPY_TYPE_BOOL,
+    NIPPY_TYPE_BYTE,
+    NIPPY_TYPE_NIL,
     NIPPY_TYPE_STRUCT,
-    NIPPY_TYPE_FUNCTION
+    NIPPY_TYPE_FUNCTION,
+    NIPPY_TYPE_UNION,
+    NIPPY_TYPE_STORE,
+    NIPPY_TYPE_HANDLE
 } NippyType;
 
 typedef struct {
     NippyType kind;
-    size_t name_index;      /* struct name symbol, or NO_NODE */
-    size_t signature_index; /* function signature, or NO_NODE */
+    size_t name_index;        /* struct C name symbol, or NO_NODE */
+    size_t signature_index;   /* function signature, or NO_NODE */
+    size_t first_child;       /* union alternatives or struct type arguments */
+    size_t child_count;
+    size_t declaration_node;  /* concrete struct declaration, or NO_NODE */
+    size_t source_name_index; /* source struct name for inference, or NO_NODE */
 } TypedType;
 
 typedef struct {
@@ -248,6 +268,7 @@ const AstNode *ast_get_node(const Ast *ast, size_t index);
 size_t ast_intern_symbol(Ast *ast, const char *text, size_t length);
 const char *ast_symbol_text(const Ast *ast, size_t index);
 bool ast_push_child(Ast *ast, size_t index);
+bool ast_push_type_parameter(Ast *ast, size_t index);
 
 void typed_program_init(TypedProgram *program);
 void typed_program_free(TypedProgram *program);
@@ -268,8 +289,33 @@ bool typed_program_add_signature(TypedProgram *program,
                                  size_t *out_index);
 bool typed_program_add_signature_parameter(TypedProgram *program,
                                            size_t type_index);
+bool typed_program_add_type_child(TypedProgram *program, size_t type_index);
 bool typed_program_push_child(TypedProgram *program, size_t index);
 ```
+
+A `NIPPY_TYPE_UNION` type's `first_child`/`child_count` run in
+`program->type_children` holds the canonical alternatives. A
+`NIPPY_TYPE_STRUCT` type's run holds its type arguments (empty for a non-generic
+struct), and `declaration_node` points at the concrete
+`TYPED_TYPE_DECLARATION` node whose field children describe the layout.
+
+The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
+`TYPED_SUM_PAYLOAD`, `TYPED_IS`, `TYPED_STORE_DECLARATION`,
+`TYPED_STORE_ALLOC`, `TYPED_STORE_RESET`, `TYPED_HANDLE_READ`,
+`TYPED_HANDLE_WRITE`, and `TYPED_EXPRESSION_STATEMENT`. For injection and
+payload projection, `integer_value` is the alternative's canonical tag.
+`TYPED_IS` stores the tested type in `auxiliary_type` and a tag in
+`integer_value`; a statically decided test is emitted as a boolean literal, not
+a tag comparison.
+
+`TypedNode.store_id` carries the global store id for a store declaration,
+allocation, or reset, and is `TYPED_NO_NODE` elsewhere. A
+`TYPED_STORE_DECLARATION` has type `Store` and `integer_value` = initial bytes;
+a `TYPED_STORE_ALLOC` has type `Handle<T>` and its value in `left_child`; a
+`TYPED_HANDLE_READ` has type `T` and the handle in `left_child`; a
+`TYPED_HANDLE_WRITE` has type `Nil`, the handle in `left_child`, and the value
+in `right_child`. A handle type's element type is its single entry in
+`program->type_children`.
 
 The `add_*` helpers append and return the new index. The caller must check
 `bool` results; a false return means allocation failed. `typed_program_copy_symbol`

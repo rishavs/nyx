@@ -83,6 +83,30 @@
     "parser: expected ':' before a function type's return type"
 #define MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_GT \
     "parser: expected '>' after a function type"
+#define MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_NAME \
+    "parser: expected a type parameter name"
+#define MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_SEPARATOR \
+    "parser: expected ',' or '>' after a type parameter"
+#define MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_GT \
+    "parser: expected '>' after a type parameter list"
+#define MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT \
+    "parser: expected a type argument"
+#define MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_SEPARATOR \
+    "parser: expected ',' or '>' after a type argument"
+#define MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT \
+    "parser: expected '>' after a type argument list"
+#define MESSAGE_PARSER_EXPECTED_UNION_ALTERNATIVE \
+    "parser: expected a type alternative after '|'"
+#define MESSAGE_PARSER_EXPECTED_IS_LT \
+    "parser: expected '<' after 'is'"
+#define MESSAGE_PARSER_EXPECTED_IS_GT \
+    "parser: expected '>' after the 'is' type"
+#define MESSAGE_PARSER_EXPECTED_IS_LPAREN \
+    "parser: expected '(' after the 'is' type"
+#define MESSAGE_PARSER_EXPECTED_IS_RPAREN \
+    "parser: expected ')' after 'is<T>'"
+#define MESSAGE_PARSER_EXPECTED_MEMBER_NAME \
+    "parser: expected a member name after '.'"
 
 /* Checker */
 #define MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM \
@@ -151,8 +175,6 @@
     "checker: function '%s' has no return expression"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
-#define MESSAGE_CHECKER_FIELD_TYPE \
-    "checker: field '%s' must be Int32 or Bool"
 #define MESSAGE_CHECKER_CONDITION_TYPE \
     "checker: condition must be Bool"
 #define MESSAGE_CHECKER_BREAK_OUTSIDE_LOOP \
@@ -161,6 +183,60 @@
     "checker: 'continue' outside a loop"
 #define MESSAGE_CHECKER_FUNCTION_MAY_NOT_RETURN \
     "checker: function '%s' may reach the end without returning"
+#define MESSAGE_CHECKER_FIELD_TYPE \
+    "checker: field '%s' has an unsupported type"
+#define MESSAGE_CHECKER_UNION_FUNCTION \
+    "checker: union alternative has an unsupported type"
+#define MESSAGE_CHECKER_BYTE_RANGE \
+    "checker: byte literal %d is outside 0..255"
+#define MESSAGE_CHECKER_STORE_SIZE \
+    "checker: store size must be a constant Int32 expression"
+#define MESSAGE_CHECKER_STORE_INITIALIZER \
+    "checker: store '%s' must be initialised with Store(bytes)"
+#define MESSAGE_CHECKER_STORE_NOT_VALUE \
+    "checker: store '%s' is not a value"
+#define MESSAGE_CHECKER_STORE_TYPE \
+    "checker: Store is only valid as a store declaration type"
+#define MESSAGE_CHECKER_HANDLE_ELEMENT \
+    "checker: Handle element type must be a single sized type"
+#define MESSAGE_CHECKER_ALLOC_ARG_COUNT \
+    "checker: alloc expects exactly one value"
+#define MESSAGE_CHECKER_ALLOC_ARG_TYPE \
+    "checker: alloc<%s> value has the wrong type"
+#define MESSAGE_CHECKER_UNKNOWN_MEMBER \
+    "checker: unknown member '%s'"
+#define MESSAGE_CHECKER_MEMBER_RECEIVER \
+    "checker: '%s' must be called on the right kind of value"
+#define MESSAGE_CHECKER_MEMBER_ARGS \
+    "checker: '%s' has the wrong number of arguments"
+#define MESSAGE_CHECKER_MEMBER_TYPE_ARG \
+    "checker: '%s' does not take a type argument"
+#define MESSAGE_CHECKER_WRITE_TYPE \
+    "checker: write value has the wrong type"
+#define MESSAGE_CHECKER_UNKNOWN_STORE \
+    "checker: unknown store '%s'"
+#define MESSAGE_CHECKER_ALLOC_TYPE_ARG \
+    "checker: alloc requires a type argument"
+#define MESSAGE_CHECKER_EXPRESSION_STATEMENT \
+    "checker: expression statement must be a call"
+#define MESSAGE_CHECKER_REDEFINES_NIL \
+    "checker: cannot redefine built-in type 'Nil'"
+#define MESSAGE_CHECKER_DUPLICATE_TYPE_PARAMETER \
+    "checker: duplicate type parameter '%s'"
+#define MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT \
+    "checker: type '%s' expects %zu type argument(s), got %zu"
+#define MESSAGE_CHECKER_TYPE_NOT_GENERIC \
+    "checker: type '%s' takes no type arguments"
+#define MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS \
+    "checker: type '%s' needs type arguments"
+#define MESSAGE_CHECKER_CANNOT_INFER_TYPE \
+    "checker: cannot infer type parameter '%s' of '%s'"
+#define MESSAGE_CHECKER_GENERIC_AS_VALUE \
+    "checker: generic function '%s' must be called"
+#define MESSAGE_CHECKER_IS_TYPE_IS_UNION \
+    "checker: '.is<T>()' requires a single non-union type"
+#define MESSAGE_CHECKER_RECURSIVE_TYPE \
+    "checker: type '%s' is defined recursively"
 
 /* Analyser */
 #define MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE \
@@ -177,6 +253,16 @@
     "analyser: program contains an invalid signature index at type %zu"
 #define MESSAGE_ANALYSER_INVALID_SIGNATURE_LINK \
     "analyser: program contains an invalid signature link at signature %zu"
+#define MESSAGE_ANALYSER_INVALID_TYPE_CHILD \
+    "analyser: program contains an invalid type child at type %zu"
+#define MESSAGE_ANALYSER_INVALID_DECLARATION \
+    "analyser: struct type %zu has no declaration"
+#define MESSAGE_ANALYSER_INVALID_AUXILIARY_TYPE \
+    "analyser: program contains an invalid auxiliary type at node %zu"
+#define MESSAGE_ANALYSER_INVALID_HANDLE_TYPE \
+    "analyser: handle type %zu has no element type"
+#define MESSAGE_ANALYSER_INVALID_STORE_ID \
+    "analyser: node %zu has an invalid store id"
 
 /* Generator */
 #define MESSAGE_GENERATOR_UNSUPPORTED_ROOT \
@@ -199,6 +285,12 @@
     "generator: invalid generated #line filename"
 #define MESSAGE_GENERATOR_OUT_OF_MEMORY \
     "generator: out of memory while generating source"
+
+/* Runtime diagnostics embedded in generated C. */
+#define MESSAGE_RUNTIME_OUT_OF_MEMORY "nippy: out of memory"
+#define MESSAGE_RUNTIME_STALE_HANDLE "nippy: stale handle"
+#define MESSAGE_RUNTIME_HANDLE_BOUNDS "nippy: handle is out of range"
+#define MESSAGE_RUNTIME_STORE_RANGE "nippy: invalid store id"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \

@@ -123,11 +123,12 @@ Scripts, snippets, and scratch files belong in `tmp/`. See `AGENTS.md`.
 
 There are two suites, each with its own binary and test table:
 
-- **Core compiler suite** (`bin/compiler-tester`, 99 tests) — positive golden
+- **Core compiler suite** (`bin/compiler-tester`, 199 tests) — positive golden
   codegen, lexer/parser/checker diagnostics, and the stage-level defensive
   tests. Everything runs in memory.
-- **Nyx tool suite** (`bin/tool-tester`, 10 tests) — the driver, file I/O, the
-  `cc` invocation, and the CLI allocation-failure sweep.
+- **Nyx tool suite** (`bin/tool-tester`, 19 tests) — runtime execution of
+  generated programs, the driver, file I/O, the `cc` invocation, and the CLI
+  allocation-failure sweep.
 
 `make test` runs both; `make test-compiler` and `make test-tool` run one. Run
 this before calling a change complete. The output is one line per test plus a
@@ -137,10 +138,10 @@ summary per suite:
 compiler suite
 PASS: var declaration of 13 generates the golden C
 ...
-99 tests: 99 PASS, 0 FAIL, 0 TODO, 0 Error
+199 tests: 199 PASS, 0 FAIL, 0 TODO, 0 Error
 tool suite
 ...
-10 tests: 10 PASS, 0 FAIL, 0 TODO, 0 Error
+19 tests: 19 PASS, 0 FAIL, 0 TODO, 0 Error
 ```
 
 A suite returns non-zero if any test fails or errors, so `make test` fails the
@@ -198,6 +199,10 @@ code, or it needs a hook. Deleting an unreachable message is usually right.
   header the test owns. No files, no subprocess. Generated C is internal IR, so
   a deliberate generator change means updating the golden text in
   `tests/compiler_test.c`; a failure reports the first differing byte.
+- **Runtime semantics** — compile a source string with `compiler_compile`,
+  write the generated C, build it with `cc` (renaming the generated `main` when
+  a driver is linked), run it, and compare stdout. Used for tag tests,
+  narrowing, and generic instantiations, which golden C alone cannot prove.
 - **Driver** — write a `.nip` file and run `./bin/nippy`, because file I/O and
   the `cc` invocation are the subject. These live in the tool suite, along with
   the allocation-failure sweep.
@@ -231,13 +236,13 @@ a failure straight into `compiler_compile`.
 
 ### Scratch files
 
-Only the tool suite writes files. Its driver and allocation tests use fixed
-names under `tests/.test*`, and `cleanup()` removes them before and after each
-test. They are never written into `bin/`, so a failed test cannot leave a stale
-binary that a later test picks up. If you add a tool test that creates a file,
-add its path to `temporary_files[]` so `cleanup()` knows about it. The compiler
-suite never touches the disk: it passes source strings straight to
-`compiler_compile`.
+Only the tool suite writes files. Its runtime, driver, and allocation tests use
+fixed names under `tests/.test*` (including `.test-runtime*`), and `cleanup()`
+removes them before and after each test. They are never written into `bin/`, so
+a failed test cannot leave a stale binary that a later test picks up. If you add
+a tool test that creates a file, add its path to `temporary_files[]` so
+`cleanup()` knows about it. The compiler suite never touches the disk: it passes
+source strings straight to `compiler_compile`.
 
 ## Tooling
 
@@ -297,3 +302,6 @@ change is called complete. If CI is added, the minimum useful pipeline is
 - No CI configuration.
 - Incremental compilation (recompiling only the changed module) is not
   implemented at either the Make or the Nippy-module level.
+- Store runtime OOM is not executed by the suite: exhausting the host heap is
+  not reliable in a test. The generated `nippy: out of memory` path is covered
+  by inspecting the emitted runtime, not by running it out of memory.
