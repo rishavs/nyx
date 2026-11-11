@@ -247,8 +247,7 @@ never pointers.
 |---|---|
 | `compiler/` | One `.c` per stage, plus the driver and shared helpers |
 | `include/` | Public headers, same names as their implementation |
-| `tests/` | `runner.c` harness, `test.c` cases, `test_cases.h` declarations |
-| `examples/` | Sample Nippy programs |
+| `tests/` | `harness.c` shared reporting, plus one source per suite |
 | `bin/` | Build output (git-ignored) |
 | `tmp/` | Scratch space for temporary scripts and probes (git-ignored) |
 

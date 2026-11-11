@@ -1,5 +1,4 @@
-#include "test_cases.h"
-
+#include "test_harness.h"
 #include "alloc.h"
 #include "analyser.h"
 #include "ast.h"
@@ -14,327 +13,641 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
-static const char *const temporary_files[] = {
-    "tests/.test-empty.nip",
-    "tests/.test-empty-bin",
-    "tests/.test-empty-bin.c",
-    "tests/.test-empty-bin.h",
-    "tests/.test-empty.log",
-    "tests/.test-13.nip",
-    "tests/.test-13-bin",
-    "tests/.test-13-bin.c",
-    "tests/.test-13-bin.h",
-    "tests/.test-compile.log",
-    "tests/.test-run.log",
-    "tests/.test-struct.nip",
-    "tests/.test-struct-bin",
-    "tests/.test-struct-bin.c",
-    "tests/.test-struct-bin.h",
-    "tests/.test-struct.log",
-    "tests/.test-values.nip",
-    "tests/.test-values-bin",
-    "tests/.test-values-bin.c",
-    "tests/.test-values-bin.h",
-    "tests/.test-values.log",
-    "tests/.test-fun.nip",
-    "tests/.test-fun-bin",
-    "tests/.test-fun-bin.c",
-    "tests/.test-fun-bin.h",
-    "tests/.test-fun.log",
-    "tests/.test.nip",
-    "tests/.test-bin",
-    "tests/.test-bin.c",
-    "tests/.test-bin.h",
-    "tests/.test.log"
-};
-
-static void cleanup(void)
-{
-    size_t i;
-    for (i = 0; i < sizeof(temporary_files) / sizeof(temporary_files[0]); i++) {
-        remove(temporary_files[i]);
-    }
-}
-
-static int write_text(const char *path, const char *text)
-{
-    FILE *file = fopen(path, "w");
-    int ok;
-
-    if (file == NULL) {
-        perror(path);
-        return 0;
-    }
-    ok = fputs(text, file) >= 0;
-    if (fclose(file) != 0) {
-        ok = 0;
-    }
-    return ok;
-}
-
-static int write_bytes(const char *path, const unsigned char *data, size_t length)
-{
-    FILE *file = fopen(path, "wb");
-    int ok;
-
-    if (file == NULL) {
-        perror(path);
-        return 0;
-    }
-    ok = fwrite(data, 1, length, file) == length;
-    if (fclose(file) != 0) {
-        ok = 0;
-    }
-    return ok;
-}
-
-static int file_has_content(const char *path)
-{
-    FILE *file = fopen(path, "r");
-    int first;
-
-    if (file == NULL) {
-        return 0;
-    }
-    first = fgetc(file);
-    fclose(file);
-    return first != EOF;
-}
-
-static int file_contains(const char *path, const char *needle)
-{
-    FILE *file = fopen(path, "r");
-    char buffer[512];
-    int found = 0;
-
-    if (file == NULL) {
-        return 0;
-    }
-    while (fgets(buffer, sizeof(buffer), file) != NULL) {
-        if (strstr(buffer, needle) != NULL) {
-            found = 1;
-            break;
-        }
-    }
-    fclose(file);
-    return found;
-}
-
-static int compile_source(const char *source, const char *source_path,
-                          const char *binary, const char *log)
-{
-    char command[512];
-
-    if (!write_text(source_path, source)) {
-        return -1;
-    }
-    snprintf(command, sizeof(command), "./bin/nippy %s %s > %s 2>&1",
-             source_path, binary, log);
-    return system(command);
-}
-
-static int run_compiler(const char *source_path, const char *binary,
-                        const char *log)
-{
-    char command[512];
-
-    snprintf(command, sizeof(command), "./bin/nippy %s %s > %s 2>&1",
-             source_path, binary, log);
-    return system(command);
-}
-
-static int run_command(const char *command, const char *log)
-{
-    char buffer[512];
-
-    snprintf(buffer, sizeof(buffer), "%s > %s 2>&1", command, log);
-    return system(buffer);
-}
-
-/* Compile `source`, expecting it to be rejected with a diagnostic that
-   contains `format` rendered with `...`. Tests pass the MESSAGE_* macro itself
-   so the assertion and the message cannot drift apart. */
-static TestResult expect_diagnostic(const char *source, const char *what,
-                                    const char *format, ...)
-{
-    const char *source_path = "tests/.test.nip";
-    const char *binary = "tests/.test-bin";
-    const char *log = "tests/.test.log";
-    char expected[256];
-    va_list args;
-    TestResult result = TEST_ERROR;
-    int status;
-
-    va_start(args, format);
-    vsnprintf(expected, sizeof(expected), format, args);
-    va_end(args);
-
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for %s\n", what);
-        goto finished;
-    }
-    if (status == 0) {
-        fprintf(stderr, "  %s unexpectedly compiled\n", what);
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains(log, expected)) {
-        fprintf(stderr, "  %s: expected diagnostic containing \"%s\"\n",
-                what, expected);
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
+static const CompilerConfig test_config = {"test.h", "test.nip"};
 
 static int error_contains(const ErrorState *errors, const char *needle)
 {
     return strstr(errors->message, needle) != NULL;
 }
 
-static int output_is_13(void)
+static void report_mismatch(const char *what, const char *artifact,
+                            const char *actual, const char *expected)
 {
-    FILE *file = fopen("tests/.test-run.log", "r");
-    char output[16];
-    int ok;
+    size_t offset = 0;
 
-    if (file == NULL) {
-        return 0;
+    while (actual[offset] != '\0' && expected[offset] != '\0' &&
+           actual[offset] == expected[offset]) {
+        offset++;
     }
-    ok = fgets(output, sizeof(output), file) != NULL &&
-         output[0] == '1' && output[1] == '3' && output[2] == '\n' &&
-         output[3] == '\0' && fgetc(file) == EOF;
-    fclose(file);
-    return ok;
+    fprintf(stderr, "  %s: generated %s differs at byte %zu\n",
+            what, artifact, offset);
+    fprintf(stderr, "    expected: %.48s\n", expected + offset);
+    fprintf(stderr, "    actual:   %.48s\n", actual + offset);
 }
 
-static int output_is(const char *expected)
+/* Compile `source` in memory and compare both generated artifacts against the
+   golden text the test owns. No files and no subprocess. */
+static TestResult compile_succeeds(const char *source, const char *expected_c,
+                                   const char *expected_h, const char *what)
 {
-    FILE *file = fopen("tests/.test-run.log", "r");
-    char output[64];
-    size_t length = strlen(expected);
-    int ok;
+    CompilerResult result = compiler_compile(source, &test_config);
+    TestResult status = TEST_FAIL;
 
-    if (file == NULL) {
-        return 0;
-    }
-    ok = fgets(output, sizeof(output), file) != NULL &&
-         strncmp(output, expected, length) == 0 &&
-         output[length] == '\n' && output[length + 1] == '\0' &&
-         fgetc(file) == EOF;
-    fclose(file);
-    return ok;
-}
-
-/* Build the exact text a message macro produces for `...`. */
-static void expect_message(char *buffer, size_t size, const char *format, ...)
-{
-    va_list args;
-
-    va_start(args, format);
-    vsnprintf(buffer, size, format, args);
-    va_end(args);
-}
-
-/* ---- positive (compile-and-run / codegen) ---- */
-
-TestResult test_13_compiles_and_runs(void)
-{
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    status = compile_source("var x : Int32 = 13\n", "tests/.test-13.nip",
-                            "tests/.test-13-bin", "tests/.test-compile.log");
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for source 13\n");
+    if (!result.succeeded) {
+        fprintf(stderr, "  %s did not compile: %s\n", what,
+                result.error_message == NULL ? "(no diagnostic)"
+                                             : result.error_message);
         goto finished;
     }
-    if (status != 0) {
-        fprintf(stderr, "  source 13 did not compile\n");
-        result = TEST_FAIL;
+    if (result.c_source == NULL || strcmp(result.c_source, expected_c) != 0) {
+        report_mismatch(what, "C source",
+                        result.c_source == NULL ? "" : result.c_source,
+                        expected_c);
         goto finished;
     }
-    if (!file_contains("tests/.test-13-bin.c",
-                       "#line 1 \"tests/.test-13.nip\"")) {
-        fprintf(stderr, "  generated C lacks the #line directive\n");
-        result = TEST_FAIL;
+    if (result.h_source == NULL || strcmp(result.h_source, expected_h) != 0) {
+        report_mismatch(what, "header",
+                        result.h_source == NULL ? "" : result.h_source,
+                        expected_h);
         goto finished;
     }
-    status = system("tests/.test-13-bin > tests/.test-run.log 2>&1");
-    if (status == -1) {
-        fprintf(stderr, "  could not launch generated program\n");
-        goto finished;
-    }
-    if (status != 0 || !output_is_13()) {
-        fprintf(stderr, "  generated program did not print exactly 13\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
+    status = TEST_PASS;
 
 finished:
-    cleanup();
-    return result;
+    compiler_result_free(&result);
+    return status;
 }
 
-TestResult test_type_declaration_compiles(void)
+/* Compile `source`, expecting it to be rejected with a diagnostic that
+   contains `format` rendered with `...`. Tests pass the MESSAGE_* macro itself
+   so the assertion and the message cannot drift apart. */
+static TestResult compile_fails(const char *source, const char *what,
+                                const char *format, ...)
+{
+    CompilerResult result;
+    char expected[256];
+    va_list args;
+    TestResult status = TEST_FAIL;
+
+    va_start(args, format);
+    vsnprintf(expected, sizeof(expected), format, args);
+    va_end(args);
+
+    result = compiler_compile(source, &test_config);
+    if (result.succeeded) {
+        fprintf(stderr, "  %s unexpectedly compiled\n", what);
+        goto finished;
+    }
+    if (result.error_message == NULL ||
+        strstr(result.error_message, expected) == NULL) {
+        fprintf(stderr, "  %s: expected diagnostic containing \"%s\"\n",
+                what, expected);
+        if (result.error_message != NULL) {
+            fprintf(stderr, "    actual: %s\n", result.error_message);
+        }
+        goto finished;
+    }
+    status = TEST_PASS;
+
+finished:
+    compiler_result_free(&result);
+    return status;
+}
+
+/* ---- 13 ---- */
+static const char golden_13_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    int32_t x = 13;\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_13_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- struct ---- */
+static const char golden_struct_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_struct_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t x;\n"
+        "    int32_t y;\n"
+        "} Point;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- values ---- */
+static const char golden_values_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    Point p1 = (Point){ 1, 2 };\n"
+        "    (void)p1;\n"
+        "#line 7 \"test.nip\"\n"
+        "    Point p2 = (Point){ 3, 4 };\n"
+        "    (void)p2;\n"
+        "#line 8 \"test.nip\"\n"
+        "    Point p3 = (Point){ 6, 7 };\n"
+        "    (void)p3;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_values_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    int32_t x;\n"
+        "    int32_t y;\n"
+        "} Point;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- function ---- */
+static const char golden_function_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t adder(int32_t x, int32_t y)\n"
+        "{\n"
+        "    (void)x;\n"
+        "    (void)y;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return (int32_t)((uint32_t)(x) + (uint32_t)(y));\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t sum = adder(1, 2);\n"
+        "    return sum;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_function_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t, int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- higher_order ---- */
+static const char golden_higher_order_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t inc(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return (int32_t)((uint32_t)(x) + (uint32_t)(1));\n"
+        "}\n"
+        "\n"
+        "#line 5 \"test.nip\"\n"
+        "int32_t apply(nippy_fun_1 f, int32_t x)\n"
+        "{\n"
+        "    (void)f;\n"
+        "    (void)x;\n"
+        "#line 6 \"test.nip\"\n"
+        "    return f(x);\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 9 \"test.nip\"\n"
+        "    int32_t n = apply(inc, 41);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_higher_order_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t);\n"
+        "typedef int32_t (*nippy_fun_2)(nippy_fun_1, int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- function_value ---- */
+static const char golden_function_value_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t add(int32_t x, int32_t y)\n"
+        "{\n"
+        "    (void)x;\n"
+        "    (void)y;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return (int32_t)((uint32_t)(x) + (uint32_t)(y));\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    nippy_fun_1 f = add;\n"
+        "    (void)f;\n"
+        "#line 6 \"test.nip\"\n"
+        "    int32_t n = f(2, 3);\n"
+        "    (void)n;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_function_value_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t, int32_t);\n"
+        "typedef int32_t (*nippy_fun_1)(int32_t, int32_t);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- recursive ---- */
+static const char golden_recursive_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t countdown(int32_t n)\n"
+        "{\n"
+        "    (void)n;\n"
+        "#line 2 \"test.nip\"\n"
+        "    return countdown(n);\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 5 \"test.nip\"\n"
+        "    int32_t zero = 0;\n"
+        "    return zero;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_recursive_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- if_elseif_else ---- */
+static const char golden_if_elseif_else_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t classify(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    if ((x > 0)) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        return 1;\n"
+        "    } else {\n"
+        "#line 2 \"test.nip\"\n"
+        "        if ((x == 0)) {\n"
+        "#line 5 \"test.nip\"\n"
+        "            return 2;\n"
+        "        } else {\n"
+        "#line 7 \"test.nip\"\n"
+        "            return 3;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 11 \"test.nip\"\n"
+        "    int32_t n = classify(5);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_if_elseif_else_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- while_break_continue ---- */
+static const char golden_while_break_continue_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t loop(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    while (true) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        if ((x > 0)) {\n"
+        "#line 4 \"test.nip\"\n"
+        "            break;\n"
+        "        }\n"
+        "#line 6 \"test.nip\"\n"
+        "        continue;\n"
+        "    }\n"
+        "#line 8 \"test.nip\"\n"
+        "    return 7;\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 11 \"test.nip\"\n"
+        "    int32_t n = loop(1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_while_break_continue_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- logic ---- */
+static const char golden_logic_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t choose(bool flag)\n"
+        "{\n"
+        "    (void)flag;\n"
+        "#line 2 \"test.nip\"\n"
+        "    if (flag) {\n"
+        "#line 3 \"test.nip\"\n"
+        "        return 1;\n"
+        "    } else {\n"
+        "#line 5 \"test.nip\"\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 9 \"test.nip\"\n"
+        "    int32_t n = choose((((!((1 == 2))) && (2 < 3)) || false));\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_logic_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(bool);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- bool_field ---- */
+static const char golden_bool_field_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    Flags f = (Flags){ true, 3 };\n"
+        "    (void)f;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_bool_field_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "typedef struct {\n"
+        "    bool on;\n"
+        "    int32_t count;\n"
+        "} Flags;\n"
+        "\n"
+        "#endif\n";
+
+/* ---- oneline ---- */
+static const char golden_oneline_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t f(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 1 \"test.nip\"\n"
+        "    if ((x > 0)) {\n"
+        "#line 1 \"test.nip\"\n"
+        "        return 1;\n"
+        "    } else {\n"
+        "#line 1 \"test.nip\"\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    int32_t n = f(1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_oneline_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- scattered ---- */
+static const char golden_scattered_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t f(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 3 \"test.nip\"\n"
+        "    if ((x > 0)) {\n"
+        "#line 5 \"test.nip\"\n"
+        "        return 1;\n"
+        "    } else {\n"
+        "#line 7 \"test.nip\"\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 10 \"test.nip\"\n"
+        "    int32_t n = f(1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_scattered_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+/* ---- positive: each test owns its source and its expected generated C ---- */
+
+TestResult test_13_codegen(void)
+{
+    return compile_succeeds("var x : Int32 = 13\n", golden_13_c, golden_13_h,
+                            "program 13");
+}
+
+TestResult test_type_declaration_codegen(void)
 {
     const char *source =
         "type Point\n"
         "  x: Int32\n"
         "  y: Int32\n"
         "end\n";
-    const char *source_path = "tests/.test-struct.nip";
-    const char *binary = "tests/.test-struct-bin";
-    const char *log = "tests/.test-struct.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a type declaration\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  type declaration did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-struct-bin.h", "typedef struct {") ||
-        !file_contains("tests/.test-struct-bin.h", "    int32_t x;") ||
-        !file_contains("tests/.test-struct-bin.h", "    int32_t y;") ||
-        !file_contains("tests/.test-struct-bin.h", "} Point;") ||
-        !file_contains("tests/.test-struct-bin.h",
-                       "#line 1 \"tests/.test-struct.nip\"")) {
-        fprintf(stderr, "  generated struct does not match the declaration\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-struct-bin > tests/.test-struct.log 2>&1");
-    if (status != 0) {
-        fprintf(stderr, "  generated type program did not run successfully\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_struct_c, golden_struct_h,
+                            "a type declaration");
 }
 
-TestResult test_struct_values_and_inference(void)
+TestResult test_struct_values_codegen(void)
 {
     const char *source =
         "type Point\n"
@@ -345,47 +658,12 @@ TestResult test_struct_values_and_inference(void)
         "var p1: Point = Point(1, 2)\n"
         "var p2: Point = Point(x = 3, y = 4)\n"
         "var p3 = Point(6, 7)\n";
-    const char *source_path = "tests/.test-values.nip";
-    const char *binary = "tests/.test-values-bin";
-    const char *log = "tests/.test-values.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for struct values\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  struct values did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-values-bin.c",
-                       "    Point p1 = (Point){ 1, 2 };") ||
-        !file_contains("tests/.test-values-bin.c",
-                       "    Point p2 = (Point){ 3, 4 };") ||
-        !file_contains("tests/.test-values-bin.c",
-                       "    Point p3 = (Point){ 6, 7 };")) {
-        fprintf(stderr, "  generated struct initialisers are wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-values-bin > tests/.test-values.log 2>&1");
-    if (status != 0) {
-        fprintf(stderr, "  generated struct value program did not run\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_values_c, golden_values_h,
+                            "struct values and inference");
 }
 
-TestResult test_function_compiles_and_runs(void)
+TestResult test_function_codegen(void)
 {
     const char *source =
         "fun adder(x:Int32, y:Int32):Int32\n"
@@ -393,46 +671,12 @@ TestResult test_function_compiles_and_runs(void)
         "end\n"
         "\n"
         "var sum : Int32 = adder(1, 2)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a function\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  function program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c",
-                       "int32_t adder(int32_t x, int32_t y)") ||
-        !file_contains("tests/.test-fun-bin.h",
-                       "typedef int32_t (*nippy_fun_") ||
-        !file_contains("tests/.test-fun-bin.c", "adder(1, 2)")) {
-        fprintf(stderr, "  generated function or call is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("3")) {
-        fprintf(stderr, "  function program did not print exactly 3\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_function_c, golden_function_h,
+                            "a function declaration");
 }
 
-TestResult test_function_type_and_higher_order(void)
+TestResult test_function_type_and_higher_order_codegen(void)
 {
     const char *source =
         "fun inc(x:Int32):Int32\n"
@@ -444,43 +688,13 @@ TestResult test_function_type_and_higher_order(void)
         "end\n"
         "\n"
         "var n : Int32 = apply(inc, 41)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a higher-order function\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  higher-order function program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c",
-                       "int32_t apply(nippy_fun_")) {
-        fprintf(stderr, "  function-typed parameter was not generated\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("42")) {
-        fprintf(stderr, "  higher-order function program did not print 42\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_higher_order_c,
+                            golden_higher_order_h,
+                            "a higher-order function");
 }
 
-TestResult test_function_type_annotation_and_struct_params(void)
+TestResult test_function_value_codegen(void)
 {
     const char *source =
         "fun add(x:Int32, y:Int32):Int32\n"
@@ -489,43 +703,13 @@ TestResult test_function_type_annotation_and_struct_params(void)
         "\n"
         "var f : Fun<(Int32, Int32):Int32> = add\n"
         "var n : Int32 = f(2, 3)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a function value\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  function value program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c", "f = add;") ||
-        !file_contains("tests/.test-fun-bin.c", "int32_t n = f(2, 3);")) {
-        fprintf(stderr, "  function value or indirect call is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0) {
-        fprintf(stderr, "  function value program did not run\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_function_value_c,
+                            golden_function_value_h,
+                            "a function value and indirect call");
 }
 
-TestResult test_recursive_function_compiles(void)
+TestResult test_recursive_function_codegen(void)
 {
     const char *source =
         "fun countdown(n:Int32):Int32\n"
@@ -533,42 +717,12 @@ TestResult test_recursive_function_compiles(void)
         "end\n"
         "\n"
         "var zero : Int32 = 0\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a recursive function\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  recursive function did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c", "return countdown(n);")) {
-        fprintf(stderr, "  recursive call was not generated\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("0")) {
-        fprintf(stderr, "  recursive function program did not print 0\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_recursive_c, golden_recursive_h,
+                            "a recursive function");
 }
 
-TestResult test_bool_and_if_elseif_else(void)
+TestResult test_if_elseif_else_codegen(void)
 {
     const char *source =
         "fun classify(x:Int32):Int32\n"
@@ -582,44 +736,13 @@ TestResult test_bool_and_if_elseif_else(void)
         "end\n"
         "\n"
         "var n : Int32 = classify(5)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for if/elseif/else\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  if/elseif/else program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c", "if (") ||
-        !file_contains("tests/.test-fun-bin.c", "} else {") ||
-        !file_contains("tests/.test-fun-bin.c", "x == 0")) {
-        fprintf(stderr, "  generated if/elseif/else is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("1")) {
-        fprintf(stderr, "  if/elseif/else program did not print 1\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_if_elseif_else_c,
+                            golden_if_elseif_else_h,
+                            "if/elseif/else");
 }
 
-TestResult test_while_break_continue(void)
+TestResult test_while_break_continue_codegen(void)
 {
     const char *source =
         "fun loop(x:Int32):Int32\n"
@@ -633,44 +756,13 @@ TestResult test_while_break_continue(void)
         "end\n"
         "\n"
         "var n : Int32 = loop(1)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for while/break/continue\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  while/break/continue program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.c", "while (true)") ||
-        !file_contains("tests/.test-fun-bin.c", "break;") ||
-        !file_contains("tests/.test-fun-bin.c", "continue;")) {
-        fprintf(stderr, "  generated loop control is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("7")) {
-        fprintf(stderr, "  while/break/continue program did not print 7\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_while_break_continue_c,
+                            golden_while_break_continue_h,
+                            "while with break and continue");
 }
 
-TestResult test_bool_type_and_logical_operators(void)
+TestResult test_bool_logic_codegen(void)
 {
     const char *source =
         "fun choose(flag:Bool):Int32\n"
@@ -682,45 +774,12 @@ TestResult test_bool_type_and_logical_operators(void)
         "end\n"
         "\n"
         "var n : Int32 = choose(!(1 == 2) && (2 < 3) || false)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for Bool operators\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  Bool operator program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.h", "#include <stdbool.h>") ||
-        !file_contains("tests/.test-fun-bin.c", "bool flag") ||
-        !file_contains("tests/.test-fun-bin.c", "&&") ||
-        !file_contains("tests/.test-fun-bin.c", "||")) {
-        fprintf(stderr, "  generated Bool code is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("1")) {
-        fprintf(stderr, "  Bool operator program did not print 1\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_logic_c, golden_logic_h,
+                            "Bool type and logical operators");
 }
 
-TestResult test_bool_struct_field(void)
+TestResult test_bool_struct_field_codegen(void)
 {
     const char *source =
         "type Flags\n"
@@ -729,43 +788,12 @@ TestResult test_bool_struct_field(void)
         "end\n"
         "\n"
         "var f : Flags = Flags(true, 3)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
 
-    cleanup();
-    status = compile_source(source, source_path, binary, log);
-    if (status == -1) {
-        fprintf(stderr, "  could not launch compiler for a Bool field\n");
-        goto finished;
-    }
-    if (status != 0) {
-        fprintf(stderr, "  Bool field program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test-fun-bin.h", "    bool on;") ||
-        !file_contains("tests/.test-fun-bin.h", "    int32_t count;")) {
-        fprintf(stderr, "  generated Bool field is wrong\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0) {
-        fprintf(stderr, "  Bool field program did not run\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return compile_succeeds(source, golden_bool_field_c, golden_bool_field_h,
+                            "a Bool struct field");
 }
 
-TestResult test_program_is_newline_agnostic(void)
+TestResult test_whitespace_agnostic_codegen(void)
 {
     const char *single_line =
         "fun f(x:Int32):Int32 if x > 0 then return 1 else return 0 end end "
@@ -774,58 +802,28 @@ TestResult test_program_is_newline_agnostic(void)
         "fun\tf(x:Int32):Int32\n\n"
         "if x>0\nthen\nreturn\t1\nelse\nreturn 0\nend\nend\n"
         "var\tn\t:\tInt32\t=\tf(\t1\t)\n";
-    const char *source_path = "tests/.test-fun.nip";
-    const char *binary = "tests/.test-fun-bin";
-    const char *log = "tests/.test-fun.log";
-    TestResult result = TEST_ERROR;
-    int status;
+    TestResult first = compile_succeeds(single_line, golden_oneline_c,
+                                        golden_oneline_h,
+                                        "a single-line program");
+    TestResult second = compile_succeeds(scattered, golden_scattered_c,
+                                         golden_scattered_h,
+                                         "a whitespace-scattered program");
 
-    cleanup();
-    status = compile_source(single_line, source_path, binary, log);
-    if (status != 0) {
-        fprintf(stderr, "  a single-line program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("1")) {
-        fprintf(stderr, "  single-line program did not print 1\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-
-    cleanup();
-    status = compile_source(scattered, source_path, binary, log);
-    if (status != 0) {
-        fprintf(stderr, "  a whitespace-scattered program did not compile\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    status = system("tests/.test-fun-bin > tests/.test-run.log 2>&1");
-    if (status != 0 || !output_is("1")) {
-        fprintf(stderr, "  whitespace-scattered program did not print 1\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return first == TEST_PASS && second == TEST_PASS ? TEST_PASS : TEST_FAIL;
 }
 
 /* ---- lexer messages ---- */
 
 TestResult test_lexer_integer_out_of_range(void)
 {
-    return expect_diagnostic("var x : Int32 = 99999999999999999999999999\n",
+    return compile_fails("var x : Int32 = 99999999999999999999999999\n",
                              "an out-of-range integer literal",
                              MESSAGE_LEXER_INTEGER_OUT_OF_RANGE);
 }
 
 TestResult test_lexer_identifier_too_long(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "var abcdefghijklmnopqrstuvwxyzABCDEFG : Int32 = 1\n",
         "an over-long identifier",
         MESSAGE_LEXER_IDENTIFIER_TOO_LONG, NIPPY_IDENTIFIER_MAX - 1);
@@ -833,14 +831,14 @@ TestResult test_lexer_identifier_too_long(void)
 
 TestResult test_lexer_unexpected_character(void)
 {
-    return expect_diagnostic("var x : Int32 = 13 @\n",
+    return compile_fails("var x : Int32 = 13 @\n",
                              "an unexpected printable character",
                              MESSAGE_LEXER_UNEXPECTED_CHARACTER, '@');
 }
 
 TestResult test_lexer_unexpected_byte(void)
 {
-    return expect_diagnostic("var x : Int32 = 13 \x80\n",
+    return compile_fails("var x : Int32 = 13 \x80\n",
                              "an unexpected non-printable byte",
                              MESSAGE_LEXER_UNEXPECTED_BYTE, 0x80);
 }
@@ -849,197 +847,197 @@ TestResult test_lexer_unexpected_byte(void)
 
 TestResult test_parser_expected_var_type_or_fun(void)
 {
-    return expect_diagnostic("13\n", "a bare integer literal program",
+    return compile_fails("13\n", "a bare integer literal program",
                              MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
 }
 
 TestResult test_parser_expected_variable_name(void)
 {
-    return expect_diagnostic("var : Int32 = 1\n", "a missing variable name",
+    return compile_fails("var : Int32 = 1\n", "a missing variable name",
                              MESSAGE_PARSER_EXPECTED_VARIABLE_NAME);
 }
 
 TestResult test_parser_expected_type_name(void)
 {
-    return expect_diagnostic("var x : = 1\n", "a missing type annotation",
+    return compile_fails("var x : = 1\n", "a missing type annotation",
                              MESSAGE_PARSER_EXPECTED_TYPE_NAME);
 }
 
 TestResult test_parser_expected_equals(void)
 {
-    return expect_diagnostic("var x : Int32 13\n", "a declaration without '='",
+    return compile_fails("var x : Int32 13\n", "a declaration without '='",
                              MESSAGE_PARSER_EXPECTED_EQUALS);
 }
 
 TestResult test_parser_expected_expression(void)
 {
-    return expect_diagnostic("var x : Int32 = +\n",
+    return compile_fails("var x : Int32 = +\n",
                              "an invalid initialiser expression",
                              MESSAGE_PARSER_EXPECTED_EXPRESSION);
 }
 
 TestResult test_parser_expected_type_name_after_type(void)
 {
-    return expect_diagnostic("type 13 x: Int32 end\n",
+    return compile_fails("type 13 x: Int32 end\n",
                              "a type declaration without a name",
                              MESSAGE_PARSER_EXPECTED_TYPE_NAME_AFTER_TYPE);
 }
 
 TestResult test_parser_expected_at_least_one_field(void)
 {
-    return expect_diagnostic("type Point end\n",
+    return compile_fails("type Point end\n",
                              "a type declaration with no fields",
                              MESSAGE_PARSER_EXPECTED_AT_LEAST_ONE_FIELD);
 }
 
 TestResult test_parser_expected_field_name(void)
 {
-    return expect_diagnostic("type Point 13 : Int32 end\n",
+    return compile_fails("type Point 13 : Int32 end\n",
                              "a field without a name",
                              MESSAGE_PARSER_EXPECTED_FIELD_NAME);
 }
 
 TestResult test_parser_expected_field_colon(void)
 {
-    return expect_diagnostic("type Point x Int32 end\n", "a field without ':'",
+    return compile_fails("type Point x Int32 end\n", "a field without ':'",
                              MESSAGE_PARSER_EXPECTED_FIELD_COLON);
 }
 
 TestResult test_parser_expected_field_type(void)
 {
-    return expect_diagnostic("type Point x : 13 end\n", "a field without a type",
+    return compile_fails("type Point x : 13 end\n", "a field without a type",
                              MESSAGE_PARSER_EXPECTED_FIELD_TYPE);
 }
 
 TestResult test_parser_expected_field_or_end(void)
 {
-    return expect_diagnostic("type Point x : Int32 13 end\n",
+    return compile_fails("type Point x : Int32 13 end\n",
                              "a field not followed by another field or 'end'",
                              MESSAGE_PARSER_EXPECTED_FIELD_OR_END);
 }
 
 TestResult test_parser_expected_argument(void)
 {
-    return expect_diagnostic("type P x: Int32 end\nvar p = P(+)\n",
+    return compile_fails("type P x: Int32 end\nvar p = P(+)\n",
                              "a missing call argument",
                              MESSAGE_PARSER_EXPECTED_ARGUMENT);
 }
 
 TestResult test_parser_expected_comma_or_rparen(void)
 {
-    return expect_diagnostic("type P x: Int32 end\nvar p = P(1 2)\n",
+    return compile_fails("type P x: Int32 end\nvar p = P(1 2)\n",
                              "constructor arguments without a separator",
                              MESSAGE_PARSER_EXPECTED_COMMA_OR_RPAREN);
 }
 
 TestResult test_parser_mixed_args(void)
 {
-    return expect_diagnostic("type P x: Int32 y: Int32 end\nvar p = P(1, y = 2)\n",
+    return compile_fails("type P x: Int32 y: Int32 end\nvar p = P(1, y = 2)\n",
                              "mixed named and positional constructor arguments",
                              MESSAGE_PARSER_MIXED_ARGS);
 }
 
 TestResult test_parser_expected_function_name(void)
 {
-    return expect_diagnostic("fun (x:Int32):Int32 return x end\n",
+    return compile_fails("fun (x:Int32):Int32 return x end\n",
                              "a function without a name",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_NAME);
 }
 
 TestResult test_parser_expected_function_lparen(void)
 {
-    return expect_diagnostic("fun f x:Int32):Int32 return x end\n",
+    return compile_fails("fun f x:Int32):Int32 return x end\n",
                              "a function without '('",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_LPAREN);
 }
 
 TestResult test_parser_expected_parameter_name(void)
 {
-    return expect_diagnostic("fun f(:Int32):Int32 return 1 end\n",
+    return compile_fails("fun f(:Int32):Int32 return 1 end\n",
                              "a parameter without a name",
                              MESSAGE_PARSER_EXPECTED_PARAMETER_NAME);
 }
 
 TestResult test_parser_expected_parameter_colon(void)
 {
-    return expect_diagnostic("fun f(x Int32):Int32 return x end\n",
+    return compile_fails("fun f(x Int32):Int32 return x end\n",
                              "a parameter without ':'",
                              MESSAGE_PARSER_EXPECTED_PARAMETER_COLON);
 }
 
 TestResult test_parser_expected_parameter_separator(void)
 {
-    return expect_diagnostic("fun f(x:Int32 y:Int32):Int32 return x end\n",
+    return compile_fails("fun f(x:Int32 y:Int32):Int32 return x end\n",
                              "parameters without a separator",
                              MESSAGE_PARSER_EXPECTED_PARAMETER_SEPARATOR);
 }
 
 TestResult test_parser_expected_return_type(void)
 {
-    return expect_diagnostic("fun f(x:Int32) return x end\n",
+    return compile_fails("fun f(x:Int32) return x end\n",
                              "a function without a return type",
                              MESSAGE_PARSER_EXPECTED_RETURN_TYPE);
 }
 
 TestResult test_parser_expected_statement_or_end(void)
 {
-    return expect_diagnostic("fun f(x:Int32):Int32 x end\n",
+    return compile_fails("fun f(x:Int32):Int32 x end\n",
                              "a non-statement in a function body",
                              MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
 }
 
 TestResult test_parser_expected_end(void)
 {
-    return expect_diagnostic("fun f(x:Int32):Int32 return x\n",
+    return compile_fails("fun f(x:Int32):Int32 return x\n",
                              "a function without 'end'",
                              MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
 }
 
 TestResult test_parser_expected_then(void)
 {
-    return expect_diagnostic("fun f(x:Int32):Int32 if x > 0 return 1 end end\n",
+    return compile_fails("fun f(x:Int32):Int32 if x > 0 return 1 end end\n",
                              "an if without 'then'",
                              MESSAGE_PARSER_EXPECTED_THEN);
 }
 
 TestResult test_parser_expected_rparen(void)
 {
-    return expect_diagnostic("var n : Int32 = (1 + 2\n",
+    return compile_fails("var n : Int32 = (1 + 2\n",
                              "a grouped expression without ')'",
                              MESSAGE_PARSER_EXPECTED_RPAREN);
 }
 
 TestResult test_parser_expected_type(void)
 {
-    return expect_diagnostic("fun f(x:):Int32 return x end\n",
+    return compile_fails("fun f(x:):Int32 return x end\n",
                              "a missing parameter type",
                              MESSAGE_PARSER_EXPECTED_TYPE);
 }
 
 TestResult test_parser_expected_function_type_lparen(void)
 {
-    return expect_diagnostic("var f : Fun<Int32> = 1\n",
+    return compile_fails("var f : Fun<Int32> = 1\n",
                              "a function type without '('",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_LPAREN);
 }
 
 TestResult test_parser_expected_function_type_separator(void)
 {
-    return expect_diagnostic("var f : Fun<(Int32 Int32):Int32> = 1\n",
+    return compile_fails("var f : Fun<(Int32 Int32):Int32> = 1\n",
                              "function type parameters without a separator",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR);
 }
 
 TestResult test_parser_expected_function_type_colon(void)
 {
-    return expect_diagnostic("var f : Fun<(Int32)> = 1\n",
+    return compile_fails("var f : Fun<(Int32)> = 1\n",
                              "a function type without a return type colon",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_COLON);
 }
 
 TestResult test_parser_expected_function_type_gt(void)
 {
-    return expect_diagnostic("var f : Fun<(Int32):Int32 = 1\n",
+    return compile_fails("var f : Fun<(Int32):Int32 = 1\n",
                              "a function type without '>'",
                              MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_GT);
 }
@@ -1048,27 +1046,27 @@ TestResult test_parser_expected_function_type_gt(void)
 
 TestResult test_checker_unknown_type(void)
 {
-    return expect_diagnostic("var x : Float = 13\n", "an unknown variable type",
+    return compile_fails("var x : Float = 13\n", "an unknown variable type",
                              MESSAGE_CHECKER_UNKNOWN_TYPE, "Float", "x");
 }
 
 TestResult test_checker_unknown_call(void)
 {
-    return expect_diagnostic("var p = Foo(1, 2)\n",
+    return compile_fails("var p = Foo(1, 2)\n",
                              "an unknown call",
                              MESSAGE_CHECKER_UNKNOWN_CALL, "Foo");
 }
 
 TestResult test_checker_constructor_not_struct(void)
 {
-    return expect_diagnostic("var p = Int32(1)\n",
+    return compile_fails("var p = Int32(1)\n",
                              "constructing a non-struct type",
                              MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT, "Int32");
 }
 
 TestResult test_checker_constructor_arg_count(void)
 {
-    return expect_diagnostic("type P x: Int32 end\nvar p = P(1, 2)\n",
+    return compile_fails("type P x: Int32 end\nvar p = P(1, 2)\n",
                              "a constructor with the wrong argument count",
                              MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT,
                              "P", (size_t)1, (size_t)2);
@@ -1076,14 +1074,14 @@ TestResult test_checker_constructor_arg_count(void)
 
 TestResult test_checker_missing_constructor_arg(void)
 {
-    return expect_diagnostic("type P x: Int32 y: Int32 end\nvar p = P(x = 1)\n",
+    return compile_fails("type P x: Int32 y: Int32 end\nvar p = P(x = 1)\n",
                              "a constructor missing a named argument",
                              MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG, "y");
 }
 
 TestResult test_checker_duplicate_constructor_arg(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x: Int32 y: Int32 end\nvar p = P(x = 1, x = 2, y = 3)\n",
         "a constructor with a duplicate named argument",
         MESSAGE_CHECKER_DUPLICATE_CONSTRUCTOR_ARG, "x");
@@ -1091,14 +1089,14 @@ TestResult test_checker_duplicate_constructor_arg(void)
 
 TestResult test_checker_unknown_constructor_field(void)
 {
-    return expect_diagnostic("type P x: Int32 end\nvar p = P(z = 1)\n",
+    return compile_fails("type P x: Int32 end\nvar p = P(z = 1)\n",
                              "a constructor naming an unknown field",
                              MESSAGE_CHECKER_UNKNOWN_CONSTRUCTOR_FIELD, "z");
 }
 
 TestResult test_checker_constructor_arg_type(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x:Int32 end\n"
         "fun f(x:Int32):Int32\n  return x\nend\n"
         "var p = P(f)\n",
@@ -1108,28 +1106,28 @@ TestResult test_checker_constructor_arg_type(void)
 
 TestResult test_checker_initialiser_type_mismatch(void)
 {
-    return expect_diagnostic("type P x: Int32 end\nvar p : P = 5\n",
+    return compile_fails("type P x: Int32 end\nvar p : P = 5\n",
                              "an initialiser whose type disagrees with the annotation",
                              MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "p", "P");
 }
 
 TestResult test_checker_duplicate_type(void)
 {
-    return expect_diagnostic("type P x: Int32 end\ntype P y: Int32 end\n",
+    return compile_fails("type P x: Int32 end\ntype P y: Int32 end\n",
                              "a duplicated type declaration",
                              MESSAGE_CHECKER_DUPLICATE_TYPE, "P");
 }
 
 TestResult test_checker_redefines_int32(void)
 {
-    return expect_diagnostic("type Int32 x: Int32 end\n",
+    return compile_fails("type Int32 x: Int32 end\n",
                              "a type declaration named Int32",
                              MESSAGE_CHECKER_REDEFINES_INT32);
 }
 
 TestResult test_checker_unknown_name(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  return y\nend\n",
         "an unknown name in a return expression",
         MESSAGE_CHECKER_UNKNOWN_NAME, "y");
@@ -1137,7 +1135,7 @@ TestResult test_checker_unknown_name(void)
 
 TestResult test_checker_global_in_function(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "var g : Int32 = 1\n"
         "fun f(x:Int32):Int32\n  return g\nend\n",
         "a program-level variable used inside a function",
@@ -1146,7 +1144,7 @@ TestResult test_checker_global_in_function(void)
 
 TestResult test_checker_type_as_value(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x:Int32 end\n"
         "fun f(x:Int32):Int32\n  return P\nend\n",
         "a type used as a value",
@@ -1155,7 +1153,7 @@ TestResult test_checker_type_as_value(void)
 
 TestResult test_checker_not_callable(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  return x\nend\n"
         "var y : Int32 = 1\n"
         "var z : Int32 = y(1)\n",
@@ -1165,7 +1163,7 @@ TestResult test_checker_not_callable(void)
 
 TestResult test_checker_named_function_arg(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  return x\nend\n"
         "var y : Int32 = f(x = 1)\n",
         "a named function argument",
@@ -1174,7 +1172,7 @@ TestResult test_checker_named_function_arg(void)
 
 TestResult test_checker_function_arg_count(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  return x\nend\n"
         "var y : Int32 = f(1, 2)\n",
         "a function call with the wrong argument count",
@@ -1183,7 +1181,7 @@ TestResult test_checker_function_arg_count(void)
 
 TestResult test_checker_function_arg_type(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x:Int32 end\n"
         "fun f(p:P):Int32\n  return 1\nend\n"
         "var y : Int32 = f(1)\n",
@@ -1193,7 +1191,7 @@ TestResult test_checker_function_arg_type(void)
 
 TestResult test_checker_return_type_mismatch(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x:Int32 end\n"
         "fun f(x:Int32):P\n  return x\nend\n",
         "a return expression with the wrong type",
@@ -1202,7 +1200,7 @@ TestResult test_checker_return_type_mismatch(void)
 
 TestResult test_checker_operator_type(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type P x:Int32 end\n"
         "fun f(p:P):P\n  return p + p\nend\n",
         "an operator applied to a non-Int32 value",
@@ -1211,7 +1209,7 @@ TestResult test_checker_operator_type(void)
 
 TestResult test_checker_field_type(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "type Q x:Int32 end\ntype P y:Q end\n",
         "a non-Int32 field type",
         MESSAGE_CHECKER_FIELD_TYPE, "y");
@@ -1219,7 +1217,7 @@ TestResult test_checker_field_type(void)
 
 TestResult test_checker_duplicate_name(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  return x\nend\n"
         "var f : Int32 = 1\n",
         "a duplicate top-level name",
@@ -1228,7 +1226,7 @@ TestResult test_checker_duplicate_name(void)
 
 TestResult test_checker_duplicate_parameter(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32, x:Int32):Int32\n  return x\nend\n",
         "a duplicate parameter",
         MESSAGE_CHECKER_DUPLICATE_PARAMETER, "x");
@@ -1236,7 +1234,7 @@ TestResult test_checker_duplicate_parameter(void)
 
 TestResult test_checker_condition_type(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n"
         "  if x then\n    return 1\n  end\n"
         "  return 0\n"
@@ -1247,7 +1245,7 @@ TestResult test_checker_condition_type(void)
 
 TestResult test_checker_break_outside_loop(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  break\n  return x\nend\n",
         "break outside a loop",
         MESSAGE_CHECKER_BREAK_OUTSIDE_LOOP);
@@ -1255,7 +1253,7 @@ TestResult test_checker_break_outside_loop(void)
 
 TestResult test_checker_continue_outside_loop(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n  continue\n  return x\nend\n",
         "continue outside a loop",
         MESSAGE_CHECKER_CONTINUE_OUTSIDE_LOOP);
@@ -1263,7 +1261,7 @@ TestResult test_checker_continue_outside_loop(void)
 
 TestResult test_checker_function_may_not_return(void)
 {
-    return expect_diagnostic(
+    return compile_fails(
         "fun f(x:Int32):Int32\n"
         "  if x > 0 then\n    return 1\n  end\n"
         "end\n",
@@ -1273,195 +1271,9 @@ TestResult test_checker_function_may_not_return(void)
 
 TestResult test_checker_redefines_bool(void)
 {
-    return expect_diagnostic("type Bool x:Int32 end\n",
+    return compile_fails("type Bool x:Int32 end\n",
                              "a type declaration named Bool",
                              MESSAGE_CHECKER_REDEFINES_BOOL);
-}
-
-/* ---- driver messages ---- */
-
-TestResult test_driver_could_not_open_source(void)
-{
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    status = run_compiler("/nonexistent/nope.nip", "tests/.test-bin",
-                          "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  a nonexistent source unexpectedly compiled\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE, "/nonexistent/nope.nip");
-    if (!file_has_content("tests/.test.log") ||
-        !file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"could not open source file\" diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_source_too_large(void)
-{
-    char big[4097];
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    memset(big, 'a', sizeof(big));
-    if (!write_bytes("tests/.test.nip", (const unsigned char *)big,
-                     sizeof(big))) {
-        fprintf(stderr, "  could not write the oversized source\n");
-        goto finished;
-    }
-    status = run_compiler("tests/.test.nip", "tests/.test-bin", "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  an oversized source unexpectedly compiled\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_SOURCE_TOO_LARGE, "tests/.test.nip", 4096);
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"source is larger than\" diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_source_contains_nul(void)
-{
-    static const unsigned char data[] = {
-        'v', 'a', 'r', ' ', 'x', ' ', ':', ' ', 'I', 'n', 't', '3', '2',
-        ' ', '=', ' ', '1', '\0', '\n'
-    };
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    if (!write_bytes("tests/.test.nip", data, sizeof(data))) {
-        fprintf(stderr, "  could not write the NUL-containing source\n");
-        goto finished;
-    }
-    status = run_compiler("tests/.test.nip", "tests/.test-bin", "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  a NUL-containing source unexpectedly compiled\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_SOURCE_CONTAINS_NUL, "tests/.test.nip");
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"source contains a NUL byte\" diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_failed_to_read(void)
-{
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    status = run_compiler("tests", "tests/.test-bin", "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  a directory source unexpectedly compiled\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected), MESSAGE_DRIVER_FAILED_TO_READ,
-                   "tests");
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"failed to read source file\" diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_usage(void)
-{
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    status = run_command("./bin/nippy", "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  no-argument invocation unexpectedly succeeded\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected), MESSAGE_DRIVER_USAGE,
-                   "./bin/nippy");
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing usage diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_could_not_write_header(void)
-{
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    if (!write_text("tests/.test.nip", "var x : Int32 = 13\n")) {
-        fprintf(stderr, "  could not write the source\n");
-        goto finished;
-    }
-    status = run_compiler("tests/.test.nip", "/nonexistent-dir/out",
-                          "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  an unwritable output path unexpectedly succeeded\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, "/nonexistent-dir/out.h");
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"could not write generated header\" diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
 }
 
 /* ---- unit tests for defensive / internal messages ---- */
@@ -1556,7 +1368,8 @@ TestResult test_checker_unsupported_ast_node(void)
 
     if (checker_check(&ast, &program, &errors) ||
         !error_contains(&errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE)) {
-        fprintf(stderr, "  unknown node kind did not produce \"unsupported AST node\"\n");
+        fprintf(stderr,
+                "  unknown node kind did not produce \"unsupported AST node\"\n");
         return TEST_FAIL;
     }
     ast_free(&ast);
@@ -2237,169 +2050,6 @@ TestResult test_generator_unsupported_statement(void)
     return TEST_PASS;
 }
 
-/* ---- allocation-failure coverage ---- */
-
-/* Run the compiler executable with an allocation failure armed at `index`,
-   capturing its output. */
-static int run_with_alloc_failure(size_t index, const char *source_path,
-                                  const char *binary, const char *log)
-{
-    char command[640];
-
-    snprintf(command, sizeof(command),
-             "NIPPY_FAIL_ALLOC_AFTER=%zu ./bin/nippy %s %s > %s 2>&1",
-             index, source_path, binary, log);
-    return system(command);
-}
-
-static const char *const oom_source =
-    "type Point\n"
-    "  x: Int32\n"
-    "  y: Int32\n"
-    "end\n"
-    "\n"
-    "fun add(x:Int32, y:Int32):Int32\n"
-    "  return x + y\n"
-    "end\n"
-    "\n"
-    "fun positive(x:Int32):Bool\n"
-    "  if x > 0 then\n"
-    "    return true\n"
-    "  else\n"
-    "    return false\n"
-    "  end\n"
-    "end\n"
-    "\n"
-    "fun loop(x:Int32):Int32\n"
-    "  while x > 0\n"
-    "    break\n"
-    "  end\n"
-    "  return x\n"
-    "end\n"
-    "\n"
-    "var p1: Point = Point(1, 2)\n"
-    "var p2: Point = Point(x = 3, y = 4)\n"
-    "var n = add(7, 8)\n"
-    "var ok : Bool = positive(n)\n"
-    "var m = loop(n)\n"
-    "var f : Fun<(Int32, Int32):Int32> = add\n";
-
-/* Every allocation site must fail closed: a non-zero exit with a message on
-   stderr, never a crash or a silently truncated artifact. */
-TestResult test_allocation_failures_fail_closed(void)
-{
-    size_t index;
-    TestResult result = TEST_ERROR;
-
-    cleanup();
-    if (!write_text("tests/.test.nip", oom_source)) {
-        fprintf(stderr, "  could not write the OOM source\n");
-        goto finished;
-    }
-    for (index = 0; index < 400; index++) {
-        int status;
-
-        remove("tests/.test-bin");
-        status = run_with_alloc_failure(index, "tests/.test.nip",
-                                        "tests/.test-bin", "tests/.test.log");
-
-        if (status == -1) {
-            fprintf(stderr, "  could not launch the compiler at index %zu\n",
-                    index);
-            goto finished;
-        }
-        if (WIFSIGNALED(status)) {
-            fprintf(stderr, "  compiler crashed at allocation index %zu\n", index);
-            result = TEST_FAIL;
-            goto finished;
-        }
-        if (WEXITSTATUS(status) != 0 && !file_has_content("tests/.test.log")) {
-            fprintf(stderr, "  no diagnostic at allocation index %zu\n", index);
-            result = TEST_FAIL;
-            goto finished;
-        }
-        if (WEXITSTATUS(status) != 0 && access("tests/.test-bin", F_OK) == 0) {
-            fprintf(stderr, "  a failed build left a binary at index %zu\n", index);
-            result = TEST_FAIL;
-            goto finished;
-        }
-        /* Once the failure index is past every allocation the build succeeds
-           again; stop sweeping. */
-        if (WEXITSTATUS(status) == 0 && index > 20) {
-            break;
-        }
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
-/* The sweep above proves fail-closed behaviour; this proves the individual
-   out-of-memory messages are actually reachable. */
-TestResult test_allocation_failure_messages(void)
-{
-    char expected[10][256];
-    size_t expected_count = 0;
-    size_t index;
-    size_t i;
-    TestResult result = TEST_ERROR;
-
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_DRIVER_COULD_NOT_ALLOCATE_BUFFER);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_LEXER_OUT_OF_MEMORY);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_GENERATOR_OUT_OF_MEMORY);
-    expect_message(expected[expected_count++], sizeof(expected[0]),
-                   MESSAGE_DRIVER_COULD_NOT_ALLOCATE_COMMAND);
-
-    cleanup();
-    if (!write_text("tests/.test.nip", oom_source)) {
-        fprintf(stderr, "  could not write the OOM source\n");
-        goto finished;
-    }
-
-    for (i = 0; i < expected_count; i++) {
-        int seen = 0;
-
-        for (index = 0; index < 400 && !seen; index++) {
-            int status = run_with_alloc_failure(index, "tests/.test.nip",
-                                                "tests/.test-bin",
-                                                "tests/.test.log");
-
-            if (status == -1 || WIFSIGNALED(status)) {
-                fprintf(stderr, "  compiler failed to run at index %zu\n", index);
-                goto finished;
-            }
-            seen = file_contains("tests/.test.log", expected[i]);
-        }
-        if (!seen) {
-            fprintf(stderr, "  never produced \"%s\"\n", expected[i]);
-            result = TEST_FAIL;
-            goto finished;
-        }
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
-}
-
 TestResult test_compiler_out_of_memory_is_reported(void)
 {
     CompilerResult result;
@@ -2419,78 +2069,126 @@ TestResult test_compiler_out_of_memory_is_reported(void)
     return TEST_PASS;
 }
 
-/* ---- remaining driver failures ---- */
+/* Every test in this suite, in run order. The table lives here so adding
+   a test needs only its definition above and one entry below. */
+static const TestCase tests[] = {
+    {"var declaration of 13 generates the golden C", test_13_codegen},
+    {"type declaration generates the golden C struct",
+     test_type_declaration_codegen},
+    {"struct values and inference generate the golden C",
+     test_struct_values_codegen},
+    {"function generates the golden C", test_function_codegen},
+    {"function type and higher-order call generate the golden C",
+     test_function_type_and_higher_order_codegen},
+    {"function value and indirect call generate the golden C",
+     test_function_value_codegen},
+    {"recursive function generates the golden C", test_recursive_function_codegen},
+    {"Bool and if/elseif/else generate the golden C", test_if_elseif_else_codegen},
+    {"while with break and continue generate the golden C",
+     test_while_break_continue_codegen},
+    {"Bool type and logical operators generate the golden C",
+     test_bool_logic_codegen},
+    {"Bool struct field generates the golden C", test_bool_struct_field_codegen},
+    {"newline and whitespace variants generate the golden C",
+     test_whitespace_agnostic_codegen},
+    {"lexer: integer literal out of range", test_lexer_integer_out_of_range},
+    {"lexer: identifier too long", test_lexer_identifier_too_long},
+    {"lexer: unexpected character", test_lexer_unexpected_character},
+    {"lexer: unexpected byte", test_lexer_unexpected_byte},
+    {"parser: expected var, type, or fun", test_parser_expected_var_type_or_fun},
+    {"parser: expected variable name", test_parser_expected_variable_name},
+    {"parser: expected type name", test_parser_expected_type_name},
+    {"parser: expected equals", test_parser_expected_equals},
+    {"parser: expected expression", test_parser_expected_expression},
+    {"parser: expected type name after type",
+     test_parser_expected_type_name_after_type},
+    {"parser: expected at least one field",
+     test_parser_expected_at_least_one_field},
+    {"parser: expected field name", test_parser_expected_field_name},
+    {"parser: expected field colon", test_parser_expected_field_colon},
+    {"parser: expected field type", test_parser_expected_field_type},
+    {"parser: expected field or end", test_parser_expected_field_or_end},
+    {"parser: expected argument", test_parser_expected_argument},
+    {"parser: expected comma or rparen", test_parser_expected_comma_or_rparen},
+    {"parser: mixed named and positional args", test_parser_mixed_args},
+    {"parser: expected function name", test_parser_expected_function_name},
+    {"parser: expected function lparen", test_parser_expected_function_lparen},
+    {"parser: expected parameter name", test_parser_expected_parameter_name},
+    {"parser: expected parameter colon", test_parser_expected_parameter_colon},
+    {"parser: expected parameter separator",
+     test_parser_expected_parameter_separator},
+    {"parser: expected return type", test_parser_expected_return_type},
+    {"parser: expected statement or end", test_parser_expected_statement_or_end},
+    {"parser: expected end", test_parser_expected_end},
+    {"parser: expected then", test_parser_expected_then},
+    {"parser: expected rparen", test_parser_expected_rparen},
+    {"parser: expected type", test_parser_expected_type},
+    {"parser: expected function type lparen",
+     test_parser_expected_function_type_lparen},
+    {"parser: expected function type separator",
+     test_parser_expected_function_type_separator},
+    {"parser: expected function type colon",
+     test_parser_expected_function_type_colon},
+    {"parser: expected function type gt", test_parser_expected_function_type_gt},
+    {"checker: unknown type", test_checker_unknown_type},
+    {"checker: unknown call", test_checker_unknown_call},
+    {"checker: constructor of non-struct", test_checker_constructor_not_struct},
+    {"checker: constructor argument count", test_checker_constructor_arg_count},
+    {"checker: missing constructor argument", test_checker_missing_constructor_arg},
+    {"checker: duplicate constructor argument",
+     test_checker_duplicate_constructor_arg},
+    {"checker: unknown constructor field", test_checker_unknown_constructor_field},
+    {"checker: constructor argument type", test_checker_constructor_arg_type},
+    {"checker: initialiser type mismatch", test_checker_initialiser_type_mismatch},
+    {"checker: duplicate type", test_checker_duplicate_type},
+    {"checker: redefines Int32", test_checker_redefines_int32},
+    {"checker: unknown name", test_checker_unknown_name},
+    {"checker: global in function", test_checker_global_in_function},
+    {"checker: type as value", test_checker_type_as_value},
+    {"checker: not callable", test_checker_not_callable},
+    {"checker: named function argument", test_checker_named_function_arg},
+    {"checker: function argument count", test_checker_function_arg_count},
+    {"checker: function argument type", test_checker_function_arg_type},
+    {"checker: return type mismatch", test_checker_return_type_mismatch},
+    {"checker: operator type", test_checker_operator_type},
+    {"checker: field type", test_checker_field_type},
+    {"checker: duplicate name", test_checker_duplicate_name},
+    {"checker: duplicate parameter", test_checker_duplicate_parameter},
+    {"checker: condition type", test_checker_condition_type},
+    {"checker: break outside loop", test_checker_break_outside_loop},
+    {"checker: continue outside loop", test_checker_continue_outside_loop},
+    {"checker: function may not return", test_checker_function_may_not_return},
+    {"checker: redefines Bool", test_checker_redefines_bool},
+    {"compiler: source string is null", test_compiler_source_is_null},
+    {"fallback: unknown error", test_unknown_error_fallback},
+    {"checker: missing AST root", test_checker_missing_ast_root},
+    {"checker: missing AST node", test_checker_missing_ast_node},
+    {"checker: unsupported AST node", test_checker_unsupported_ast_node},
+    {"checker: no initialiser", test_checker_no_initialiser},
+    {"checker: missing name or type", test_checker_missing_name_or_type},
+    {"checker: type has no fields", test_checker_type_has_no_fields},
+    {"checker: missing return", test_checker_missing_return},
+    {"analyser: root out of range", test_analyser_root_out_of_range},
+    {"analyser: invalid node link", test_analyser_invalid_node_link},
+    {"analyser: invalid name index", test_analyser_invalid_name_index},
+    {"analyser: invalid type index", test_analyser_invalid_type_index},
+    {"analyser: invalid child index", test_analyser_invalid_child_index},
+    {"analyser: invalid signature index", test_analyser_invalid_signature_index},
+    {"analyser: invalid signature link", test_analyser_invalid_signature_link},
+    {"generator: unsupported root", test_generator_unsupported_root},
+    {"generator: unsupported field", test_generator_unsupported_field},
+    {"generator: invalid identifier", test_generator_invalid_identifier},
+    {"generator: invalid header name", test_generator_invalid_header_name},
+    {"generator: invalid line name", test_generator_invalid_line_name},
+    {"generator: unsupported expression", test_generator_unsupported_expression},
+    {"generator: unsupported function", test_generator_unsupported_function},
+    {"generator: unsupported type", test_generator_unsupported_type},
+    {"generator: unsupported statement", test_generator_unsupported_statement},
+    {"compiler: injected out of memory", test_compiler_out_of_memory_is_reported},
+};
 
-TestResult test_driver_could_not_write_source(void)
+int main(void)
 {
-    char expected[256];
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    if (!write_text("tests/.test.nip", "var x : Int32 = 13\n")) {
-        fprintf(stderr, "  could not write the source\n");
-        goto finished;
-    }
-    /* A directory occupying the .c path lets the header write succeed and the
-       C write fail. */
-    if (system("mkdir -p tests/.test-bin.c") != 0) {
-        fprintf(stderr, "  could not create the blocking directory\n");
-        goto finished;
-    }
-    status = run_compiler("tests/.test.nip", "tests/.test-bin", "tests/.test.log");
-    if (status == 0) {
-        fprintf(stderr, "  an unwritable C path unexpectedly succeeded\n");
-        result = TEST_FAIL;
-        goto finish_cleanup;
-    }
-    expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, "tests/.test-bin.c");
-    if (!file_contains("tests/.test.log", expected)) {
-        fprintf(stderr, "  missing \"could not write generated C source\"\n");
-        result = TEST_FAIL;
-        goto finish_cleanup;
-    }
-    result = TEST_PASS;
-
-finish_cleanup:
-    system("rmdir tests/.test-bin.c 2>/dev/null");
-    cleanup();
-    return result;
-
-finished:
-    cleanup();
-    return result;
-}
-
-TestResult test_driver_cc_failures(void)
-{
-    TestResult result = TEST_ERROR;
-    int status;
-
-    cleanup();
-    if (!write_text("tests/.test.nip", "var x : Int32 = 13\n")) {
-        fprintf(stderr, "  could not write the source\n");
-        goto finished;
-    }
-    /* An empty PATH leaves `cc` unfindable, so system() reports a failure to
-       start the shell command. */
-    status = system("PATH=/nonexistent ./bin/nippy tests/.test.nip "
-                    "tests/.test-bin > tests/.test.log 2>&1");
-    if (status == 0) {
-        fprintf(stderr, "  a missing C compiler unexpectedly succeeded\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    if (!file_contains("tests/.test.log", MESSAGE_DRIVER_COULD_NOT_START_CC) &&
-        !file_contains("tests/.test.log", MESSAGE_DRIVER_CC_FAILED)) {
-        fprintf(stderr, "  missing C compiler failure diagnostic\n");
-        result = TEST_FAIL;
-        goto finished;
-    }
-    result = TEST_PASS;
-
-finished:
-    cleanup();
-    return result;
+    return test_run_suite("compiler", tests,
+                          sizeof(tests) / sizeof(tests[0]));
 }

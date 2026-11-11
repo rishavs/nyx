@@ -125,22 +125,13 @@ internals), `API.md` (the C API in `include/`), `SEMANTICS.md` (what a program
 means and what is rejected), `GRAMMAR.ebnf` (the accepted grammar), and
 `BUILD.md` (build, tests, and tooling).
 
-Build the compiler with `make`, then compile the original example with
-`make example`. The compiler and generated program go in `bin/`; run the example
-with `./bin/13`. `examples/adder.nip` is a runnable function example,
-`examples/control.nip` exercises `if`/`elseif`/`else`, and
-`examples/loop.nip` exercises `while`, `break`, and `continue`:
+Build the compiler with `make` and run both suites with `make test`. The core
+compiler suite (`bin/compiler-tester`) compiles inline Nippy source through
+`compiler_compile` and compares the generated C and header against text the test
+owns. The tool suite (`bin/tool-tester`) covers the driver, file I/O, and the
+`cc` invocation. `make test-compiler` and `make test-tool` run one suite each.
 
-```sh
-./bin/nippy examples/adder.nip bin/adder
-./bin/adder
-./bin/nippy examples/control.nip bin/control
-./bin/control
-./bin/nippy examples/loop.nip bin/loop
-./bin/loop
-```
-
-To compile another literal, pass the Nippy source path and output binary path:
+To compile a program by hand, pass the Nippy source path and output binary path:
 
 ```sh
 ./bin/nippy path/to/source.nip bin/program
