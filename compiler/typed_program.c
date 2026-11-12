@@ -19,6 +19,7 @@ void typed_program_init(TypedProgram *program)
     program->error_filename_capacity = NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY;
     program->max_string_capacity = NIPPY_DEFAULT_MAX_STRING_CAPACITY;
     program->max_list_capacity = NIPPY_DEFAULT_MAX_LIST_CAPACITY;
+    program->max_print_depth = NIPPY_DEFAULT_MAX_PRINT_DEPTH;
 }
 
 void typed_program_free(TypedProgram *program)

@@ -21,10 +21,14 @@ typedef struct {
     int max_string_capacity;
     /* Upper bound for fixed List<T,N> capacities. 0 selects 4096. */
     int max_list_capacity;
+    /* Maximum pretty-print nesting depth. 0 selects 16. */
+    int max_print_depth;
 } CompilerConfig;
 
 #define NIPPY_DEFAULT_MAX_SOURCE_BYTES 4096
 #define NIPPY_MAX_LIST_CAPACITY (1024 * 1024)
+#define NIPPY_DEFAULT_MAX_PRINT_DEPTH 16
+#define NIPPY_MAX_PRINT_DEPTH 1024
 
 typedef struct {
     bool succeeded;

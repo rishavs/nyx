@@ -15,6 +15,8 @@
    Error fields. The compiler config can override the Error capacities. */
 #define NIPPY_DEFAULT_MAX_STRING_CAPACITY 4096
 #define NIPPY_DEFAULT_MAX_LIST_CAPACITY 4096
+#define NIPPY_DEFAULT_MAX_PRINT_DEPTH 16
+#define NIPPY_MAX_PRINT_DEPTH 1024
 #define NIPPY_MAX_STRING_CAPACITY (1024 * 1024)
 #define NIPPY_DEFAULT_ERROR_HEADER_CAPACITY 32
 #define NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY 128
@@ -22,6 +24,7 @@
 
 typedef enum {
     TYPED_DECLARATION,
+    TYPED_LOCAL_DECLARATION,
     TYPED_TYPE_DECLARATION,
     TYPED_FUNCTION_DECLARATION,
     TYPED_FIELD,
@@ -29,7 +32,9 @@ typedef enum {
     TYPED_BLOCK,
     TYPED_RETURN,
     TYPED_IF,
+    TYPED_IF_EXPRESSION,
     TYPED_WHILE,
+    TYPED_FOR,
     TYPED_BREAK,
     TYPED_CONTINUE,
     TYPED_INTEGER_LITERAL,
@@ -49,6 +54,7 @@ typedef enum {
     TYPED_HANDLE_READ,
     TYPED_HANDLE_WRITE,
     TYPED_EXPRESSION_STATEMENT,
+    TYPED_PRINT,
     TYPED_ASSIGNMENT,
     TYPED_STRING_LITERAL,
     TYPED_STRING_LEN,
@@ -63,9 +69,23 @@ typedef enum {
     TYPED_BUILDER_LEN,
     TYPED_BUILDER_FINISH,
     TYPED_LIST_LITERAL,
+    TYPED_RECORD_LITERAL,
+    TYPED_RECORD_GET,
+    TYPED_RECORD_SET,
+    TYPED_RECORD_HAS,
+    TYPED_RECORD_REMOVE,
+    TYPED_RECORD_LEN,
+    TYPED_TABLE_GET,
+    TYPED_TABLE_SET,
+    TYPED_TABLE_HAS,
+    TYPED_TABLE_REMOVE,
+    TYPED_TABLE_LEN,
+    TYPED_TABLE_CREATE,
     TYPED_LIST_LEN,
     TYPED_LIST_GET,
     TYPED_LIST_SET,
+    TYPED_MEMBER_ACCESS,
+    TYPED_MEMBER_WRITE,
     TYPED_LIST_PUSH,
     TYPED_LIST_POP,
     TYPED_LIST_CREATE,
@@ -73,6 +93,7 @@ typedef enum {
     TYPED_SLICE_LEN,
     TYPED_SLICE_GET,
     TYPED_ERROR_CONSTRUCT,
+    TYPED_ERROR_THROW,
     TYPED_ERROR_FIELD
 } TypedNodeKind;
 
@@ -89,10 +110,12 @@ typedef enum {
     NIPPY_TYPE_HANDLE,
     NIPPY_TYPE_STRING,
     NIPPY_TYPE_DYNAMIC_STRING,
-    NIPPY_TYPE_STRING_BUILDER,
+    NIPPY_TYPE_TEXT_BUILDER,
     NIPPY_TYPE_LIST,
     NIPPY_TYPE_FIXED_LIST,
     NIPPY_TYPE_SLICE,
+    NIPPY_TYPE_RECORD,
+    NIPPY_TYPE_TABLE,
     NIPPY_TYPE_STRING_LITERAL,
     NIPPY_TYPE_ERROR
 } NippyType;
@@ -132,6 +155,8 @@ typedef struct {
     int integer_value;
     NippyOperator op;
     size_t name_index;
+    /* TYPED_FOR: the value binding when an index binding is present. */
+    size_t second_name_index;
     size_t left_child;
     size_t right_child;
     size_t children_start;
@@ -167,6 +192,7 @@ typedef struct {
     int error_filename_capacity;
     int max_string_capacity;
     int max_list_capacity;
+    int max_print_depth;
 } TypedProgram;
 
 void typed_program_init(TypedProgram *program);

@@ -38,6 +38,27 @@ static TokenType keyword_type(const char *text, size_t length)
     if (length == 5 && memcmp(text, "while", 5) == 0) {
         return TOKEN_KEYWORD_WHILE;
     }
+    if (length == 3 && memcmp(text, "for", 3) == 0) {
+        return TOKEN_KEYWORD_FOR;
+    }
+    if (length == 6 && memcmp(text, "typeof", 6) == 0) {
+        return TOKEN_KEYWORD_TYPEOF;
+    }
+    if (length == 2 && memcmp(text, "is", 2) == 0) {
+        return TOKEN_KEYWORD_IS;
+    }
+    if (length == 5 && memcmp(text, "match", 5) == 0) {
+        return TOKEN_KEYWORD_MATCH;
+    }
+    if (length == 4 && memcmp(text, "with", 4) == 0) {
+        return TOKEN_KEYWORD_WITH;
+    }
+    if (length == 2 && memcmp(text, "in", 2) == 0) {
+        return TOKEN_KEYWORD_IN;
+    }
+    if (length == 2 && memcmp(text, "do", 2) == 0) {
+        return TOKEN_KEYWORD_DO;
+    }
     if (length == 5 && memcmp(text, "break", 5) == 0) {
         return TOKEN_KEYWORD_BREAK;
     }
@@ -331,6 +352,28 @@ LexerResult lexer_tokenize(const char *code)
             SourcePos start = {cursor, line, column};
 
             if (!push_token(&result.tokens, TOKEN_RBRACKET, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '{') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_LBRACE, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '}') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_RBRACE, start)) {
                 result.out_of_memory = true;
                 goto failed;
             }

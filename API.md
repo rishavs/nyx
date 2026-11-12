@@ -33,7 +33,8 @@ typedef struct {
     int error_filename_capacity;    /* 0 -> default 128 */
     int max_source_bytes;           /* source-size limit; 0 -> 4096 */
     int max_string_capacity;        /* String<N> upper bound; 0 -> 4096 */
-    int max_list_capacity;          /* List<T,N> upper bound; 0 -> 4096 */
+    int max_list_capacity;          /* Array<T,N> upper bound; 0 -> 4096 */
+    int max_print_depth;            /* pretty-print depth; 0 -> 16 */
 } CompilerConfig;
 
 typedef struct {
@@ -55,6 +56,8 @@ are copied. Error capacities default to 32, 128, and 128 and are clamped to
 fails the compilation. `max_string_capacity` defaults to 4096 and may not exceed
 the hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` defaults
 to 4096 and may not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB).
+`max_print_depth` defaults to 16 and may not exceed `NIPPY_MAX_PRINT_DEPTH`
+(1024); explicit values must be positive.
 `max_source_bytes` defaults to 4096;
 `compiler_compile` rejects longer source strings, and the command-line driver
 uses the same limit when reading a file.
@@ -229,7 +232,8 @@ typedef struct {
     int error_description_capacity;
     int error_filename_capacity;
     int max_string_capacity;        /* upper bound for String<N> */
-    int max_list_capacity;          /* upper bound for List<T,N> */
+    int max_list_capacity;          /* upper bound for Array<T,N> */
+    int max_print_depth;            /* pretty-print depth */
 } TypedProgram;
 ```
 
@@ -242,6 +246,8 @@ typedef struct {
 owning `children` list. `AstNode` additionally carries
 `type_parameters_start`/`type_parameters_count`, indexing `Ast.type_parameters`
 (used by generic struct, alias, and function declarations; 0/0 when absent).
+`second_name_index` is meaningful only for `AST_FOR`/`TYPED_FOR`, where it
+holds the optional second binding.
 `AST_MEMBER_CALL` stores its receiver in `left_child`, its optional type
 argument in `right_child`, its method name in `name_index`, and its positional
 arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
@@ -254,7 +260,12 @@ also stores its capacity in `integer_value`; `AST_TYPE_SLICE` has its element
 type in `left_child`; `AST_LIST_LITERAL` stores its elements in an
 `Ast.children` run. `AST_INDEX` has the list in `left_child` and
 the index in `right_child`; `AST_INDEX_ASSIGNMENT` has the indexed target in
-`left_child` and the value in `right_child`.
+`left_child` and the value in `right_child`. `AST_MEMBER_ACCESS` has the object
+in `left_child` and the field name in `name_index`;
+`AST_MEMBER_ASSIGNMENT` has the member target in `left_child` and the value in
+`right_child`. `AST_FOR` has its iterable in `left_child`, its body in
+`right_child`, the first binding in `name_index`, and the optional second
+binding in `second_name_index`.
 `TypedNode.auxiliary_type` holds the tested type for a `TYPED_IS` node and is
 `TYPED_NO_NODE` otherwise. Function bodies and `if`/`while` bodies are block
 nodes; block statements and `if` branches are stored in `children`.
@@ -276,7 +287,7 @@ typedef enum {
     NIPPY_TYPE_HANDLE,
     NIPPY_TYPE_STRING,
     NIPPY_TYPE_DYNAMIC_STRING,
-    NIPPY_TYPE_STRING_BUILDER,
+    NIPPY_TYPE_TEXT_BUILDER,
     NIPPY_TYPE_LIST,
     NIPPY_TYPE_FIXED_LIST,
     NIPPY_TYPE_SLICE,
@@ -345,9 +356,16 @@ struct), and `declaration_node` points at the concrete
 `TYPED_TYPE_DECLARATION` node whose field children describe the layout.
 
 The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
-`TYPED_SUM_PAYLOAD`, `TYPED_IS`, `TYPED_STORE_DECLARATION`,
+`TYPED_SUM_PAYLOAD`, `TYPED_IS`, `TYPED_IF_EXPRESSION`,
+`TYPED_STORE_DECLARATION`,
 `TYPED_STORE_ALLOC`, `TYPED_STORE_RESET`, `TYPED_HANDLE_READ`,
 `TYPED_HANDLE_WRITE`, `TYPED_EXPRESSION_STATEMENT`, `TYPED_ASSIGNMENT`,
+`TYPED_LOCAL_DECLARATION`, `TYPED_MEMBER_ACCESS`, `TYPED_MEMBER_WRITE`,
+`TYPED_PRINT`, `TYPED_ERROR_THROW`, `TYPED_RECORD_LITERAL`,
+`TYPED_RECORD_GET`, `TYPED_RECORD_SET`, `TYPED_RECORD_HAS`,
+`TYPED_RECORD_REMOVE`, `TYPED_RECORD_LEN`, `TYPED_TABLE_CREATE`,
+`TYPED_TABLE_GET`, `TYPED_TABLE_SET`, `TYPED_TABLE_HAS`,
+`TYPED_TABLE_REMOVE`, `TYPED_TABLE_LEN`,
 `TYPED_STRING_LITERAL`,
 `TYPED_STRING_LEN`, `TYPED_STRING_AT`, `TYPED_STRING_SLICE`,
 `TYPED_STRING_CONCAT`, `TYPED_STRING_COPY`, `TYPED_STRING_FROM_FIXED`,
@@ -359,7 +377,10 @@ The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 payload projection, `integer_value` is the alternative's canonical tag.
 `TYPED_IS` stores the tested type in `auxiliary_type` and a tag in
 `integer_value`; a statically decided test is emitted as a boolean literal, not
-a tag comparison.
+a tag comparison. `TYPED_IF_EXPRESSION` has the condition in `left_child`, the
+then expression in `right_child`, and the else expression in a one-child run.
+`match` and `typeof` tests are lowered by the parser/checker into `if` chains and
+`TYPED_IS` nodes, so there is no separate typed match node.
 
 `TypedNode.store_id` carries the global store id for a store declaration,
 allocation, reset, concat, copy, fixed-to-dynamic conversion, or builder
@@ -370,30 +391,46 @@ a `TYPED_STORE_ALLOC` has type `Handle<T>` and its value in `left_child`; a
 `TYPED_HANDLE_WRITE` has type `Nil`, the handle in `left_child`, and the value
 in `right_child`. `TYPED_ASSIGNMENT` has the target variable's type and name, and
 the coerced value in `left_child`. A handle type's element type is its single entry in
-`program->type_children`.
+`program->type_children`; the checker accepts a handle only for a fixed type
+with no allocator-backed fields.
 
 `TYPED_STRING_LITERAL` stores an offset and byte length into
-`TypedProgram.bytes`; after contextual typing its type is `String` (dynamic,
+`TypedProgram.bytes`; after contextual typing its type is `Text` (dynamic,
 statically backed) or `String<N>` (fixed), whose `fixed_length` is the capacity.
 `TYPED_STRING_LEN` has type `Int32` and the string in `left_child`;
 `TYPED_STRING_AT` has type `Byte`, the string in `left_child`, and the index in
-`right_child`; `TYPED_STRING_SLICE` has type `String`, the string in
+`right_child`; `TYPED_STRING_SLICE` has type `Text`, the string in
 `left_child`, and two children for start and length. `TYPED_STRING_CONCAT` has
-type `String`, the first string in `left_child`, the second in `right_child`, and
+type `Text`, the first string in `left_child`, the second in `right_child`, and
 the destination store in `store_id`; `TYPED_STRING_COPY` has the source in
 `left_child`; `TYPED_STRING_FROM_FIXED` has a fixed `String<N>` in
 `left_child`. All three allocate in `store_id`. `TYPED_BUILDER_CREATE` has the
 capacity in `left_child` and the destination store in `store_id`;
 `TYPED_LIST_CREATE` has the capacity in `left_child`, the element type in
 `auxiliary_type`, and the destination store in `store_id`;
-`TYPED_LIST_LITERAL` has type `List<T,N>` and its elements in a children run;
+`TYPED_LIST_LITERAL` has type `Array<T,N>` and its elements in a children run;
 `TYPED_LIST_GET` has type `T` with the list in `left_child` and index in
 `right_child`; `TYPED_LIST_SET` has type `Nil`, the list in `left_child`, and
 two children for index and value; `TYPED_LIST_PUSH` has type `Nil`, the list
 in `left_child`, the value in `right_child`, and `auxiliary_type` for the
 element type; `TYPED_LIST_POP` has type `T | Nil`, the list in `left_child`, and
 `auxiliary_type` for the element type; `TYPED_LIST_LEN` has type `Int32` and the
-list in `left_child`; `TYPED_SLICE_CREATE` has type `Slice<T>`, the list/slice
+list in `left_child`; `TYPED_LOCAL_DECLARATION` has the local's type, name, and
+initializer in `left_child`; `TYPED_MEMBER_ACCESS` has the field type, object in
+`left_child`, and field name in `name_index`; `TYPED_MEMBER_WRITE` has type
+`Nil`, the target access in `left_child`, and the value in `right_child`;
+`TYPED_FOR` has type `Nil`, the iterable in `left_child`, the body in
+`right_child`, the value binding in `name_index`, the optional index binding in
+`second_name_index`, and the element type in `auxiliary_type`; `TYPED_PRINT`
+has type `Nil` and its arguments in a children run; `TYPED_RECORD_LITERAL`
+has type `Record<K,V,N>` and alternating key/value pairs in a children run;
+map get/set/has/remove/len nodes carry the receiver and key (or key/value)
+links; `TYPED_TABLE_CREATE` has the capacity in `left_child` and the store id
+in `store_id`; `TYPED_ERROR_THROW` has type
+`Error`, its header/description in a children run, `auxiliary_type` for the
+filename fixed-string type, and `string_offset`/`string_length` for the
+generated filename bytes;
+`TYPED_SLICE_CREATE` has type `Slice<T>`, the list/slice
 in `left_child`, and children for start/length; `TYPED_SLICE_LEN` has type
 `Int32`; `TYPED_SLICE_GET` has type `T`, the slice in `left_child`, and the
 index in `right_child`;
@@ -408,11 +445,12 @@ layout `header: String<32>`, `description: String<128>`,
 `filename: String<128>`, `line/col/pos: Int32` by default. The three string
 types are the Error type's three entries in `program->type_children`, in that
 order. `NIPPY_TYPE_STRING_LITERAL` is the checker's internal
-uncontextual literal type; a literal is retyped to `String` or `String<N>` by
+uncontextual literal type; a literal is retyped to `Text` or `String<N>` by
 injection, and the generator rejects any literal that remains uncontextual.
-`NIPPY_TYPE_DYNAMIC_STRING` and `NIPPY_TYPE_STRING_BUILDER` are sized public
+`NIPPY_TYPE_DYNAMIC_STRING` (public type `Text`) and
+`NIPPY_TYPE_TEXT_BUILDER` are sized public
 types with no child types. `NIPPY_TYPE_LIST`, `NIPPY_TYPE_FIXED_LIST`, and `NIPPY_TYPE_SLICE` have one
-element type in `type_children`; fixed lists also use `fixed_length`.
+element type in `type_children`; Arrays also use `fixed_length`.
 
 The `add_*` helpers append and return the new index. The caller must check
 `bool` results; a false return means allocation failed. `typed_program_copy_symbol`
@@ -456,8 +494,8 @@ Rules that hold for every stage:
   `generator_generate`'s two strings).
 - `generator_generate` sets both output pointers to NULL before doing anything,
   so they are always either both valid or both NULL.
-- `lexer_tokenize` returns either tokens or errors, never both. String-literal
-  bytes live in `LexerResult.string_bytes`; a `TOKEN_STRING` stores an offset
+- `lexer_tokenize` returns either tokens or errors, never both. Text-literal
+  bytes live in `LexerResult.text_bytes`; a `TOKEN_STRING` stores an offset
   and length into that pool. `parser_parse` copies the bytes it needs into
   `Ast.bytes`, so it borrows the pool only for the duration of the call.
 

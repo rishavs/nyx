@@ -75,13 +75,14 @@ including newlines, is skipped; it only separates tokens. Line boundaries have
 no syntactic meaning and indentation is not significant.
 
 Tokens are plain values stored inline in a `List`: no pointers, so the list can
-be moved or freed without walking its contents. String literals are the one
-variable-length token payload: decoded bytes live in `LexerResult.string_bytes`,
+be moved or freed without walking its contents. string literals are the one
+variable-length token payload: decoded bytes live in `LexerResult.text_bytes`,
 and the token stores an offset and length into that pool. Escapes are decoded
 during scanning; NUL bytes, raw newlines, unterminated literals, and unknown
 escapes are lexer errors. Keyword recognition happens
 during scanning (`global`, `var`, `type`, `fun`, `return`, `if`, `then`,
-`elseif`, `else`, `while`, `break`, `continue`, `true`, `false`, `end`); everything else is
+`elseif`, `else`, `while`, `for`, `in`, `do`, `break`, `continue`, `true`,
+`false`, `end`); everything else is
 an identifier. Two-character operators (`==`, `!=`, `<=`, `>=`, `&&`, `||`) are
 recognised before their single-character prefixes. A double quote starts a
 string literal.
@@ -106,26 +107,28 @@ without adding sibling links or pointers.
 Type expressions are parsed recursively: `AST_TYPE_NAME`, `AST_TYPE_UNION`,
 `AST_TYPE_APPLICATION`, `AST_TYPE_FIXED_STRING`, `AST_TYPE_LIST`,
 `AST_TYPE_FIXED_LIST`, `AST_TYPE_SLICE`, `AST_TYPE_FUNCTION`, and parenthesized
-groups. `List<T>` is dynamic; `List<T,N>` is fixed-capacity with a runtime
+groups. `List<T>` is dynamic; `Array<T,N>` is fixed-capacity with a runtime
 length; `Slice<T>` is a read-only view over a dynamic list. A `[a, b]`
 expression becomes `AST_LIST_LITERAL`; index access becomes `AST_INDEX` and
 index assignment becomes `AST_INDEX_ASSIGNMENT`. `String<N>` is parsed specially because `N` is an integer
-capacity, not a type argument; bare `String` is an ordinary type name resolved to
+capacity, not a type argument; bare `Text` is an ordinary type name resolved to
 the dynamic string type. A
 declaration of the form `type Name = Type` becomes `AST_TYPE_ALIAS`; the
 field form remains `AST_TYPE_DECLARATION`. Generic declarations put their type
 parameters in a separate `Ast.type_parameters` run, recorded on the declaration
 by `type_parameters_start`/`type_parameters_count`. A value postfix
-`.is<T>()` becomes `AST_IS`; `nil` becomes `AST_NIL_LITERAL`; `x = value`
+`typeof x is T` becomes `AST_IS`; `nil` becomes `AST_NIL_LITERAL`; `x = value`
 becomes `AST_ASSIGNMENT`; a `global` store declaration sets
 `AstNode.is_global`; a string literal becomes `AST_STRING_LITERAL`, with its bytes copied from the lexer pool into
 `Ast.bytes` and referenced by offset and length. Parentheses are flattened away
 during parsing.
 
 Function bodies are blocks of statements. `if`/`elseif`/`else` is parsed as an
-`AST_IF` whose children are the then-block and optional else-block; an
+`AST_IF` whose children are the then-block and optional else-block, plus
+`AST_IF_EXPRESSION` for expression branches; an
 `elseif` chain is desugared into nested `if` nodes in the else branch. `while`
-stores its condition and body block. Statements are `return`, `if`, `while`,
+stores its condition and body block. `for` stores its optional two bindings,
+iterable, and body block. Statements are `return`, `if`, `while`, `for`,
 `break`, and `continue`.
 
 Identifiers are interned: `ast_intern_symbol` maps text to an index into
@@ -143,8 +146,8 @@ Reads the syntax tree through a `const` pointer and writes a separate
 `TypedProgram`. It does the semantic work the later stages must not repeat:
 
 - resolves type expressions against built-ins (`Int32`, `Bool`, `Byte`, `Nil`,
-  `String`, `StringBuilder`, `Store`, `Handle`, `Error`), fixed strings
-  `String<N>`, declared
+  `Text`, `String<N>`, `TextBuilder`, `List`, `Array`, `Slice`, `Store`,
+  `Handle`, `Error`), declared
   structs and aliases, generic applications, unions, and structural function
   types;
 - expands aliases under a type-parameter environment, instantiates generic
@@ -161,41 +164,53 @@ Reads the syntax tree through a `const` pointer and writes a separate
   the arguments;
 - checks function-call arity and argument types against the callee's function
   type, including calls through function-typed variables and parameters;
-- types boolean and nil literals, `.is<T>()`, and the comparison, equality, and
+- types the reserved `print` builtin as a statement with any number of
+  arguments, contextualising string literals as `Text` and checking that each
+  argument is printable;
+- types `Error.throw(header, description)` as an `Error` whose filename and
+  source position come from the compiler configuration and call site;
+- types boolean and nil literals, `typeof x is T`, and the comparison, equality, and
   logical operators;
 - checks `if`/`while` conditions are `Bool`;
+- checks `for` iterables and binds the loop value and optional `Int32` index;
 - checks every `return` expression against the return type, and rejects
   `break`/`continue` outside a loop;
 - proves that every function returns on every path, using the structured
-  statement tree (a `while` never guarantees a return);
+  statement tree (a `while` or `for` never guarantees a return);
 - checks assignment targets and types, and deactivates any active narrowing
   of the target after the right-hand side has been checked;
 - infers a variable's type from its initializer when the annotation is omitted,
   and checks assignability when both sides state a type;
 - injects an alternative value into a union at initializers, returns, call
   arguments, and constructor arguments;
-- narrows `name` to `T` inside the then-block of `if name.is<T>() then`, and
+- narrows `name` to `T` inside the then-block of `if typeof name is T then`, and
   emits a payload projection node for uses of the narrowed name;
 - types store declarations, records their ids and constant byte sizes, and
   makes store names visible to function bodies without making them values;
   `global` declarations are required to have type Store;
-- types `alloc<T>(value)`, `reset()`, `read()`, and `write(value)`; checks that
-  an allocation element is a single sized type; builds `Handle<T>` records;
+- types `alloc<T>(value)`, `reset()`, `read()`, and `write(value)`; requires a
+  fixed type for the allocation element (no allocator-backed fields) and builds
+  `Handle<T>` records; `Text`, `List`, and `TextBuilder` use their dedicated
+  constructors;
 - types integer literals as `Byte` in Byte contexts and range-checks them;
-- types string literals as fixed `String<N>` or static dynamic `String` from
+- types string literals as fixed `String<N>` or static dynamic `Text` from
   context, checks fixed byte length against capacity, and rejects uncontextual
   literals and ambiguous union alternatives;
 - types `byte_len()`, `byte_at(i)`, `slice(start, length)`, and content equality
-  for dynamic strings, plus `store.concat`, `store.copy`, and `store.string`;
-- types `store.builder(capacity)` and the `StringBuilder` methods `append`,
+  for dynamic strings, plus `store.concat`, `store.copy`, and `store.text`;
+- types `store.builder(capacity)` and the `TextBuilder` methods `append`,
   `append_byte`, `byte_len`, and `finish`;
-- types fixed `List<T,N>` literals with capacity/length and element coercion,
-  plus dynamic `store.list<T>(capacity)`, list indexing, `push`, `pop`, `len`,
-  `get`, and `set`; mutation requires a list variable; function and union
-  elements are accepted; `pop` builds and tag-remaps the optional union;
+- types fixed `Array<T,N>` literals with capacity/length and element coercion,
+  plus dynamic `store.list<T>(capacity)`, indexing, `push`, `pop`, and `len`;
+  mutation requires a list variable; function, union, and `Text` elements are
+  accepted; collections are rejected as direct elements; `pop` builds and
+  tag-remaps the optional union;
 - types `Slice<T>` views, list/sub-slices, and read-only slice indexing;
-- types `String` and `StringBuilder` as sized values, so they can be stored in a
-  handle, struct, union, parameter, or return;
+- types fixed-string-keyed `Record<K,V,N>` and `Table<K,V>` maps, including
+  Record literals, indexing, `has`, `remove`, and `len`;
+- types `Text` as a single item and `TextBuilder` as a collection, so `Text`
+  can be a struct/union/parameter/return and `TextBuilder` cannot be an
+  `alloc`/`Handle` element;
 - builds the built-in `Error` type and its three configured fixed-string field
   types, checks `Error(...)` argument count and types, and types its six field
   methods;
@@ -264,10 +279,14 @@ C-compiler diagnostic points back at the Nippy source. Function types are
 emitted as typedefs so every generated declaration is a simple `type name` pair,
 including function-typed parameters and variables. `Bool` maps to `bool`;
 `Nil` maps to a one-byte `nippy_nil`; a union is a `uint32_t tag` plus a union
-of payload members named by alternative position. `if`, `while`, `break`, and
-`continue` are emitted as the corresponding C statements, and `elseif` chains
+of payload members named by alternative position. `if`, `while`, `for`, `break`, and
+`continue` are emitted as the corresponding C statements. `print` emits a
+sequence of temporaries and generated per-type pretty-printer helpers; helpers
+recurse through collections, structs, and unions using
+`CompilerConfig.max_print_depth` as the runtime limit.
+`Error.throw` emits a compound literal with the source filename and position. `elseif` chains
 are emitted as nested `else { if ... }` blocks. A `TYPED_SUM_INJECT` becomes a
-compound literal, `TYPED_IS` becomes a tag comparison (or a literal when the
+compound literal, `TYPED_IS` (from `typeof x is T`) becomes a tag comparison (or a literal when the
 checker decided it statically), and `TYPED_SUM_PAYLOAD` reads the payload member
 directly.
 
@@ -277,12 +296,12 @@ generated `static const uint8_t` array and becomes a `nippy_string` descriptor.
 `TYPED_STRING_LEN` reads the stored length (checking staleness for dynamic
 strings), `TYPED_STRING_AT` calls a bounds-checked accessor, and string equality
 calls a byte comparison. Dynamic `slice`, `concat`, `copy`, and fixed-to-dynamic
-conversion are emitted as `nippy_string_*` runtime helpers. `StringBuilder`
+conversion are emitted as `nippy_string_*` runtime helpers. `TextBuilder`
 becomes a `nippy_builder` descriptor pointing at store-backed state; append,
-growth, length, and finish use `nippy_builder_*` helpers. Fixed lists become
+growth, length, and finish use `nippy_builder_*` helpers. Arrays become
 `nippy_list_<index>` structs and fixed `get` helpers. Dynamic lists become a
 `nippy_list` descriptor pointing at store-backed state; create, push, pop,
-index, set, and length use `nippy_list_*` helpers. Fixed lists carry an inline
+index, set, and length use `nippy_list_*` helpers. Arrays carry an inline
 length and have per-type push/at/pop helpers. Fixed function elements emit an
 inline element typedef; function union payloads are emitted inline. `Slice<T>`
 uses a `nippy_slice` descriptor and non-owning read helpers. `TYPED_ERROR_CONSTRUCT`
@@ -300,7 +319,9 @@ dereferences the checked handle pointer, `TYPED_STORE_RESET` clears the store an
 bumps its generation, and `TYPED_HANDLE_WRITE` copies through the checked
 pointer. The runtime grows by doubling, retains capacity on reset, and panics
 deterministically on OOM, stale handles, invalid store ids, and out-of-range
-handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`.
+handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`. Record and Table helpers
+use FNV-1a hashing with linear probing; Table helpers allocate arena state and
+rehash on growth.
 
 Because the number of declarations and fields is not fixed, the generator
 composes text in a growable `TextBuffer` and validates every interpolated
@@ -351,8 +372,8 @@ Fixed-size records and buffers are used where the size is a hard language limit:
 `ERROR_MESSAGE_CAPACITY` (4096) byte buffer whose truncation is handled.
 
 `Ast` keeps a separate `type_parameters` run because a generic declaration's
-value children and type parameters must not share one run. String literal bytes
-are variable-length too, so `LexerResult.string_bytes`, `Ast.bytes`, and
+value children and type parameters must not share one run. string literal bytes
+are variable-length too, so `LexerResult.text_bytes`, `Ast.bytes`, and
 `TypedProgram.bytes` are byte pools; tokens and literal nodes store offsets and
 lengths rather than pointers. `TypedType.fixed_length` is the byte capacity of a
 `String<N>`. `TypedType` also records a union's alternatives, a struct
@@ -408,10 +429,9 @@ never pointers.
 
 - No incremental compilation; `make` rebuilds every translation unit.
 - No concurrency story.
-- No local variables or scope handling. Function bodies have statements but no
-  way to declare local storage. Parameters and program-level variables can be
-  reassigned; assignment is a statement, not an expression.
-- Program-level variables are not visible inside function bodies.
+- Program-level variables are not visible inside function bodies; only stores
+  are. Local variables are block-scoped and cannot shadow parameters or other
+  visible names.
 - No ownership or lifetime analysis; the analyser validates links only.
 - The type, function, and variable tables are linear string searches.
 - Function types are emitted as one typedef per signature occurrence, so
@@ -422,26 +442,28 @@ never pointers.
   syntax.
 - Generic functions are checked per instantiation, so a generic function that is
   never called is not body-checked and produces no code.
-- `.is<T>()` requires a single non-union target; union-subset tests and
+- `typeof`/`match` type patterns require a single non-union target; union-subset tests and
   narrowing of the else branch are not implemented.
 - A generic constructor infers from its arguments only; there is no
   expected-type propagation from a variable annotation.
-- String literals are contextual only: there is no standalone literal type, so
+- string literals are contextual only: there is no standalone literal type, so
   a generic constructor or function cannot infer a fixed string type from a
   literal argument. Use an annotated variable or a parameter.
-- `String` and `String<N>` never convert implicitly. The maximum `String<N>`
+- `Text` and `String<N>` never convert implicitly. The maximum `String<N>`
   capacity and the three Error field capacities come from `CompilerConfig`;
   Error defaults to 32/128/128 bytes and is clamped to the configured string
   maximum. Dynamic strings have no C string projection, dynamic-to-fixed
   conversion, region/escape checking, or UTF-8 codepoint API yet. The
-  `build ... as ... do` block syntax is also unimplemented; `StringBuilder` is
+  `build ... as ... do` block syntax is also unimplemented; `TextBuilder` is
   first-class and its copies alias the same state.
-- `Error` fields are read through methods; field access is not implemented.
-  `Error` is a large inline value, so unions and copies of it are expensive.
+- `Error` fields are readable directly but not writable. `Error` is a large
+  inline value, so unions and copies of it are expensive.
 - A union value is not assignable to a different union; there is no subset
   widening.
-- Function-typed struct fields and union alternatives are rejected, because type
-  definitions are emitted before function-pointer typedefs.
+- Function-typed struct fields are rejected; function-typed union alternatives
+  and Array elements are supported with inline function-pointer payloads.
+  Function types with function-typed parameters/returns are rejected by the
+  inline C-type path; methods are the intended alternative for passing objects.
 - Stores are global and non-first-class: no local store, no store parameter or
   return, and no copy. There is no per-object free; reset is the only
   deallocation. Allocation failure aborts rather than returning a value.

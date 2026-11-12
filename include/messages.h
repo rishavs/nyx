@@ -32,6 +32,8 @@
     "compiler: Error %s capacity must be between 1 and %d"
 #define MESSAGE_COMPILER_STRING_CAPACITY \
     "compiler: maximum string capacity must be between 1 and %d"
+#define MESSAGE_COMPILER_PRINT_DEPTH \
+    "compiler: max_print_depth must be in 1..%d"
 #define MESSAGE_COMPILER_LIST_CAPACITY \
     "compiler: max_list_capacity must be between 1 and %d"
 #define MESSAGE_COMPILER_SOURCE_TOO_LARGE \
@@ -82,6 +84,10 @@
     "parser: expected ',' or ')' after a parameter"
 #define MESSAGE_PARSER_EXPECTED_RETURN_TYPE \
     "parser: expected ':' and a return type after the parameter list"
+#define MESSAGE_PARSER_EXPECTED_IN \
+    "parser: expected 'in' after for bindings"
+#define MESSAGE_PARSER_EXPECTED_DO \
+    "parser: expected 'do' after for iterable"
 #define MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END \
     "parser: expected a statement or 'end'"
 #define MESSAGE_PARSER_EXPECTED_THEN \
@@ -111,22 +117,37 @@
     "parser: expected '>' after a type argument list"
 #define MESSAGE_PARSER_EXPECTED_UNION_ALTERNATIVE \
     "parser: expected a type alternative after '|'"
-#define MESSAGE_PARSER_EXPECTED_IS_LT \
-    "parser: expected '<' after 'is'"
-#define MESSAGE_PARSER_EXPECTED_IS_GT \
-    "parser: expected '>' after the 'is' type"
-#define MESSAGE_PARSER_EXPECTED_IS_LPAREN \
-    "parser: expected '(' after the 'is' type"
-#define MESSAGE_PARSER_EXPECTED_IS_RPAREN \
-    "parser: expected ')' after 'is<T>'"
+#define MESSAGE_PARSER_MATCH_HEAD \
+    "parser: match scrutinee must be a variable"
+#define MESSAGE_PARSER_EXPECTED_WITH \
+    "parser: expected 'with' after match scrutinee"
+#define MESSAGE_PARSER_EXPECTED_ELSE \
+    "parser: expression if needs an else branch"
 #define MESSAGE_PARSER_EXPECTED_MEMBER_NAME \
     "parser: expected a member name after '.'"
 #define MESSAGE_PARSER_EXPECTED_STRING_LENGTH \
     "parser: expected an integer length in String<N>"
 #define MESSAGE_PARSER_EXPECTED_STRING_GT \
     "parser: expected '>' after String<N>"
-#define MESSAGE_PARSER_EXPECTED_LIST_CAPACITY \
-    "parser: expected an integer list capacity"
+#define MESSAGE_PARSER_LIST_CAPACITY \
+    "parser: List<T> is dynamic; use Array<T,N> for fixed capacity"
+#define MESSAGE_PARSER_EXPECTED_ARRAY_CAPACITY \
+    "parser: expected Array element and capacity"
+#define MESSAGE_PARSER_EXPECTED_ARRAY_GT \
+    "parser: expected '>' after Array capacity"
+#define MESSAGE_CHECKER_ARRAY_ARGS \
+    "checker: Array needs an element type and a capacity"
+#define MESSAGE_CHECKER_ARRAY_ELEMENT \
+    "checker: Array element must be a single item"
+#define MESSAGE_CHECKER_ARRAY_CAPACITY \
+    "checker: Array capacity is outside the configured maximum"
+#define MESSAGE_CHECKER_REDEFINES_ARRAY \
+    "checker: cannot redefine the built-in type 'Array'"
+#define MESSAGE_CHECKER_HANDLE_FIXED \
+    "checker: Handle requires a fixed type; " \
+    "allocator-backed types use their dedicated API"
+#define MESSAGE_CHECKER_COLLECTION_ELEMENT \
+    "checker: collection elements must be single items"
 #define MESSAGE_PARSER_EXPECTED_LIST_GT \
     "parser: expected '>' after a list capacity"
 #define MESSAGE_PARSER_EXPECTED_LIST_RBRACKET \
@@ -147,6 +168,12 @@
     "checker: unknown type '%s' for '%s'"
 #define MESSAGE_CHECKER_NO_INITIALISER \
     "checker: declaration of '%s' has no initialiser"
+#define MESSAGE_CHECKER_LOCAL_STORE \
+    "checker: Store declarations must be program-level"
+#define MESSAGE_CHECKER_UNKNOWN_FIELD \
+    "checker: type has no field '%s'"
+#define MESSAGE_CHECKER_FIELD_LVALUE \
+    "checker: field assignment requires a field of a variable"
 #define MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH \
     "checker: initialiser type does not match '%s' of type %s"
 #define MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME \
@@ -209,6 +236,8 @@
     "checker: function '%s' has no return expression"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
+#define MESSAGE_CHECKER_IF_EXPR_MISMATCH \
+    "checker: if expression branches must have the same type"
 #define MESSAGE_CHECKER_CONDITION_TYPE \
     "checker: condition must be Bool"
 #define MESSAGE_CHECKER_BREAK_OUTSIDE_LOOP \
@@ -241,12 +270,8 @@
     "checker: 'concat' expects dynamic String arguments"
 #define MESSAGE_CHECKER_COPY_TYPE \
     "checker: 'copy' expects a dynamic String"
-#define MESSAGE_CHECKER_STORE_STRING_TYPE \
-    "checker: 'string' expects a fixed String<N>"
-#define MESSAGE_CHECKER_LIST_CAPACITY \
-    "checker: list capacity must be in 0..%d"
-#define MESSAGE_CHECKER_LIST_ELEMENT \
-    "checker: List element type must be a single sized type"
+#define MESSAGE_CHECKER_STORE_TEXT_TYPE \
+    "checker: 'text' expects a fixed String<N>"
 #define MESSAGE_CHECKER_LIST_ARGS \
     "checker: List needs one element type and an optional capacity"
 #define MESSAGE_CHECKER_LIST_LITERAL_CONTEXT \
@@ -265,8 +290,48 @@
     "checker: 'list' expects one Int32 capacity"
 #define MESSAGE_CHECKER_LIST_CAPACITY_ARG \
     "checker: 'list' capacity must be Int32"
-#define MESSAGE_CHECKER_LIST_MUTABLE \
-    "checker: this operation requires a dynamic List<T>"
+#define MESSAGE_CHECKER_RECORD_ARGS \
+    "checker: Record needs a key type, a value type, and a capacity"
+#define MESSAGE_CHECKER_TABLE_ARGS \
+    "checker: Table needs a key type and a value type"
+#define MESSAGE_CHECKER_MAP_KEY \
+    "checker: map keys must be fixed String<N> values"
+#define MESSAGE_CHECKER_MAP_VALUE \
+    "checker: map values must be single items"
+#define MESSAGE_CHECKER_RECORD_CAPACITY \
+    "checker: Record capacity is outside the configured maximum"
+#define MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT \
+    "checker: Record literal needs a Record context"
+#define MESSAGE_CHECKER_RECORD_DUPLICATE_KEY \
+    "checker: duplicate Record literal key"
+#define MESSAGE_CHECKER_REDEFINES_RECORD \
+    "checker: cannot redefine built-in type 'Record'"
+#define MESSAGE_CHECKER_REDEFINES_TABLE \
+    "checker: cannot redefine built-in type 'Table'"
+#define MESSAGE_PARSER_EXPECTED_IS \
+    "parser: expected 'is' after typeof expression"
+#define MESSAGE_PARSER_EXPECTED_COLON \
+    "parser: expected ':' after Record key"
+#define MESSAGE_PARSER_EXPECTED_RBRACE \
+    "parser: expected '}' after Record literal"
+#define MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY \
+    "parser: expected Record capacity"
+#define MESSAGE_PARSER_EXPECTED_RECORD_GT \
+    "parser: expected '>' after Record capacity"
+#define MESSAGE_PARSER_EXPECTED_TABLE_GT \
+    "parser: expected '>' after Table value type"
+#define MESSAGE_RUNTIME_RECORD_FULL \
+    "nippy: Record is at capacity"
+#define MESSAGE_RUNTIME_MAP_MISSING \
+    "nippy: key is not present"
+#define MESSAGE_CHECKER_PRINT_STATEMENT \
+    "checker: print is a statement and cannot be used as a value"
+#define MESSAGE_CHECKER_PRINT_NAMED \
+    "checker: print arguments cannot be named"
+#define MESSAGE_CHECKER_PRINT_RESERVED \
+    "checker: 'print' is a reserved builtin"
+#define MESSAGE_CHECKER_FOR_ITERABLE \
+    "checker: for loop requires a List, String, or Slice"
 #define MESSAGE_CHECKER_LIST_LVALUE \
     "checker: list mutation requires a list variable"
 #define MESSAGE_CHECKER_SLICE_DYNAMIC \
@@ -283,10 +348,14 @@
     "checker: 'append' expects a dynamic String"
 #define MESSAGE_CHECKER_BUILDER_BYTE_TYPE \
     "checker: 'append_byte' expects a Byte"
+#define MESSAGE_CHECKER_STRING_ARGS \
+    "checker: String needs a capacity; use String<N> or Text"
 #define MESSAGE_CHECKER_REDEFINES_STRING \
     "checker: cannot redefine built-in type 'String'"
+#define MESSAGE_CHECKER_REDEFINES_TEXT \
+    "checker: cannot redefine built-in type 'Text'"
 #define MESSAGE_CHECKER_REDEFINES_BUILDER \
-    "checker: cannot redefine built-in type 'StringBuilder'"
+    "checker: cannot redefine built-in type 'TextBuilder'"
 #define MESSAGE_CHECKER_REDEFINES_LIST \
     "checker: cannot redefine built-in type 'List'"
 #define MESSAGE_CHECKER_REDEFINES_SLICE \
@@ -295,6 +364,8 @@
     "checker: cannot redefine built-in type 'Error'"
 #define MESSAGE_CHECKER_ERROR_ARGS \
     "checker: Error takes header, description, filename, line, col, pos"
+#define MESSAGE_CHECKER_ERROR_THROW_ARGS \
+    "checker: Error.throw needs a header and a description"
 #define MESSAGE_CHECKER_ERROR_ARG_TYPE \
     "checker: Error argument %zu has the wrong type"
 #define MESSAGE_CHECKER_STORE_SIZE \
@@ -306,7 +377,7 @@
 #define MESSAGE_CHECKER_STORE_TYPE \
     "checker: Store is only valid as a store declaration type"
 #define MESSAGE_CHECKER_HANDLE_ELEMENT \
-    "checker: Handle element type must be a single sized type"
+    "checker: Handle needs exactly one element type"
 #define MESSAGE_CHECKER_ALLOC_ARG_COUNT \
     "checker: alloc expects exactly one value"
 #define MESSAGE_CHECKER_ALLOC_ARG_TYPE \
@@ -342,7 +413,7 @@
 #define MESSAGE_CHECKER_GENERIC_AS_VALUE \
     "checker: generic function '%s' must be called"
 #define MESSAGE_CHECKER_IS_TYPE_IS_UNION \
-    "checker: '.is<T>()' requires a single non-union type"
+    "checker: a type test requires a single non-union type"
 #define MESSAGE_CHECKER_RECURSIVE_TYPE \
     "checker: type '%s' is defined recursively"
 
@@ -405,6 +476,8 @@
 #define MESSAGE_RUNTIME_STORE_RANGE "nippy: invalid store id"
 #define MESSAGE_RUNTIME_STRING_BOUNDS "nippy: string index out of bounds"
 #define MESSAGE_RUNTIME_LIST_BOUNDS "nippy: list index out of bounds"
+#define MESSAGE_RUNTIME_FOR_MUTATED \
+    "nippy: iterated collection changed length during for loop"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \

@@ -93,6 +93,7 @@ typedef struct {
     List *narrowings;             /* Narrowing, scoped to a then block */
     List *stores;                 /* StoreEntry, program-level global stores */
     bool in_function;
+    bool in_expression_statement;
     size_t loop_depth;
     const char *function_name;
     size_t depth;
@@ -102,6 +103,8 @@ typedef struct {
 
 static bool check_expression(CheckContext *ctx, size_t ast_index,
                              size_t *out_typed);
+static bool check_if_expression(CheckContext *ctx, const AstNode *node,
+                                size_t ast_index);
 static bool check_block(CheckContext *ctx, size_t ast_index,
                         size_t return_type, size_t *out_typed);
 static bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
@@ -346,17 +349,91 @@ static bool is_sized_type(const TypedProgram *program, size_t type_index)
            type->kind == NIPPY_TYPE_HANDLE ||
            type->kind == NIPPY_TYPE_STRING ||
            type->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-           type->kind == NIPPY_TYPE_STRING_BUILDER ||
+           type->kind == NIPPY_TYPE_TEXT_BUILDER ||
            type->kind == NIPPY_TYPE_LIST ||
            type->kind == NIPPY_TYPE_FIXED_LIST ||
            type->kind == NIPPY_TYPE_SLICE ||
+           type->kind == NIPPY_TYPE_RECORD ||
+           type->kind == NIPPY_TYPE_TABLE ||
+           type->kind == NIPPY_TYPE_UNION ||
+           type->kind == NIPPY_TYPE_FUNCTION ||
            type->kind == NIPPY_TYPE_ERROR;
+}
+
+static bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
+                                unsigned depth)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
+
+    if (type == NULL || depth == 0) {
+        return false;
+    }
+    switch (type->kind) {
+    case NIPPY_TYPE_INT32:
+    case NIPPY_TYPE_BOOL:
+    case NIPPY_TYPE_BYTE:
+    case NIPPY_TYPE_NIL:
+    case NIPPY_TYPE_STRING:
+    case NIPPY_TYPE_FUNCTION:
+    case NIPPY_TYPE_ERROR:
+        return true;
+    case NIPPY_TYPE_FIXED_LIST:
+        if (type->child_count != 1) {
+            return false;
+        }
+        return is_fixed_type_depth(
+            program, *(const size_t *)list_get(&program->type_children,
+                                               type->first_child),
+            depth - 1);
+    case NIPPY_TYPE_UNION:
+        for (i = 0; i < type->child_count; i++) {
+            size_t alternative = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!is_fixed_type_depth(program, alternative, depth - 1)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_STRUCT: {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+
+        if (declaration == NULL) {
+            return false;
+        }
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, declaration->children_start + i);
+            const TypedNode *field = typed_program_node(program, child);
+
+            if (field == NULL ||
+                !is_fixed_type_depth(program, field->type_index,
+                                     depth - 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+static bool is_fixed_type(const TypedProgram *program, size_t type_index)
+{
+    return is_fixed_type_depth(program, type_index, NIPPY_TYPE_DEPTH);
 }
 
 static bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
 {
     size_t i;
 
+    if (!is_fixed_type(ctx->program, element)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+        return false;
+    }
     for (i = 0; i < ctx->program->types.length; i++) {
         const TypedType *type = typed_program_type(ctx->program, i);
 
@@ -434,14 +511,14 @@ static bool builtin_type(CheckContext *ctx, NippyType kind, size_t *out_index)
     return add_type_record(ctx, kind, TYPED_NO_NODE, TYPED_NO_NODE, out_index);
 }
 
-static bool string_builder_type(CheckContext *ctx, size_t *out_index)
+static bool text_builder_type(CheckContext *ctx, size_t *out_index)
 {
     size_t dynamic_string;
 
     if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &dynamic_string)) {
         return false;
     }
-    return builtin_type(ctx, NIPPY_TYPE_STRING_BUILDER, out_index);
+    return builtin_type(ctx, NIPPY_TYPE_TEXT_BUILDER, out_index);
 }
 
 static bool is_list_element_type(CheckContext *ctx, size_t element_type,
@@ -450,7 +527,13 @@ static bool is_list_element_type(CheckContext *ctx, size_t element_type,
     const TypedType *type = typed_program_type(ctx->program, element_type);
 
     (void)fixed;
-    if (type == NULL || type->kind == NIPPY_TYPE_STORE) {
+    if (type == NULL || type->kind == NIPPY_TYPE_STORE ||
+        type->kind == NIPPY_TYPE_LIST ||
+        type->kind == NIPPY_TYPE_FIXED_LIST ||
+        type->kind == NIPPY_TYPE_SLICE ||
+        type->kind == NIPPY_TYPE_RECORD ||
+        type->kind == NIPPY_TYPE_TABLE ||
+        type->kind == NIPPY_TYPE_TEXT_BUILDER) {
         return false;
     }
     if (type->kind == NIPPY_TYPE_FUNCTION) {
@@ -462,13 +545,76 @@ static bool is_list_element_type(CheckContext *ctx, size_t element_type,
     return is_sized_type(ctx->program, element_type);
 }
 
+static bool map_type(CheckContext *ctx, size_t key_type, size_t value_type,
+                     bool fixed, size_t capacity, size_t *out_index)
+{
+    const TypedType *key = typed_program_type(ctx->program, key_type);
+    size_t i;
+
+    if (key == NULL || key->kind != NIPPY_TYPE_STRING) {
+        error_report(ctx->errors, MESSAGE_CHECKER_MAP_KEY);
+        return false;
+    }
+    if (!is_list_element_type(ctx, value_type, fixed)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_MAP_VALUE);
+        return false;
+    }
+    if (fixed && capacity > (size_t)ctx->program->max_list_capacity) {
+        error_report(ctx->errors, MESSAGE_CHECKER_RECORD_CAPACITY);
+        return false;
+    }
+    for (i = 0; i < ctx->program->types.length; i++) {
+        const TypedType *type = typed_program_type(ctx->program, i);
+
+        if (type == NULL ||
+            type->kind != (fixed ? NIPPY_TYPE_RECORD : NIPPY_TYPE_TABLE) ||
+            type->child_count != 2) {
+            continue;
+        }
+        {
+            size_t existing_key = *(const size_t *)list_get(
+                &ctx->program->type_children, type->first_child);
+            size_t existing_value = *(const size_t *)list_get(
+                &ctx->program->type_children, type->first_child + 1);
+
+            if (same_type(ctx->program, existing_key, key_type) &&
+                same_type(ctx->program, existing_value, value_type) &&
+                (!fixed || type->fixed_length == capacity)) {
+                *out_index = i;
+                return true;
+            }
+        }
+    }
+    {
+        TypedType type = {0};
+
+        type.kind = fixed ? NIPPY_TYPE_RECORD : NIPPY_TYPE_TABLE;
+        type.name_index = TYPED_NO_NODE;
+        type.signature_index = TYPED_NO_NODE;
+        type.first_child = ctx->program->type_children.length;
+        type.child_count = 2;
+        type.fixed_length = fixed ? capacity : 0;
+        type.declaration_node = TYPED_NO_NODE;
+        type.source_name_index = TYPED_NO_NODE;
+        if (!typed_program_add_type_child(ctx->program, key_type) ||
+            !typed_program_add_type_child(ctx->program, value_type) ||
+            !typed_program_add_type(ctx->program, &type, out_index)) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
+        return true;
+    }
+}
+
 static bool list_type(CheckContext *ctx, size_t element_type, bool fixed,
                       size_t capacity, size_t *out_index)
 {
     size_t i;
 
     if (!is_list_element_type(ctx, element_type, fixed)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_LIST_ELEMENT);
+        error_report(ctx->errors,
+                     fixed ? MESSAGE_CHECKER_ARRAY_ELEMENT
+                           : MESSAGE_CHECKER_COLLECTION_ELEMENT);
         return false;
     }
     for (i = 0; i < ctx->program->types.length; i++) {
@@ -614,7 +760,7 @@ static bool same_type_depth(const TypedProgram *program, size_t a, size_t b,
         left->kind == NIPPY_TYPE_BYTE || left->kind == NIPPY_TYPE_NIL ||
         left->kind == NIPPY_TYPE_STORE ||
         left->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-        left->kind == NIPPY_TYPE_STRING_BUILDER) {
+        left->kind == NIPPY_TYPE_TEXT_BUILDER) {
         return true;
     }
     if (left->kind == NIPPY_TYPE_STRING) {
@@ -639,6 +785,29 @@ static bool same_type_depth(const TypedProgram *program, size_t a, size_t b,
                                                   right->first_child);
         return same_type_depth(program, left_element, right_element,
                                depth - 1);
+    }
+    if (left->kind == NIPPY_TYPE_RECORD ||
+        left->kind == NIPPY_TYPE_TABLE) {
+        size_t left_key;
+        size_t right_key;
+        size_t left_value;
+        size_t right_value;
+
+        if (left->child_count != 2 || right->child_count != 2 ||
+            (left->kind == NIPPY_TYPE_RECORD &&
+             left->fixed_length != right->fixed_length)) {
+            return false;
+        }
+        left_key = *(const size_t *)list_get(&program->type_children,
+                                             left->first_child);
+        right_key = *(const size_t *)list_get(&program->type_children,
+                                              right->first_child);
+        left_value = *(const size_t *)list_get(&program->type_children,
+                                               left->first_child + 1);
+        right_value = *(const size_t *)list_get(&program->type_children,
+                                                right->first_child + 1);
+        return same_type_depth(program, left_key, right_key, depth - 1) &&
+               same_type_depth(program, left_value, right_value, depth - 1);
     }
     if (left->kind == NIPPY_TYPE_HANDLE) {
         if (left->child_count != 1 || right->child_count != 1) {
@@ -754,7 +923,11 @@ static int type_rank(NippyType kind)
         return 12;
     case NIPPY_TYPE_SLICE:
         return 13;
-    case NIPPY_TYPE_STRING_BUILDER:
+    case NIPPY_TYPE_RECORD:
+        return 17;
+    case NIPPY_TYPE_TABLE:
+        return 18;
+    case NIPPY_TYPE_TEXT_BUILDER:
         return 14;
     case NIPPY_TYPE_STRING_LITERAL:
         return 15;
@@ -840,7 +1013,7 @@ static int type_compare_depth(const TypedProgram *program, size_t a, size_t b,
         return 0;
     }
     if (left->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-        left->kind == NIPPY_TYPE_STRING_BUILDER) {
+        left->kind == NIPPY_TYPE_TEXT_BUILDER) {
         return 0;
     }
     if (left->kind == NIPPY_TYPE_LIST ||
@@ -867,6 +1040,36 @@ static int type_compare_depth(const TypedProgram *program, size_t a, size_t b,
             return left->fixed_length < right->fixed_length ? -1 : 1;
         }
         return 0;
+    }
+    if (left->kind == NIPPY_TYPE_RECORD ||
+        left->kind == NIPPY_TYPE_TABLE) {
+        size_t left_key;
+        size_t right_key;
+        size_t left_value;
+        size_t right_value;
+        int by_key;
+
+        if (left->child_count != 2 || right->child_count != 2) {
+            return left->child_count < right->child_count ? -1 : 1;
+        }
+        if (left->kind == NIPPY_TYPE_RECORD &&
+            left->fixed_length != right->fixed_length) {
+            return left->fixed_length < right->fixed_length ? -1 : 1;
+        }
+        left_key = *(const size_t *)list_get(&program->type_children,
+                                             left->first_child);
+        right_key = *(const size_t *)list_get(&program->type_children,
+                                              right->first_child);
+        by_key = type_compare_depth(program, left_key, right_key, depth - 1);
+        if (by_key != 0) {
+            return by_key;
+        }
+        left_value = *(const size_t *)list_get(&program->type_children,
+                                               left->first_child + 1);
+        right_value = *(const size_t *)list_get(&program->type_children,
+                                                right->first_child + 1);
+        return type_compare_depth(program, left_value, right_value,
+                                  depth - 1);
     }
     if (left->kind == NIPPY_TYPE_HANDLE) {
         size_t left_element;
@@ -1156,12 +1359,36 @@ static bool type_ast_text(const Ast *ast, size_t ast_index, char *buffer,
         type_ast_append(number, buffer, size, &used);
         return true;
     }
+    if (node->kind == AST_TYPE_RECORD || node->kind == AST_TYPE_TABLE) {
+        char left_text[128];
+        char right_text[128];
+
+        type_ast_append(node->kind == AST_TYPE_RECORD ? "Record" : "Table",
+                        buffer, size, &used);
+        type_ast_append("<", buffer, size, &used);
+        type_ast_text(ast, node->left_child, left_text, sizeof(left_text));
+        type_ast_text(ast, node->right_child, right_text, sizeof(right_text));
+        type_ast_append(left_text, buffer, size, &used);
+        type_ast_append(", ", buffer, size, &used);
+        type_ast_append(right_text, buffer, size, &used);
+        if (node->kind == AST_TYPE_RECORD) {
+            char number[32];
+
+            snprintf(number, sizeof(number), ", %d", node->integer_value);
+            type_ast_append(number, buffer, size, &used);
+        }
+        type_ast_append(">", buffer, size, &used);
+        return true;
+    }
     if (node->kind == AST_TYPE_LIST ||
         node->kind == AST_TYPE_FIXED_LIST ||
         node->kind == AST_TYPE_SLICE) {
         char element_text[128];
 
-        type_ast_append(node->kind == AST_TYPE_SLICE ? "Slice" : "List",
+        type_ast_append(node->kind == AST_TYPE_SLICE
+                            ? "Slice"
+                            : (node->kind == AST_TYPE_FIXED_LIST ? "Array"
+                                                                 : "List"),
                         buffer, size, &used);
         type_ast_append("<", buffer, size, &used);
         type_ast_text(ast, node->left_child, element_text,
@@ -1483,13 +1710,30 @@ static bool resolve_type_name(CheckContext *ctx, const AstNode *node,
         return builtin_type(ctx, NIPPY_TYPE_STORE, out_index);
     }
     if (strcmp(name, "String") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_STRING_ARGS);
+        return false;
+    }
+    if (strcmp(name, "Text") == 0) {
         return builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, out_index);
     }
-    if (strcmp(name, "StringBuilder") == 0) {
-        return string_builder_type(ctx, out_index);
+    if (strcmp(name, "TextBuilder") == 0) {
+        return text_builder_type(ctx, out_index);
     }
     if (strcmp(name, "List") == 0) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_LIST_ARGS);
+        return false;
+    }
+    if (strcmp(name, "Array") == 0) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_ARRAY_ARGS);
+        return false;
+    }
+    if (strcmp(name, "Record") == 0) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RECORD_ARGS);
+        return false;
+    }
+    if (strcmp(name, "Table") == 0) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_TABLE_ARGS);
         return false;
     }
     if (strcmp(name, "Slice") == 0) {
@@ -1569,19 +1813,18 @@ static bool resolve_type_application(CheckContext *ctx, const AstNode *node,
                 return false;
             }
         }
-        if (!is_sized_type(ctx->program, element)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_HANDLE_ELEMENT);
-            return false;
-        }
         return handle_type(ctx, element, out_index);
     }
     if (strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
         strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
         strcmp(name, "Store") == 0 || strcmp(name, "String") == 0 ||
-        strcmp(name, "StringBuilder") == 0 ||
+        strcmp(name, "Text") == 0 ||
+        strcmp(name, "TextBuilder") == 0 ||
         strcmp(name, "List") == 0 ||
+        strcmp(name, "Array") == 0 ||
         strcmp(name, "Slice") == 0 ||
+        strcmp(name, "Record") == 0 ||
+        strcmp(name, "Table") == 0 ||
         strcmp(name, "Error") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_TYPE_NOT_GENERIC, name);
@@ -1657,6 +1900,28 @@ static bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
         }
         return slice_type(ctx, element, out_index);
     }
+    if (node->kind == AST_TYPE_RECORD || node->kind == AST_TYPE_TABLE) {
+        size_t key_type;
+        size_t value_type;
+
+        if (!resolve_type_in_env(ctx, node->left_child, env, owner,
+                                 &key_type) ||
+            !resolve_type_in_env(ctx, node->right_child, env, owner,
+                                 &value_type)) {
+            return false;
+        }
+        if (node->kind == AST_TYPE_TABLE) {
+            return map_type(ctx, key_type, value_type, false, 0, out_index);
+        }
+        if (node->integer_value < 0 ||
+            node->integer_value > ctx->program->max_list_capacity) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_RECORD_CAPACITY);
+            return false;
+        }
+        return map_type(ctx, key_type, value_type, true,
+                        (size_t)node->integer_value, out_index);
+    }
     if (node->kind == AST_TYPE_LIST ||
         node->kind == AST_TYPE_FIXED_LIST) {
         size_t element;
@@ -1671,7 +1936,7 @@ static bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
         if (node->integer_value < 0 ||
             node->integer_value > ctx->program->max_list_capacity) {
             error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_LIST_CAPACITY,
+                            MESSAGE_CHECKER_ARRAY_CAPACITY,
                             ctx->program->max_list_capacity);
             return false;
         }
@@ -1823,6 +2088,97 @@ static bool inject_into(CheckContext *ctx, size_t value, size_t target,
 
     if (value_node == NULL || target_type == NULL) {
         return false;
+    }
+    if (value_node->kind == TYPED_RECORD_LITERAL) {
+        const TypedType *record = target_type;
+        size_t key_type;
+        size_t value_type;
+        size_t entries = value_node->children_count / 2;
+        size_t children_start;
+        List values;
+        size_t i;
+
+        if (record->kind != NIPPY_TYPE_RECORD || record->child_count != 2) {
+            error_report_at(ctx->errors, value_node->pos,
+                            MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+            return false;
+        }
+        if (value_node->children_count % 2 != 0 ||
+            entries > record->fixed_length) {
+            error_report_at(ctx->errors, value_node->pos,
+                            MESSAGE_CHECKER_RECORD_CAPACITY);
+            return false;
+        }
+        key_type = *(const size_t *)list_get(&ctx->program->type_children,
+                                             record->first_child);
+        value_type = *(const size_t *)list_get(
+            &ctx->program->type_children, record->first_child + 1);
+        children_start = ctx->program->children.length;
+        list_init(&values, sizeof(size_t));
+        for (i = 0; i < entries; i++) {
+            size_t key = *(const size_t *)list_get(
+                &ctx->program->children,
+                value_node->children_start + i * 2);
+            size_t item = *(const size_t *)list_get(
+                &ctx->program->children,
+                value_node->children_start + i * 2 + 1);
+            size_t coerced_key;
+            size_t coerced_value;
+            const TypedNode *key_node;
+            size_t j;
+
+            if (!inject_into(ctx, key, key_type, &coerced_key) ||
+                !inject_into(ctx, item, value_type, &coerced_value)) {
+                list_free(&values);
+                return false;
+            }
+            key_node = typed_program_node(ctx->program, coerced_key);
+            if (key_node == NULL ||
+                key_node->string_offset + key_node->string_length >
+                    ctx->program->bytes.length) {
+                list_free(&values);
+                return false;
+            }
+            for (j = 0; j < values.length; j += 2) {
+                size_t previous = *(const size_t *)list_get(&values, j);
+                const TypedNode *previous_node = typed_program_node(
+                    ctx->program, previous);
+
+                if (previous_node != NULL &&
+                    previous_node->string_length == key_node->string_length &&
+                    memcmp((const unsigned char *)ctx->program->bytes.items +
+                               previous_node->string_offset,
+                           (const unsigned char *)ctx->program->bytes.items +
+                               key_node->string_offset,
+                           key_node->string_length) == 0) {
+                    error_report_at(ctx->errors, key_node->pos,
+                                    MESSAGE_CHECKER_RECORD_DUPLICATE_KEY);
+                    list_free(&values);
+                    return false;
+                }
+            }
+            if (!list_push(&values, &coerced_key) ||
+                !list_push(&values, &coerced_value)) {
+                list_free(&values);
+                return false;
+            }
+        }
+        for (i = 0; i < values.length; i++) {
+            size_t child = *(const size_t *)list_get(&values, i);
+
+            if (!typed_program_push_child(ctx->program, child)) {
+                list_free(&values);
+                error_report(ctx->errors,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                return false;
+            }
+        }
+        value_node->type_index = target;
+        value_node->children_start = children_start;
+        value_node->children_count = values.length;
+        list_free(&values);
+        *out_value = value;
+        return true;
     }
     if (value_node->kind == TYPED_LIST_LITERAL) {
         if (target_type->kind == NIPPY_TYPE_LIST) {
@@ -2005,6 +2361,180 @@ static bool inject_into(CheckContext *ctx, size_t value, size_t target,
 }
 
 
+static bool lookup_field(CheckContext *ctx, size_t receiver_type,
+                          const char *name, size_t *out_type, bool *out_error)
+{
+    const TypedType *type = typed_program_type(ctx->program, receiver_type);
+
+    if (type == NULL) {
+        return false;
+    }
+    if (type->kind == NIPPY_TYPE_STRUCT) {
+        const TypedNode *declaration = typed_program_node(
+            ctx->program, type->declaration_node);
+        size_t i;
+
+        if (declaration == NULL) {
+            return false;
+        }
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &ctx->program->children, declaration->children_start + i);
+            const TypedNode *field = typed_program_node(ctx->program, child);
+            const char *field_name;
+
+            if (field == NULL || field->kind != TYPED_FIELD) {
+                continue;
+            }
+            field_name = typed_program_symbol_text(ctx->program,
+                                                   field->name_index);
+            if (field_name != NULL && strcmp(field_name, name) == 0) {
+                *out_type = field->type_index;
+                *out_error = false;
+                return true;
+            }
+        }
+        return false;
+    }
+    if (type->kind == NIPPY_TYPE_ERROR) {
+        static const char *const names[] = {
+            "header", "description", "filename", "line", "col", "pos"
+        };
+        size_t i;
+
+        for (i = 0; i < 6; i++) {
+            if (strcmp(names[i], name) == 0 && i < type->child_count) {
+                *out_type = *(const size_t *)list_get(
+                    &ctx->program->type_children, type->first_child + i);
+                *out_error = true;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool field_is_lvalue(const Ast *ast, size_t ast_index)
+{
+    const AstNode *node = ast_get_node(ast, ast_index);
+
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == AST_IDENTIFIER) {
+        return true;
+    }
+    if (node->kind == AST_MEMBER_ACCESS) {
+        return field_is_lvalue(ast, node->left_child);
+    }
+    return false;
+}
+
+static bool check_member_access(CheckContext *ctx, const AstNode *node,
+                                size_t ast_index)
+{
+    size_t receiver;
+    const TypedNode *receiver_node;
+    const TypedType *receiver_type;
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    size_t field_type;
+    bool is_error;
+    TypedNode typed = {0};
+    size_t name_index;
+
+    if (name == NULL || !check_expression(ctx, node->left_child, &receiver)) {
+        return false;
+    }
+    receiver_node = typed_program_node(ctx->program, receiver);
+    receiver_type = receiver_node == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             receiver_node->type_index);
+    if (receiver_type == NULL ||
+        !lookup_field(ctx, receiver_node->type_index, name, &field_type,
+                      &is_error)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_UNKNOWN_FIELD, name);
+        return false;
+    }
+    name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
+    if (name_index == TYPED_NO_NODE) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        return false;
+    }
+    typed.kind = TYPED_MEMBER_ACCESS;
+    typed.type_index = field_type;
+    typed.pos = node->pos;
+    typed.name_index = name_index;
+    typed.left_child = receiver;
+    typed.right_child = TYPED_NO_NODE;
+    typed.auxiliary_type = TYPED_NO_NODE;
+    typed.store_id = TYPED_NO_NODE;
+    typed.children_start = 0;
+    typed.children_count = 0;
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+}
+
+static bool check_member_assignment(CheckContext *ctx, const AstNode *node,
+                                    size_t ast_index, size_t *out_typed)
+{
+    const AstNode *target = ast_get_node(ctx->ast, node->left_child);
+    size_t target_typed;
+    const TypedNode *target_node;
+    const TypedNode *receiver;
+    const TypedType *receiver_type;
+    size_t value;
+    size_t coerced;
+    size_t nil_type;
+    TypedNode typed = {0};
+
+    if (target == NULL || target->kind != AST_MEMBER_ACCESS ||
+        !field_is_lvalue(ctx->ast, node->left_child) ||
+        !check_expression(ctx, node->left_child, &target_typed)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_FIELD_LVALUE);
+        return false;
+    }
+    target_node = typed_program_node(ctx->program, target_typed);
+    if (target_node == NULL || target_node->kind != TYPED_MEMBER_ACCESS) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_FIELD_LVALUE);
+        return false;
+    }
+    receiver = typed_program_node(ctx->program, target_node->left_child);
+    receiver_type = receiver == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             receiver->type_index);
+    if (receiver_type == NULL ||
+        receiver_type->kind == NIPPY_TYPE_ERROR) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_FIELD_LVALUE);
+        return false;
+    }
+    if (!check_expression(ctx, node->right_child, &value) ||
+        !inject_into(ctx, value, target_node->type_index, &coerced) ||
+        !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
+        if (!ctx->errors->reported) {
+            error_report(ctx->errors,
+                         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH,
+                         "field", "field");
+        }
+        return false;
+    }
+    typed.kind = TYPED_MEMBER_WRITE;
+    typed.type_index = nil_type;
+    typed.pos = node->pos;
+    typed.name_index = TYPED_NO_NODE;
+    typed.left_child = target_typed;
+    typed.right_child = coerced;
+    typed.auxiliary_type = TYPED_NO_NODE;
+    typed.store_id = TYPED_NO_NODE;
+    typed.children_start = 0;
+    typed.children_count = 0;
+    return emit_node(ctx, &typed, ast_index, out_typed);
+}
+
 static bool check_index_expression(CheckContext *ctx, const AstNode *node,
                                    size_t ast_index)
 {
@@ -2025,6 +2555,53 @@ static bool check_index_expression(CheckContext *ctx, const AstNode *node,
                         ? NULL
                         : typed_program_type(ctx->program,
                                              receiver_node->type_index);
+    if (receiver_type != NULL &&
+        (receiver_type->kind == NIPPY_TYPE_RECORD ||
+         receiver_type->kind == NIPPY_TYPE_TABLE)) {
+        size_t key_type;
+        size_t value_type;
+        size_t key;
+        size_t coerced;
+        const TypedNode *key_node;
+        const TypedType *key_node_type;
+
+        if (receiver_type->child_count != 2) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
+            return false;
+        }
+        key_type = *(const size_t *)list_get(&ctx->program->type_children,
+                                             receiver_type->first_child);
+        value_type = *(const size_t *)list_get(
+            &ctx->program->type_children, receiver_type->first_child + 1);
+        if (!check_expression(ctx, node->right_child, &key)) {
+            return false;
+        }
+        key_node = typed_program_node(ctx->program, key);
+        key_node_type = key_node == NULL
+                            ? NULL
+                            : typed_program_type(ctx->program,
+                                                 key_node->type_index);
+        if (key_node_type == NULL ||
+            !inject_into(ctx, key, key_type, &coerced)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MAP_KEY);
+            return false;
+        }
+        typed.kind = receiver_type->kind == NIPPY_TYPE_RECORD
+                         ? TYPED_RECORD_GET
+                         : TYPED_TABLE_GET;
+        typed.type_index = value_type;
+        typed.pos = node->pos;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = receiver;
+        typed.right_child = coerced;
+        typed.auxiliary_type = TYPED_NO_NODE;
+        typed.store_id = TYPED_NO_NODE;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    }
     if (receiver_type == NULL ||
         (receiver_type->kind != NIPPY_TYPE_LIST &&
          receiver_type->kind != NIPPY_TYPE_FIXED_LIST &&
@@ -2097,7 +2674,9 @@ static bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     target_node = typed_program_node(ctx->program, target_typed);
     if (target_node == NULL ||
         (target_node->kind != TYPED_LIST_GET &&
-         target_node->kind != TYPED_SLICE_GET)) {
+         target_node->kind != TYPED_SLICE_GET &&
+         target_node->kind != TYPED_RECORD_GET &&
+         target_node->kind != TYPED_TABLE_GET)) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_LIST_LVALUE);
         return false;
@@ -2107,6 +2686,53 @@ static bool check_index_assignment(CheckContext *ctx, const AstNode *node,
                         ? NULL
                         : typed_program_type(ctx->program,
                                              receiver->type_index);
+    if (receiver_type != NULL &&
+        (receiver_type->kind == NIPPY_TYPE_RECORD ||
+         receiver_type->kind == NIPPY_TYPE_TABLE)) {
+        size_t key_type;
+        size_t value_type;
+        size_t coerced_key;
+        size_t coerced_value;
+
+        if (receiver_type->child_count != 2 ||
+            receiver->name_index == TYPED_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LIST_LVALUE);
+            return false;
+        }
+        key_type = *(const size_t *)list_get(&ctx->program->type_children,
+                                             receiver_type->first_child);
+        value_type = *(const size_t *)list_get(
+            &ctx->program->type_children, receiver_type->first_child + 1);
+        if (!inject_into(ctx, target_node->right_child, key_type,
+                         &coerced_key) ||
+            !check_expression(ctx, node->right_child, &value) ||
+            !inject_into(ctx, value, value_type, &coerced_value) ||
+            !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MAP_VALUE);
+            return false;
+        }
+        children_start = ctx->program->children.length;
+        if (!typed_program_push_child(ctx->program, coerced_key) ||
+            !typed_program_push_child(ctx->program, coerced_value)) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            return false;
+        }
+        typed.kind = receiver_type->kind == NIPPY_TYPE_RECORD
+                         ? TYPED_RECORD_SET
+                         : TYPED_TABLE_SET;
+        typed.type_index = nil_type;
+        typed.pos = node->pos;
+        typed.name_index = receiver->name_index;
+        typed.left_child = target_node->left_child;
+        typed.right_child = TYPED_NO_NODE;
+        typed.auxiliary_type = value_type;
+        typed.store_id = TYPED_NO_NODE;
+        typed.children_start = children_start;
+        typed.children_count = 2;
+        return emit_node(ctx, &typed, ast_index, out_typed);
+    }
     if (receiver_type == NULL || receiver_type->child_count != 1 ||
         receiver->name_index == TYPED_NO_NODE) {
         error_report_at(ctx->errors, node->pos,
@@ -2145,6 +2771,60 @@ static bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     typed.children_start = children_start;
     typed.children_count = 2;
     return emit_node(ctx, &typed, ast_index, out_typed);
+}
+
+static bool check_record_literal(CheckContext *ctx, const AstNode *node,
+                                   size_t ast_index)
+{
+    TypedNode typed = {0};
+    List children;
+    size_t children_start;
+    size_t i;
+
+    if (node->children_count % 2 != 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+        return false;
+    }
+    list_init(&children, sizeof(size_t));
+    for (i = 0; i < node->children_count; i += 2) {
+        size_t key_ast = *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start + i);
+        size_t value_ast = *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start + i + 1);
+        size_t key;
+        size_t value;
+
+        if (!check_expression(ctx, key_ast, &key) ||
+            !check_expression(ctx, value_ast, &value) ||
+            !list_push(&children, &key) ||
+            !list_push(&children, &value)) {
+            list_free(&children);
+            return false;
+        }
+    }
+    children_start = ctx->program->children.length;
+    for (i = 0; i < children.length; i++) {
+        size_t child = *(const size_t *)list_get(&children, i);
+
+        if (!typed_program_push_child(ctx->program, child)) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            list_free(&children);
+            return false;
+        }
+    }
+    typed.kind = TYPED_RECORD_LITERAL;
+    typed.type_index = TYPED_NO_NODE;
+    typed.pos = node->pos;
+    typed.name_index = TYPED_NO_NODE;
+    typed.left_child = TYPED_NO_NODE;
+    typed.right_child = TYPED_NO_NODE;
+    typed.auxiliary_type = TYPED_NO_NODE;
+    typed.store_id = TYPED_NO_NODE;
+    typed.children_start = children_start;
+    typed.children_count = children.length;
+    list_free(&children);
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
 }
 
 static bool check_list_literal(CheckContext *ctx, const AstNode *node,
@@ -2463,8 +3143,10 @@ static bool check_identifier(CheckContext *ctx, const AstNode *node,
                    strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
                    strcmp(name, "Nil") == 0 ||
                    strcmp(name, "String") == 0 ||
-                   strcmp(name, "StringBuilder") == 0 ||
+                   strcmp(name, "Text") == 0 ||
+                   strcmp(name, "TextBuilder") == 0 ||
                    strcmp(name, "List") == 0 ||
+                   strcmp(name, "Array") == 0 ||
                    strcmp(name, "Slice") == 0 ||
                    strcmp(name, "Error") == 0) {
             error_report_at(ctx->errors, node->pos,
@@ -3601,6 +4283,102 @@ done:
 }
 
 
+static bool check_error_throw(CheckContext *ctx, const AstNode *node,
+                             size_t ast_index)
+{
+    size_t error;
+    size_t header_type;
+    size_t description_type;
+    size_t filename_type;
+    size_t values[2];
+    const char *filename;
+    size_t filename_length;
+    size_t capacity;
+    size_t string_offset;
+    size_t i;
+    TypedNode typed = {0};
+
+    if (!error_type(ctx, &error) ||
+        !error_field_type(ctx, error, 0, &header_type) ||
+        !error_field_type(ctx, error, 1, &description_type) ||
+        !error_field_type(ctx, error, 2, &filename_type)) {
+        return false;
+    }
+    if (node->children_count != 2) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_ERROR_THROW_ARGS);
+        return false;
+    }
+    for (i = 0; i < 2; i++) {
+        size_t child = *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start + i);
+        const AstNode *argument = ast_get_node(ctx->ast, child);
+        size_t value;
+        size_t coerced;
+        size_t expected = i == 0 ? header_type : description_type;
+
+        if (argument == NULL || argument->kind == AST_NAMED_ARG) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ERROR_THROW_ARGS);
+            return false;
+        }
+        if (!check_expression(ctx, child, &value) ||
+            !inject_into(ctx, value, expected, &coerced)) {
+            if (!ctx->errors->reported) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_ERROR_THROW_ARGS);
+            }
+            return false;
+        }
+        values[i] = coerced;
+    }
+    {
+        const TypedType *filename_record = typed_program_type(ctx->program,
+                                                              filename_type);
+
+        if (filename_record == NULL ||
+            filename_record->kind != NIPPY_TYPE_STRING) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
+        capacity = filename_record->fixed_length;
+    }
+    filename = ctx->errors->source_name == NULL
+                   ? "nippy.nip"
+                   : ctx->errors->source_name;
+    filename_length = strlen(filename);
+    if (filename_length > capacity) {
+        filename_length = capacity;
+    }
+    string_offset = ctx->program->bytes.length;
+    for (i = 0; i < filename_length; i++) {
+        if (!typed_program_push_byte(ctx->program,
+                                     (unsigned char)filename[i])) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
+    }
+    typed.kind = TYPED_ERROR_THROW;
+    typed.type_index = error;
+    typed.pos = node->pos;
+    typed.name_index = TYPED_NO_NODE;
+    typed.left_child = TYPED_NO_NODE;
+    typed.right_child = TYPED_NO_NODE;
+    typed.auxiliary_type = filename_type;
+    typed.store_id = TYPED_NO_NODE;
+    typed.string_offset = string_offset;
+    typed.string_length = filename_length;
+    typed.children_start = ctx->program->children.length;
+    typed.children_count = 2;
+    for (i = 0; i < 2; i++) {
+        if (!typed_program_push_child(ctx->program, values[i])) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
+    }
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+}
+
 static bool check_error_constructor(CheckContext *ctx, const AstNode *node,
                                     size_t ast_index)
 {
@@ -3688,6 +4466,188 @@ done:
     return ok;
 }
 
+static bool is_printable_type_depth(const TypedProgram *program,
+                                    size_t type_index, unsigned depth)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
+
+    if (type == NULL || depth == 0) {
+        return false;
+    }
+    switch (type->kind) {
+    case NIPPY_TYPE_INT32:
+    case NIPPY_TYPE_BOOL:
+    case NIPPY_TYPE_BYTE:
+    case NIPPY_TYPE_NIL:
+    case NIPPY_TYPE_STRING:
+    case NIPPY_TYPE_DYNAMIC_STRING:
+    case NIPPY_TYPE_TEXT_BUILDER:
+    case NIPPY_TYPE_ERROR:
+    case NIPPY_TYPE_FUNCTION:
+    case NIPPY_TYPE_HANDLE:
+        return true;
+    case NIPPY_TYPE_RECORD:
+    case NIPPY_TYPE_TABLE:
+        if (type->child_count != 2) {
+            return false;
+        }
+        for (i = 0; i < 2; i++) {
+            size_t part = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!is_printable_type_depth(program, part, depth - 1)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_FIXED_LIST:
+    case NIPPY_TYPE_LIST:
+    case NIPPY_TYPE_SLICE:
+        if (type->child_count != 1) {
+            return false;
+        }
+        return is_printable_type_depth(
+            program, *(const size_t *)list_get(&program->type_children,
+                                               type->first_child),
+            depth - 1);
+    case NIPPY_TYPE_UNION:
+        for (i = 0; i < type->child_count; i++) {
+            size_t alternative = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!is_printable_type_depth(program, alternative, depth - 1)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_STRUCT: {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+
+        if (declaration == NULL) {
+            return false;
+        }
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, declaration->children_start + i);
+            const TypedNode *field = typed_program_node(program, child);
+
+            if (field == NULL ||
+                !is_printable_type_depth(program, field->type_index,
+                                         depth - 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+static bool is_printable_type(const TypedProgram *program, size_t type_index)
+{
+    return is_printable_type_depth(program, type_index, NIPPY_TYPE_DEPTH);
+}
+
+static bool check_print(CheckContext *ctx, const AstNode *node,
+                        size_t ast_index)
+{
+    List children;
+    size_t nil_type;
+    TypedNode typed = {0};
+    size_t i;
+
+    if (!ctx->in_expression_statement) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_PRINT_STATEMENT);
+        return false;
+    }
+    if (node->right_child != AST_NO_NODE) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_PRINT_STATEMENT);
+        return false;
+    }
+    if (!builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
+        return false;
+    }
+    list_init(&children, sizeof(size_t));
+    for (i = 0; i < node->children_count; i++) {
+        size_t argument_ast = *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start + i);
+        const AstNode *argument_node = ast_get_node(ctx->ast, argument_ast);
+        size_t argument;
+        const TypedNode *argument_typed;
+        size_t text_type;
+
+        if (argument_node == NULL || argument_node->kind == AST_NAMED_ARG) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_PRINT_NAMED);
+            list_free(&children);
+            return false;
+        }
+        if (!check_expression(ctx, argument_ast, &argument)) {
+            list_free(&children);
+            return false;
+        }
+        argument_typed = typed_program_node(ctx->program, argument);
+        if (argument_typed == NULL) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MISSING_AST_NODE, argument_ast);
+            list_free(&children);
+            return false;
+        }
+        if (argument_typed->kind == TYPED_STRING_LITERAL) {
+            size_t coerced;
+
+            if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &text_type) ||
+                !inject_into(ctx, argument, text_type, &coerced)) {
+                list_free(&children);
+                return false;
+            }
+            argument = coerced;
+            argument_typed = typed_program_node(ctx->program, argument);
+        }
+        if (argument_typed == NULL ||
+            !is_printable_type(ctx->program, argument_typed->type_index)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_PRINT_STATEMENT);
+            list_free(&children);
+            return false;
+        }
+        if (!list_push(&children, &argument)) {
+            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            list_free(&children);
+            return false;
+        }
+    }
+    {
+        size_t start = ctx->program->children.length;
+
+        for (i = 0; i < children.length; i++) {
+            size_t child = *(const size_t *)list_get(&children, i);
+
+            if (!typed_program_push_child(ctx->program, child)) {
+                error_report(ctx->errors,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                list_free(&children);
+                return false;
+            }
+        }
+        typed.kind = TYPED_PRINT;
+        typed.type_index = nil_type;
+        typed.pos = node->pos;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = TYPED_NO_NODE;
+        typed.right_child = TYPED_NO_NODE;
+        typed.children_start = start;
+        typed.children_count = children.length;
+    }
+    list_free(&children);
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+}
+
 static bool check_call(CheckContext *ctx, const AstNode *node,
                        size_t ast_index)
 {
@@ -3700,12 +4660,17 @@ static bool check_call(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
         return false;
     }
+    if (strcmp(name, "print") == 0) {
+        return check_print(ctx, node, ast_index);
+    }
     if (strcmp(name, "Error") == 0) {
         return check_error_constructor(ctx, node, ast_index);
     }
     if (strcmp(name, "String") == 0 ||
-        strcmp(name, "StringBuilder") == 0 ||
+        strcmp(name, "Text") == 0 ||
+        strcmp(name, "TextBuilder") == 0 ||
         strcmp(name, "List") == 0 ||
+        strcmp(name, "Array") == 0 ||
         strcmp(name, "Slice") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT, name);
@@ -4251,7 +5216,117 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
         return false;
     }
+    {
+        const AstNode *receiver = ast_get_node(ctx->ast, node->left_child);
+        const char *receiver_name =
+            receiver == NULL || receiver->kind != AST_IDENTIFIER
+                ? NULL
+                : ast_symbol_text(ctx->ast, receiver->name_index);
 
+        if (strcmp(method, "throw") == 0 && receiver_name != NULL &&
+            strcmp(receiver_name, "Error") == 0) {
+            return check_error_throw(ctx, node, ast_index);
+        }
+    }
+
+    if (strcmp(method, "len") == 0 ||
+        strcmp(method, "has") == 0 ||
+        strcmp(method, "remove") == 0) {
+        size_t receiver;
+        const TypedNode *receiver_node;
+        const TypedType *receiver_type;
+        bool is_record;
+        size_t key_type;
+        size_t key = TYPED_NO_NODE;
+        size_t child_index = TYPED_NO_NODE;
+        size_t bool_type;
+        size_t int32_type;
+
+        if (node->right_child != AST_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_TYPE_ARG, method);
+            return false;
+        }
+        if (!check_expression(ctx, node->left_child, &receiver)) {
+            return false;
+        }
+        receiver_node = typed_program_node(ctx->program, receiver);
+        receiver_type = receiver_node == NULL
+                            ? NULL
+                            : typed_program_type(ctx->program,
+                                                 receiver_node->type_index);
+        if (receiver_type == NULL ||
+            (receiver_type->kind != NIPPY_TYPE_RECORD &&
+             receiver_type->kind != NIPPY_TYPE_TABLE) ||
+            receiver_type->child_count != 2) {
+            if (strcmp(method, "len") == 0) {
+                goto map_len_fallthrough;
+            }
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_RECEIVER, method);
+            return false;
+        }
+        is_record = receiver_type->kind == NIPPY_TYPE_RECORD;
+        key_type = *(const size_t *)list_get(&ctx->program->type_children,
+                                             receiver_type->first_child);
+        if (strcmp(method, "len") == 0) {
+            if (node->children_count != 0) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MEMBER_ARGS, method);
+                return false;
+            }
+        } else {
+            size_t key_ast;
+
+            if (node->children_count != 1) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MEMBER_ARGS, method);
+                return false;
+            }
+            key_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                                node->children_start);
+            if (!check_expression(ctx, key_ast, &key) ||
+                !inject_into(ctx, key, key_type, &child_index)) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MAP_KEY);
+                return false;
+            }
+            if (strcmp(method, "remove") == 0) {
+                const AstNode *receiver_ast = ast_get_node(
+                    ctx->ast, node->left_child);
+
+                if (receiver_ast == NULL ||
+                    receiver_ast->kind != AST_IDENTIFIER) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_LIST_LVALUE);
+                    return false;
+                }
+            }
+        }
+        if (!builtin_type(ctx, NIPPY_TYPE_BOOL, &bool_type) ||
+            !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type)) {
+            return false;
+        }
+        typed.kind = strcmp(method, "len") == 0
+                         ? (is_record ? TYPED_RECORD_LEN : TYPED_TABLE_LEN)
+                         : (strcmp(method, "has") == 0
+                                ? (is_record ? TYPED_RECORD_HAS
+                                             : TYPED_TABLE_HAS)
+                                : (is_record ? TYPED_RECORD_REMOVE
+                                             : TYPED_TABLE_REMOVE));
+        typed.type_index = strcmp(method, "len") == 0 ? int32_type : bool_type;
+        typed.pos = node->pos;
+        typed.name_index = receiver_node->name_index;
+        typed.left_child = receiver;
+        typed.right_child = child_index;
+        typed.auxiliary_type = key_type;
+        typed.store_id = TYPED_NO_NODE;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    }
+
+map_len_fallthrough:
     if (strcmp(method, "slice") == 0) {
         size_t receiver;
         const TypedNode *receiver_node;
@@ -4393,22 +5468,18 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
         return emit_node(ctx, &typed, ast_index, &(size_t){0});
     }
 
-    if (strcmp(method, "len") == 0 ||
-        strcmp(method, "get") == 0 ||
-        strcmp(method, "set") == 0) {
+    if (strcmp(method, "len") == 0) {
         size_t receiver;
         const TypedNode *receiver_node;
         const TypedType *receiver_type;
-        bool is_len = strcmp(method, "len") == 0;
-        bool is_get = strcmp(method, "get") == 0;
-        size_t element;
+        size_t int32_type;
 
         if (node->right_child != AST_NO_NODE) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_MEMBER_TYPE_ARG, method);
             return false;
         }
-        if (node->children_count != (is_len ? 0u : (is_get ? 1u : 2u))) {
+        if (node->children_count != 0) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_MEMBER_ARGS, method);
             return false;
@@ -4424,105 +5495,27 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
         if (receiver_type == NULL ||
             (receiver_type->kind != NIPPY_TYPE_LIST &&
              receiver_type->kind != NIPPY_TYPE_FIXED_LIST &&
-             receiver_type->kind != NIPPY_TYPE_SLICE) ||
-            receiver_type->child_count != 1) {
+             receiver_type->kind != NIPPY_TYPE_SLICE)) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_MEMBER_RECEIVER, method);
             return false;
         }
-        element = *(const size_t *)list_get(
-            &ctx->program->type_children, receiver_type->first_child);
-        if (is_len) {
-            size_t int32_type;
-
-            if (!builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type)) {
-                return false;
-            }
-            typed.kind = receiver_type->kind == NIPPY_TYPE_SLICE
-                             ? TYPED_SLICE_LEN
-                             : TYPED_LIST_LEN;
-            typed.type_index = int32_type;
-            typed.pos = node->pos;
-            typed.name_index = TYPED_NO_NODE;
-            typed.left_child = receiver;
-            typed.right_child = TYPED_NO_NODE;
-            typed.auxiliary_type = TYPED_NO_NODE;
-            typed.store_id = TYPED_NO_NODE;
-            typed.children_start = 0;
-            typed.children_count = 0;
-            return emit_node(ctx, &typed, ast_index, &(size_t){0});
+        if (!builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type)) {
+            return false;
         }
-        {
-            size_t index_ast = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start);
-            size_t index;
-            size_t int32_type;
-            size_t coerced_index;
-
-            if (!check_expression(ctx, index_ast, &index) ||
-                !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type) ||
-                !inject_into(ctx, index, int32_type, &coerced_index)) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_LIST_INDEX);
-                return false;
-            }
-            if (receiver_type->kind == NIPPY_TYPE_SLICE && !is_get) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_SLICE_READONLY);
-                return false;
-            }
-            if (is_get) {
-                typed.kind = receiver_type->kind == NIPPY_TYPE_SLICE
-                                 ? TYPED_SLICE_GET
-                                 : TYPED_LIST_GET;
-                typed.type_index = element;
-                typed.left_child = receiver;
-                typed.right_child = coerced_index;
-                typed.children_start = 0;
-                typed.children_count = 0;
-            } else {
-                size_t value_ast;
-                size_t value;
-                size_t coerced_value;
-                size_t nil_type;
-                size_t children_start;
-
-                if (receiver_type->kind != NIPPY_TYPE_LIST) {
-                    error_report_at(ctx->errors, node->pos,
-                                    MESSAGE_CHECKER_LIST_MUTABLE);
-                    return false;
-                }
-                value_ast = *(const size_t *)list_get(
-                    &ctx->ast->children, node->children_start + 1);
-                if (!check_expression(ctx, value_ast, &value) ||
-                    !inject_into(ctx, value, element, &coerced_value) ||
-                    !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
-                    if (!ctx->errors->reported) {
-                        error_report(ctx->errors,
-                                     MESSAGE_CHECKER_LIST_VALUE);
-                    }
-                    return false;
-                }
-                children_start = ctx->program->children.length;
-                if (!typed_program_push_child(ctx->program, coerced_index) ||
-                    !typed_program_push_child(ctx->program, coerced_value)) {
-                    error_report(ctx->errors,
-                                 MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                    return false;
-                }
-                typed.kind = TYPED_LIST_SET;
-                typed.type_index = nil_type;
-                typed.left_child = receiver;
-                typed.right_child = TYPED_NO_NODE;
-                typed.auxiliary_type = element;
-                typed.children_start = children_start;
-                typed.children_count = 2;
-            }
-            typed.pos = node->pos;
-            typed.name_index = TYPED_NO_NODE;
-            typed.store_id = TYPED_NO_NODE;
-            return emit_node(ctx, &typed, ast_index, &(size_t){0});
-        }
+        typed.kind = receiver_type->kind == NIPPY_TYPE_SLICE
+                         ? TYPED_SLICE_LEN
+                         : TYPED_LIST_LEN;
+        typed.type_index = int32_type;
+        typed.pos = node->pos;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = receiver;
+        typed.right_child = TYPED_NO_NODE;
+        typed.auxiliary_type = TYPED_NO_NODE;
+        typed.store_id = TYPED_NO_NODE;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
     }
 
     if (strcmp(method, "pop") == 0) {
@@ -4567,16 +5560,6 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
         }
         element = *(const size_t *)list_get(
             &ctx->program->type_children, receiver_type->first_child);
-        {
-            const TypedType *element_type = typed_program_type(
-                ctx->program, element);
-
-            if (element_type == NULL) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_LIST_ELEMENT);
-                return false;
-            }
-        }
         if (!builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
             return false;
         }
@@ -4687,7 +5670,7 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
             return emit_node(ctx, &typed, ast_index, &(size_t){0});
         }
         if (receiver_type == NULL ||
-            receiver_type->kind != NIPPY_TYPE_STRING_BUILDER ||
+            receiver_type->kind != NIPPY_TYPE_TEXT_BUILDER ||
             is_list_push) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_MEMBER_RECEIVER, method);
@@ -4783,7 +5766,7 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                             MESSAGE_CHECKER_BUILDER_CAPACITY);
             return false;
         }
-        if (!string_builder_type(ctx, &builder_type)) {
+        if (!text_builder_type(ctx, &builder_type)) {
             return false;
         }
         typed.kind = TYPED_BUILDER_CREATE;
@@ -4801,7 +5784,7 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
 
     if (strcmp(method, "concat") == 0 ||
         strcmp(method, "copy") == 0 ||
-        strcmp(method, "string") == 0) {
+        strcmp(method, "text") == 0) {
         size_t dynamic_type;
         size_t argument_count = strcmp(method, "concat") == 0 ? 2u : 1u;
         size_t argument;
@@ -4844,10 +5827,10 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                                 MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
                 return false;
             }
-            if (strcmp(method, "string") == 0) {
+            if (strcmp(method, "text") == 0) {
                 if (argument_type->kind != NIPPY_TYPE_STRING) {
                     error_report_at(ctx->errors, node->pos,
-                                    MESSAGE_CHECKER_STORE_STRING_TYPE);
+                                    MESSAGE_CHECKER_STORE_TEXT_TYPE);
                     return false;
                 }
                 coerced = argument;
@@ -5010,7 +5993,7 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                             MESSAGE_CHECKER_MEMBER_RECEIVER, method);
             return false;
         }
-        if (receiver_type->kind == NIPPY_TYPE_STRING_BUILDER) {
+        if (receiver_type->kind == NIPPY_TYPE_TEXT_BUILDER) {
             size_t int32_type;
 
             if (!is_len) {
@@ -5208,6 +6191,64 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
         return emit_node(ctx, &typed, ast_index, &(size_t){0});
     }
 
+    if (strcmp(method, "table") == 0) {
+        const AstNode *type_args;
+        size_t key;
+        size_t value;
+        size_t table;
+        size_t capacity_ast;
+        size_t capacity;
+        size_t int32_type;
+        size_t coerced;
+
+        if (!member_store(ctx, node, method, &store)) {
+            return false;
+        }
+        if (node->right_child == AST_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_TABLE_ARGS);
+            return false;
+        }
+        type_args = ast_get_node(ctx->ast, node->right_child);
+        if (type_args == NULL || type_args->kind != AST_TYPE_TABLE ||
+            !resolve_type_in_env(ctx, type_args->left_child, ctx->env, "table",
+                                 &key) ||
+            !resolve_type_in_env(ctx, type_args->right_child, ctx->env,
+                                 "table", &value)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_TABLE_ARGS);
+            return false;
+        }
+        if (!map_type(ctx, key, value, false, 0, &table)) {
+            return false;
+        }
+        if (node->children_count != 1) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LIST_CREATE_ARGS);
+            return false;
+        }
+        capacity_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                                 node->children_start);
+        if (!check_expression(ctx, capacity_ast, &capacity) ||
+            !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type) ||
+            !inject_into(ctx, capacity, int32_type, &coerced)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LIST_CAPACITY_ARG);
+            return false;
+        }
+        typed.kind = TYPED_TABLE_CREATE;
+        typed.type_index = table;
+        typed.auxiliary_type = key;
+        typed.pos = node->pos;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = coerced;
+        typed.right_child = TYPED_NO_NODE;
+        typed.store_id = store->id;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    }
+
     if (strcmp(method, "alloc") == 0) {
         size_t element;
         size_t value;
@@ -5227,14 +6268,12 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                                  &element)) {
             return false;
         }
-        if (!is_sized_type(ctx->program, element)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_HANDLE_ELEMENT);
-            return false;
-        }
         if (node->children_count != 1) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_ALLOC_ARG_COUNT);
+            return false;
+        }
+        if (!handle_type(ctx, element, &handle)) {
             return false;
         }
         argument_ast = *(const size_t *)list_get(&ctx->ast->children,
@@ -5249,9 +6288,6 @@ static bool check_member_call(CheckContext *ctx, const AstNode *node,
                           sizeof(element_text));
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_ALLOC_ARG_TYPE, element_text);
-            return false;
-        }
-        if (!handle_type(ctx, element, &handle)) {
             return false;
         }
         typed.kind = TYPED_STORE_ALLOC;
@@ -5443,11 +6479,20 @@ static bool check_expression(CheckContext *ctx, size_t ast_index,
         case AST_LIST_LITERAL:
             ok = check_list_literal(ctx, node, ast_index);
             break;
+        case AST_RECORD_LITERAL:
+            ok = check_record_literal(ctx, node, ast_index);
+            break;
         case AST_INDEX:
             ok = check_index_expression(ctx, node, ast_index);
             break;
+        case AST_MEMBER_ACCESS:
+            ok = check_member_access(ctx, node, ast_index);
+            break;
         case AST_IS:
             ok = check_is(ctx, node, ast_index);
+            break;
+        case AST_IF_EXPRESSION:
+            ok = check_if_expression(ctx, node, ast_index);
             break;
         case AST_MEMBER_CALL:
             ok = check_member_call(ctx, node, ast_index);
@@ -5603,10 +6648,13 @@ static bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
         strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
         strcmp(name, "String") == 0 ||
-        strcmp(name, "StringBuilder") == 0 ||
+        strcmp(name, "Text") == 0 ||
+        strcmp(name, "TextBuilder") == 0 ||
         strcmp(name, "List") == 0 ||
+        strcmp(name, "Array") == 0 ||
         strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Error") == 0) {
+        strcmp(name, "Error") == 0 ||
+        strcmp(name, "print") == 0) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);
         return false;
@@ -5662,6 +6710,12 @@ static bool check_var_declaration(CheckContext *ctx, const AstNode *node,
                 inferred->type_index == TYPED_NO_NODE) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_LIST_INFER);
+                return false;
+            }
+            if (inferred->kind == TYPED_RECORD_LITERAL &&
+                inferred->type_index == TYPED_NO_NODE) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
                 return false;
             }
             if (inferred_type != NULL &&
@@ -5766,7 +6820,12 @@ static bool check_type_declaration(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_REDEFINES_STRING);
         return false;
     }
-    if (strcmp(name, "StringBuilder") == 0) {
+    if (strcmp(name, "Text") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_REDEFINES_TEXT);
+        return false;
+    }
+    if (strcmp(name, "TextBuilder") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_REDEFINES_BUILDER);
         return false;
@@ -5774,6 +6833,11 @@ static bool check_type_declaration(CheckContext *ctx, const AstNode *node,
     if (strcmp(name, "List") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_REDEFINES_LIST);
+        return false;
+    }
+    if (strcmp(name, "Array") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_REDEFINES_ARRAY);
         return false;
     }
     if (strcmp(name, "Slice") == 0) {
@@ -5784,6 +6848,16 @@ static bool check_type_declaration(CheckContext *ctx, const AstNode *node,
     if (strcmp(name, "Error") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_REDEFINES_ERROR);
+        return false;
+    }
+    if (strcmp(name, "Record") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_REDEFINES_RECORD);
+        return false;
+    }
+    if (strcmp(name, "Table") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_REDEFINES_TABLE);
         return false;
     }
     if (find_type_index(ctx->types, name) != TYPED_NO_NODE) {
@@ -6000,7 +7074,7 @@ static bool typed_block_returns(const TypedProgram *program, size_t index)
     return false;
 }
 
-/* If the condition is exactly `name.is<T>()` and `name` is a union that has T,
+/* If the condition is exactly `typeof name is T` and `name` is a union that has T,
    the then block sees `name` as T. The else block and everything after the if
    keep the declared type. */
 static bool push_if_narrowing(CheckContext *ctx, size_t condition_ast)
@@ -6082,9 +7156,13 @@ static bool is_builtin_type_name(const char *name)
            strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
            strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
            strcmp(name, "String") == 0 ||
-           strcmp(name, "StringBuilder") == 0 ||
+           strcmp(name, "Text") == 0 ||
+           strcmp(name, "TextBuilder") == 0 ||
            strcmp(name, "List") == 0 ||
+           strcmp(name, "Array") == 0 ||
            strcmp(name, "Slice") == 0 ||
+           strcmp(name, "Record") == 0 ||
+           strcmp(name, "Table") == 0 ||
            strcmp(name, "Error") == 0;
 }
 
@@ -6180,8 +7258,15 @@ static bool check_expression_statement(CheckContext *ctx, size_t ast_index,
             return false;
         }
     }
-    if (!check_expression(ctx, node->left_child, &expression)) {
-        return false;
+    {
+        bool previous = ctx->in_expression_statement;
+
+        ctx->in_expression_statement = true;
+        if (!check_expression(ctx, node->left_child, &expression)) {
+            ctx->in_expression_statement = previous;
+            return false;
+        }
+        ctx->in_expression_statement = previous;
     }
     expression_node = typed_program_node(ctx->program, expression);
     typed.kind = TYPED_EXPRESSION_STATEMENT;
@@ -6195,6 +7280,382 @@ static bool check_expression_statement(CheckContext *ctx, size_t ast_index,
     typed.children_start = 0;
     typed.children_count = 0;
     return emit_node(ctx, &typed, ast_index, out_typed);
+}
+
+static bool check_for_binding(CheckContext *ctx, const char *name,
+                              size_t type_index, SourcePos pos)
+{
+    VariableEntry entry;
+
+    if (name == NULL ||
+        find_variable(ctx->locals, name) != NULL ||
+        find_function(ctx->functions, name) != NULL ||
+        find_type(ctx->types, name) != NULL ||
+        find_store(ctx->stores, name) != NULL ||
+        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
+        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
+        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
+        strcmp(name, "String") == 0 ||
+        strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
+        strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
+        strcmp(name, "Slice") == 0 ||
+        strcmp(name, "Error") == 0) {
+        error_report_at(ctx->errors, pos, MESSAGE_CHECKER_DUPLICATE_NAME,
+                        name == NULL ? "" : name);
+        return false;
+    }
+    memset(&entry, 0, sizeof(entry));
+    memcpy(entry.name, name, strlen(name) + 1);
+    entry.type_index = type_index;
+    if (!list_push(ctx->locals, &entry)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        return false;
+    }
+    return true;
+}
+
+static bool check_if_expression(CheckContext *ctx, const AstNode *node,
+                                size_t ast_index)
+{
+    size_t condition;
+    size_t then_expression;
+    size_t else_expression;
+    const TypedNode *then_node;
+    const TypedNode *else_node;
+    size_t narrowing_start;
+    TypedNode typed = {0};
+
+    if (!check_condition(ctx, node->left_child, &condition)) {
+        return false;
+    }
+    narrowing_start = ctx->narrowings->length;
+    if (!push_if_narrowing(ctx, node->left_child)) {
+        ctx->narrowings->length = narrowing_start;
+        return false;
+    }
+    {
+        bool ok = check_expression(ctx, node->right_child, &then_expression);
+
+        ctx->narrowings->length = narrowing_start;
+        if (!ok) {
+            return false;
+        }
+    }
+    if (!check_expression(ctx, *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start),
+                         &else_expression)) {
+        return false;
+    }
+    then_node = typed_program_node(ctx->program, then_expression);
+    else_node = typed_program_node(ctx->program, else_expression);
+    if (then_node == NULL || else_node == NULL ||
+        !same_type(ctx->program, then_node->type_index,
+                   else_node->type_index)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_IF_EXPR_MISMATCH);
+        return false;
+    }
+    typed.kind = TYPED_IF_EXPRESSION;
+    typed.type_index = then_node->type_index;
+    typed.pos = node->pos;
+    typed.name_index = TYPED_NO_NODE;
+    typed.left_child = condition;
+    typed.right_child = then_expression;
+    typed.auxiliary_type = TYPED_NO_NODE;
+    typed.store_id = TYPED_NO_NODE;
+    typed.children_start = ctx->program->children.length;
+    typed.children_count = 1;
+    if (!typed_program_push_child(ctx->program, else_expression)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        return false;
+    }
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+}
+
+static bool check_for(CheckContext *ctx, const AstNode *node,
+                      size_t ast_index, size_t return_type,
+                      size_t *out_typed)
+{
+    const char *first = ast_symbol_text(ctx->ast, node->name_index);
+    const char *second = node->second_name_index == AST_NO_NODE
+                             ? NULL
+                             : ast_symbol_text(ctx->ast, node->second_name_index);
+    size_t iterable;
+    const TypedNode *iterable_node;
+    const TypedType *iterable_type;
+    size_t first_type;
+    size_t second_type = TYPED_NO_NODE;
+    size_t index_type;
+    size_t scope_start;
+    size_t body;
+    size_t first_symbol;
+    size_t second_symbol = TYPED_NO_NODE;
+    size_t nil_type;
+    bool is_map = false;
+    TypedNode typed = {0};
+
+    if (first == NULL ||
+        !check_expression(ctx, node->left_child, &iterable)) {
+        return false;
+    }
+    iterable_node = typed_program_node(ctx->program, iterable);
+    iterable_type = iterable_node == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             iterable_node->type_index);
+    if (iterable_type == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_FOR_ITERABLE);
+        return false;
+    }
+    if (iterable_type->kind == NIPPY_TYPE_RECORD ||
+        iterable_type->kind == NIPPY_TYPE_TABLE) {
+        if (iterable_type->child_count != 2) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_FOR_ITERABLE);
+            return false;
+        }
+        is_map = true;
+        first_type = *(const size_t *)list_get(&ctx->program->type_children,
+                                               iterable_type->first_child);
+        second_type = *(const size_t *)list_get(
+            &ctx->program->type_children, iterable_type->first_child + 1);
+    } else if (iterable_type->kind == NIPPY_TYPE_LIST ||
+               iterable_type->kind == NIPPY_TYPE_FIXED_LIST ||
+               iterable_type->kind == NIPPY_TYPE_SLICE) {
+        if (iterable_type->child_count != 1) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_FOR_ITERABLE);
+            return false;
+        }
+        first_type = *(const size_t *)list_get(
+            &ctx->program->type_children, iterable_type->first_child);
+    } else if (iterable_type->kind == NIPPY_TYPE_STRING ||
+               iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+        if (!builtin_type(ctx, NIPPY_TYPE_BYTE, &first_type)) {
+            return false;
+        }
+    } else {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_FOR_ITERABLE);
+        return false;
+    }
+    if (!builtin_type(ctx, NIPPY_TYPE_INT32, &index_type) ||
+        !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
+        return false;
+    }
+    scope_start = ctx->locals->length;
+    if (is_map) {
+        if (!check_for_binding(ctx, first, first_type, node->pos)) {
+            ctx->locals->length = scope_start;
+            return false;
+        }
+        if (second != NULL &&
+            !check_for_binding(ctx, second, second_type, node->pos)) {
+            ctx->locals->length = scope_start;
+            return false;
+        }
+        first_symbol = typed_program_copy_symbol(ctx->program, first,
+                                                  strlen(first));
+        if (first_symbol == TYPED_NO_NODE ||
+            (second != NULL &&
+             (second_symbol = typed_program_copy_symbol(
+                  ctx->program, second, strlen(second))) ==
+                 TYPED_NO_NODE)) {
+            ctx->locals->length = scope_start;
+            error_report(ctx->errors,
+                         MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+            return false;
+        }
+    } else if (second != NULL) {
+        if (!check_for_binding(ctx, first, index_type, node->pos) ||
+            !check_for_binding(ctx, second, first_type, node->pos)) {
+            ctx->locals->length = scope_start;
+            return false;
+        }
+        second_symbol = typed_program_copy_symbol(
+            ctx->program, second, strlen(second));
+        first_symbol = typed_program_copy_symbol(ctx->program, first,
+                                                  strlen(first));
+        if (first_symbol == TYPED_NO_NODE || second_symbol == TYPED_NO_NODE) {
+            ctx->locals->length = scope_start;
+            error_report(ctx->errors,
+                         MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+            return false;
+        }
+    } else {
+        if (!check_for_binding(ctx, first, first_type, node->pos)) {
+            ctx->locals->length = scope_start;
+            return false;
+        }
+        first_symbol = typed_program_copy_symbol(ctx->program, first,
+                                                  strlen(first));
+        if (first_symbol == TYPED_NO_NODE) {
+            ctx->locals->length = scope_start;
+            error_report(ctx->errors,
+                         MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+            return false;
+        }
+    }
+    ctx->loop_depth++;
+    if (!check_block(ctx, node->right_child, return_type, &body)) {
+        ctx->loop_depth--;
+        ctx->locals->length = scope_start;
+        return false;
+    }
+    ctx->loop_depth--;
+    ctx->locals->length = scope_start;
+
+    typed.kind = TYPED_FOR;
+    typed.type_index = nil_type;
+    typed.pos = node->pos;
+    if (!is_map && second != NULL) {
+        typed.name_index = second_symbol;
+        typed.second_name_index = first_symbol;
+    } else {
+        typed.name_index = first_symbol;
+        typed.second_name_index = second_symbol;
+    }
+    typed.left_child = iterable;
+    typed.right_child = body;
+    typed.auxiliary_type = first_type;
+    typed.store_id = TYPED_NO_NODE;
+    typed.children_start = 0;
+    typed.children_count = 0;
+    return emit_node(ctx, &typed, ast_index, out_typed);
+}
+
+static bool check_local_declaration(CheckContext *ctx, const AstNode *node,
+                                    size_t ast_index, size_t *out_typed)
+{
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    size_t declared_type = TYPED_NO_NODE;
+    size_t initialiser;
+    const TypedNode *initialiser_node;
+    size_t variable_type;
+    VariableEntry entry;
+    TypedNode typed = {0};
+
+    if (name == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
+        return false;
+    }
+    if (find_variable(ctx->locals, name) != NULL ||
+        find_function(ctx->functions, name) != NULL ||
+        find_type(ctx->types, name) != NULL ||
+        find_store(ctx->stores, name) != NULL ||
+        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
+        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
+        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
+        strcmp(name, "String") == 0 ||
+        strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
+        strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
+        strcmp(name, "Slice") == 0 ||
+        strcmp(name, "Error") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_DUPLICATE_NAME, name);
+        return false;
+    }
+    if (node->left_child == AST_NO_NODE) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_NO_INITIALISER, name);
+        return false;
+    }
+    if (node->right_child != AST_NO_NODE &&
+        !resolve_type_node(ctx, node->right_child, name, &declared_type)) {
+        return false;
+    }
+    if (declared_type != TYPED_NO_NODE) {
+        const TypedType *annotated = typed_program_type(ctx->program,
+                                                        declared_type);
+
+        if (annotated != NULL && annotated->kind == NIPPY_TYPE_STORE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LOCAL_STORE);
+            return false;
+        }
+    }
+    if (!check_expression(ctx, node->left_child, &initialiser)) {
+        return false;
+    }
+    initialiser_node = typed_program_node(ctx->program, initialiser);
+    if (initialiser_node == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MISSING_AST_NODE, node->left_child);
+        return false;
+    }
+    if (declared_type == TYPED_NO_NODE) {
+        const TypedType *inferred_type = typed_program_type(
+            ctx->program, initialiser_node->type_index);
+
+        if (initialiser_node->kind == TYPED_LIST_LITERAL &&
+            initialiser_node->type_index == TYPED_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LIST_INFER);
+            return false;
+        }
+        if (initialiser_node->kind == TYPED_RECORD_LITERAL &&
+            initialiser_node->type_index == TYPED_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+            return false;
+        }
+        if (inferred_type != NULL &&
+            inferred_type->kind == NIPPY_TYPE_STRING_LITERAL) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_STRING_LITERAL_CONTEXT);
+            return false;
+        }
+        if (inferred_type != NULL &&
+            inferred_type->kind == NIPPY_TYPE_STORE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LOCAL_STORE);
+            return false;
+        }
+    }
+    if (declared_type != TYPED_NO_NODE) {
+        size_t coerced;
+
+        if (!inject_into(ctx, initialiser, declared_type, &coerced)) {
+            char declared_text[128];
+
+            type_ast_text(ctx->ast, node->right_child, declared_text,
+                          sizeof(declared_text));
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, name,
+                            declared_text);
+            return false;
+        }
+        initialiser = coerced;
+        variable_type = declared_type;
+    } else {
+        variable_type = initialiser_node->type_index;
+    }
+    typed.kind = TYPED_LOCAL_DECLARATION;
+    typed.type_index = variable_type;
+    typed.pos = node->pos;
+    typed.name_index = typed_program_copy_symbol(ctx->program, name,
+                                                 strlen(name));
+    if (typed.name_index == TYPED_NO_NODE) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        return false;
+    }
+    typed.left_child = initialiser;
+    typed.right_child = TYPED_NO_NODE;
+    typed.children_start = 0;
+    typed.children_count = 0;
+    if (!emit_node(ctx, &typed, ast_index, out_typed)) {
+        return false;
+    }
+    memset(&entry, 0, sizeof(entry));
+    memcpy(entry.name, name, strlen(name) + 1);
+    entry.type_index = variable_type;
+    if (!list_push(ctx->locals, &entry)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        return false;
+    }
+    return true;
 }
 
 static bool check_statement(CheckContext *ctx, size_t ast_index,
@@ -6317,11 +7778,20 @@ static bool check_statement(CheckContext *ctx, size_t ast_index,
         return emit_node(ctx, &typed, ast_index, out_typed);
     }
 
+    if (node->kind == AST_DECLARATION) {
+        return check_local_declaration(ctx, node, ast_index, out_typed);
+    }
+    if (node->kind == AST_FOR) {
+        return check_for(ctx, node, ast_index, return_type, out_typed);
+    }
     if (node->kind == AST_ASSIGNMENT) {
         return check_assignment(ctx, node, ast_index, out_typed);
     }
     if (node->kind == AST_INDEX_ASSIGNMENT) {
         return check_index_assignment(ctx, node, ast_index, out_typed);
+    }
+    if (node->kind == AST_MEMBER_ASSIGNMENT) {
+        return check_member_assignment(ctx, node, ast_index, out_typed);
     }
 
     if (node->kind == AST_EXPRESSION_STATEMENT) {
@@ -6354,6 +7824,7 @@ static bool check_block(CheckContext *ctx, size_t ast_index,
 {
     const AstNode *node = ast_get_node(ctx->ast, ast_index);
     List statements;
+    size_t scope_start = ctx->locals->length;
     size_t children_start;
     size_t i;
     TypedNode typed = {0};
@@ -6401,6 +7872,7 @@ static bool check_block(CheckContext *ctx, size_t ast_index,
     ok = emit_node(ctx, &typed, ast_index, out_typed);
 
 done:
+    ctx->locals->length = scope_start;
     list_free(&statements);
     return ok;
 }
@@ -6432,12 +7904,21 @@ static bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
         strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
         strcmp(name, "String") == 0 ||
-        strcmp(name, "StringBuilder") == 0 ||
+        strcmp(name, "Text") == 0 ||
+        strcmp(name, "TextBuilder") == 0 ||
         strcmp(name, "List") == 0 ||
+        strcmp(name, "Array") == 0 ||
         strcmp(name, "Slice") == 0 ||
+        strcmp(name, "Record") == 0 ||
+        strcmp(name, "Table") == 0 ||
         strcmp(name, "Error") == 0) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);
+        return false;
+    }
+    if (strcmp(name, "print") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_PRINT_RESERVED);
         return false;
     }
     if (node->right_child == AST_NO_NODE) {
@@ -6734,12 +8215,24 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             checked = check_expression_statement(&ctx, ast_root,
                                                  &(size_t){0});
             break;
+        case AST_IF:
+            checked = check_statement(&ctx, ast_root, TYPED_NO_NODE,
+                                      &(size_t){0});
+            break;
+        case AST_FOR:
+            checked = check_for(&ctx, node, ast_root, TYPED_NO_NODE,
+                                &(size_t){0});
+            break;
         case AST_ASSIGNMENT:
             checked = check_assignment(&ctx, node, ast_root, &(size_t){0});
             break;
         case AST_INDEX_ASSIGNMENT:
             checked = check_index_assignment(&ctx, node, ast_root,
                                              &(size_t){0});
+            break;
+        case AST_MEMBER_ASSIGNMENT:
+            checked = check_member_assignment(&ctx, node, ast_root,
+                                              &(size_t){0});
             break;
         default:
             error_report_at(errors, node->pos,

@@ -44,6 +44,10 @@ field              = identifier, ":", type ;
 
 value-declaration  = "var", identifier, [ ":", type ], "=", expression ;
 
+(* The same form is a statement inside a function or block. Store declarations
+   remain program-level only. *)
+local-declaration  = "var", identifier, [ ":", type ], "=", expression ;
+
 (* The checker requires a global declaration's type to be Store. The legacy
    "var name: Store = Store(bytes)" spelling is still accepted. *)
 global-declaration = "global", identifier, [ ":", type ], "=", expression ;
@@ -65,15 +69,20 @@ block              = { statement } ;
 statement          = return-statement
                    | if-statement
                    | while-statement
+                   | match-statement
+                   | for-statement
                    | break-statement
                    | continue-statement
+                   | local-declaration
                    | assignment-statement
                    | expression-statement ;
 
-(* Assignment is a statement, not an expression. The target is a variable or
-   parameter; stores, functions, types, and fields are not assignable. *)
+(* Assignment is a statement, not an expression. The target is a variable,
+   parameter, list index, or writable struct field. *)
 assignment-statement = identifier, "=", expression
-                     | identifier, "[", expression, "]", "=", expression ;
+                     | identifier, "[", expression, "]", "=", expression
+                     | identifier, ".", identifier,
+                       { ".", identifier }, "=", expression ;
 
 (* The checker accepts an expression statement only when the expression is a
    call; the value is discarded. *)
@@ -87,6 +96,14 @@ if-statement       = "if", expression, "then", block,
 
 while-statement    = "while", expression, block, "end" ;
 
+match-statement    = "match", [ "typeof" ], expression,
+                     "with", pattern, "then", block,
+                     { "with", pattern, "then", block },
+                     [ "else", block ], "end" ;
+
+for-statement      = "for", identifier, [ ",", identifier ],
+                     "in", expression, "do", block, "end" ;
+
 break-statement    = "break" ;
 
 continue-statement = "continue" ;
@@ -98,26 +115,30 @@ type               = union-type ;
 union-type         = primary-type, { "|", primary-type } ;
 
 primary-type       = "String", "<", integer-literal, ">"
-                   | "List", "<", type, [ ",", integer-literal ], ">"
+                   | "Array", "<", type, ",", integer-literal, ">"
+                   | "List", "<", type, ">"
                    | "Slice", "<", type, ">"
+                   | "Record", "<", type, ",", type, ",", integer-literal, ">"
+                   | "Table", "<", type, ",", type, ">"
                    | type-name, [ "<", type-arguments, ">" ]
                    | function-type
                    | "(", type, ")" ;
 
 type-name          = identifier ;
-                     (* "Int32", "Bool", "Byte", "Nil", "String",
-                        "StringBuilder", "List", "Slice", "Store", "Handle",
-                        "Error", a declared struct or alias, or a type parameter
-                        in scope.
-                        Bare "String" is the dynamic arena/static-backed
-                        string. List<T> is dynamic; List<T,N> is fixed-capacity with a runtime
-                        length. Slice<T> is a read-only view of a dynamic list.
-                        String<N> is a fixed-capacity
+                     (* "Int32", "Bool", "Byte", "Nil", "Text",
+                        "TextBuilder", "List", "Array", "Slice", "Store",
+                        "Handle", "Error", a declared struct or alias, or a
+                        type parameter in scope.
+                        Bare "Text" is the dynamic arena/static-backed type.
+                        List<T> is dynamic; Array<T,N> is fixed-capacity with a
+                        runtime length. Slice<T> is a read-only view of a
+                        dynamic list. String<N> is a fixed-capacity
                         inline string; N is a byte capacity in 0..4096 by
                         default (the configured maximum can raise or lower that
                         bound, up to 1 MiB). Store is only valid as the
                         annotation on a store declaration; Handle needs exactly
-                        one type argument, whose type is a single sized type. *)
+                        one type argument, whose type is fixed (no
+                        allocator-backed fields). *)
 
 (* ---- expressions ---- *)
 
@@ -138,17 +159,23 @@ additive           = unary, { "+", unary } ;
 unary              = "!", unary
                    | postfix ;
 
-(* `.is<T>()` is the only member operation. It binds tighter than unary. *)
+(* Member operations are methods and fields. Type tests are `typeof x is T`. *)
 postfix            = primary, { "[", expression, "]" | ".",
-                                 member-operation } ;
+                                 ( member-operation | field-name ) } ;
+
+field-name         = identifier ;
 
 member-operation   = "is", "<", type, ">", "(", ")"
                    | identifier, [ "<", type, ">" ],
                      "(", [ expression, { ",", expression } ], ")" ;
 
-primary            = integer-literal
+primary            = typeof-test
+                   | if-expression
+                   | match-expression
+                   | integer-literal
                    | string-literal
                    | list-literal
+                   | record-literal
                    | boolean-literal
                    | nil-literal
                    | identifier
@@ -156,11 +183,16 @@ primary            = integer-literal
                    | "(", expression, ")" ;
 
 list-literal       = "[", [ expression, { ",", expression } ], "]" ;
-(* "Store", "Byte", "Handle", "String", "StringBuilder", "List", "Slice", and
-   "Error"
-   are ordinary identifiers;
+
+record-literal     = "{", [ string-literal, ":", expression,
+                            { ",", string-literal, ":", expression } ], "}" ;
+                     (* Constructs a fixed Record; a Record annotation supplies
+                        the key capacity and value type. Dynamic Tables use
+                        arena.table<K,V>(capacity). *)
+(* "Store", "Byte", "Handle", "Text", "String", "TextBuilder", "List",
+   "Array", "Slice", "Record", "Table", and "Error" are ordinary identifiers;
    the checker gives them their built-in meaning. String literals are written
-   with double quotes and are typed by context: a String expected type gives a
+   with double quotes and are typed by context: a Text expected type gives a
    static dynamic string; a String<N> expected type gives a fixed inline value. *)
 
 (* A call's name is resolved by the checker: a struct type makes it a
@@ -170,6 +202,19 @@ list-literal       = "[", [ expression, { ",", expression } ], "]" ;
    Named arguments are accepted only by struct constructors. Arguments are
    either all positional or all named; mixing them is a parse error. *)
 call               = identifier, "(", [ argument-list ], ")" ;
+
+typeof-test        = "typeof", expression, "is", type ;
+
+if-expression      = "if", expression, "then", expression,
+                     { "elseif", expression, "then", expression },
+                     "else", expression, "end" ;
+
+match-expression   = "match", [ "typeof" ], expression,
+                     "with", pattern, "then", expression,
+                     { "with", pattern, "then", expression },
+                     "else", expression, "end" ;
+
+pattern            = type | expression ;
 
 argument-list      = argument, { ",", argument } ;
 
@@ -199,8 +244,9 @@ nil-literal        = "nil" ;
 
 identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
                      (* at most 31 characters. "var", "type", "fun", "return",
-                        "if", "then", "elseif", "else", "while", "break",
-                        "continue", "true", "false", "nil", and "end" are
+                        "if", "then", "elseif", "else", "while", "for", "in",
+                        "do", "break", "continue", "true", "false", "nil", and
+                        "end" are
                         keywords and are not identifiers. Longer names are a
                         lexer error *)
 
@@ -221,6 +267,9 @@ then               = "then" ;
 elseif             = "elseif" ;
 else               = "else" ;
 while              = "while" ;
+for                = "for" ;
+in                 = "in" ;
+do                 = "do" ;
 break              = "break" ;
 continue           = "continue" ;
 true               = "true" ;
@@ -264,29 +313,36 @@ end                = "end" ;
 
        points.alloc<T>(value)   -> Handle<T>
        points.reset()           -> Nil
-       points.concat(a, b)      -> String
-       points.copy(s)           -> String
-       points.string(f)         -> String
-       points.builder(capacity) -> StringBuilder
+       points.concat(a, b)      -> Text
+       points.copy(s)           -> Text
+       points.text(f)         -> Text
+       points.builder(capacity) -> TextBuilder
        points.list<T>(capacity)-> List<T>
        handle.read()            -> T
        handle.write(value)      -> Nil
 
-   T must be a single sized type: Int32, Bool, Byte, Nil, a struct or concrete
-   generic struct, a Handle<U>, a String, a StringBuilder, a List<T>, a
-   List<T,N>, a String<N>, or Error. Unions, function types, and Store are not allocation element types.
+   T must be a single item: Int32, Bool, Byte, Nil, a struct or concrete
+   generic struct, a Handle<U>, a Text, a String<N>, a union, a function type,
+   or Error. Collections (Array, List, Slice, TextBuilder) and Store are not
+   allocation element types; use the collection allocator instead.
 
-   Dynamic String, fixed String<N>, and StringBuilder add value methods:
+   Dynamic Text, fixed String<N>, and TextBuilder add value methods:
 
        s.byte_len()             -> Int32
        s.byte_at(i)             -> Byte (bounds-checked)
-       s.slice(start, length)   -> String (dynamic strings only)
-       b.append(s)              -> Nil (dynamic String argument)
+       s.slice(start, length)   -> Text (dynamic strings only)
+       b.append(s)              -> Nil (dynamic Text argument)
        b.append_byte(byte)      -> Nil
-       b.finish()               -> String
+       b.finish()               -> Text
        xs.len()                 -> Int32
-       xs.push(value)           -> Nil (fixed and dynamic)
-       xs.pop()                 -> T | Nil (fixed and dynamic)
+       xs.push(value)           -> Nil (Array and List)
+       r[key], r[key] = value   -> Record/Table entry; missing read panics
+       for k, v in r            -> Record/Table keys and values
+       for k in r               -> Record/Table keys
+       r.has(key)               -> Bool
+       r.remove(key)            -> Bool
+       r.len()                  -> Int32
+       xs.pop()                 -> T | Nil (Array and List)
        xs[i], xs[i] = value     -> list indexing (bounds-checked)
        xs.slice(start, length)  -> Slice<T> (dynamic lists only)
        s.len(), s[i]            -> read-only slice access
@@ -295,10 +351,10 @@ end                = "end" ;
        e.filename()             -> String<128> (default capacity)
        e.line(), e.col(), e.pos() -> Int32
 
-   String equality is content equality for the same String or String<N> type.
-   String and String<N> do not convert implicitly; use points.string(fixed) for
-   fixed-to-dynamic. StringBuilder copies alias the same builder state, and
-   List<T> copies alias the same list state. A fixed list literal may contain
+   Text equality is content equality for the same Text or String<N> type.
+   Text and String<N> do not convert implicitly; use points.text(fixed) for
+   fixed-to-dynamic. TextBuilder copies alias the same builder state, and
+   List<T> copies alias the same list state. A fixed Array literal may contain
    0..capacity elements. A dynamic list is created with
    points.list<T>(capacity). Error is constructed with Error(header, description,
    filename, line, col, pos). *)
@@ -318,24 +374,27 @@ end                = "end" ;
        global x: Int32 = 1     (* checker: global 'x' must be declared ... *)
    A store is not a value, parameter, field, or union alternative:
        var t = s               (* checker: store 's' is not a value *)
-   alloc needs a single sized element type:
-       s.alloc<Int32 | Nil>(1) (* checker: Handle element type ... *)
+   alloc needs a fixed type:
+       s.alloc<List<Int32>>(xs) (* checker: Handle requires a fixed type *)
+       s.alloc<Text>(t)         (* checker: Handle requires a fixed type *)
+       s.alloc<Int32 | Nil>(1)  (* allowed: a fixed union *)
+       s.alloc<Array<Int32,3>>(a) (* allowed: Array is fixed *)
    read and write need a handle:
        x.read()                (* checker: 'read' must be called on ... *)
-   A string literal needs a String or String<N> context:
-       var s = "x"             (* checker: string literal needs a String ... *)
+   A string literal needs a Text or String<N> context:
+       var s = "x"             (* checker: string literal needs a Text ... *)
    A literal that exceeds its fixed capacity is rejected:
        var s: String<4> = "hello"  (* checker: string literal of 5 bytes ... *)
-   A non-empty list literal can infer a fixed List<T,N> from one common element
-   type; an empty or mixed literal needs a fixed-list/union context:
-       var xs = [1, 2]             (* inferred List<Int32,2> *)
-       var xs: List<Int32, 5> = [1, 2] (* capacity 5, length 2 *)
+   A non-empty list literal can infer a fixed Array<T,N> from one common element
+   type; an empty or mixed literal needs an Array/union context:
+       var xs = [1, 2]             (* inferred Array<Int32,2> *)
+       var xs: Array<Int32, 5> = [1, 2] (* capacity 5, length 2 *)
        var xs: List<Int32> = [1]   (* checker: dynamic list literal rejected *)
-       var xs: List<Int32, 2> = [1, 2, 3] (* checker: over capacity *)
+       var xs: Array<Int32, 2> = [1, 2, 3] (* checker: over capacity *)
        var xs = []                 (* checker: cannot infer element type *)
-   String and String<N> do not convert implicitly:
+   Text and String<N> do not convert implicitly:
        var a: String<8> = "x"
-       var b: String = a       (* checker: initialiser type does not match *)
+       var b: Text = a       (* checker: initialiser type does not match *)
        var c: String<16> = a   (* checker: initialiser type does not match *)
    Error needs all six arguments in order:
        Error("E", "d")         (* checker: Error takes header, description ... *)
@@ -347,8 +406,8 @@ end                = "end" ;
        fun f(): Int32 1 end    (* checker: expression statement must be a call *)
    Type arguments are inferred at calls, not written:
        identity<Int32>(3)      (* checker: generic function 'identity' must be called *)
-   `.is<T>()` needs a single non-union target:
-       x.is<Int32 | Bool>()    (* checker: '.is<T>()' requires a single ... *)
+   typeof needs a single non-union target:
+       typeof x is Int32 | Bool    (* checker: type test requires a single ... *)
    Function bodies contain statements, not raw expressions:
        fun f(x:Int32):Int32 x end
                                (* parser: expected a statement or 'end' ... *)

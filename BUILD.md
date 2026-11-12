@@ -123,11 +123,11 @@ Scripts, snippets, and scratch files belong in `tmp/`. See `AGENTS.md`.
 
 There are two suites, each with its own binary and test table:
 
-- **Core compiler suite** (`bin/compiler-tester`, 291 tests) — positive golden
+- **Core compiler suite** (`bin/compiler-tester`, 341 tests) — positive golden
   codegen, lexer/parser/checker diagnostics, and the stage-level defensive
   tests, including assignment, fixed strings, and configurable Error capacities.
   Everything runs in memory.
-- **Nyx tool suite** (`bin/tool-tester`, 67 tests) — runtime execution of
+- **Nyx tool suite** (`bin/tool-tester`, 95 tests) — runtime execution of
   generated programs, including assignment, strings, string bounds, Error fields, and
   values stored in arenas, plus the driver, file I/O, the `cc` invocation, and
   the CLI allocation-failure sweep.
@@ -140,10 +140,10 @@ summary per suite:
 compiler suite
 PASS: var declaration of 13 generates the golden C
 ...
-291 tests: 291 PASS, 0 FAIL, 0 TODO, 0 Error
+341 tests: 341 PASS, 0 FAIL, 0 TODO, 0 Error
 tool suite
 ...
-67 tests: 67 PASS, 0 FAIL, 0 TODO, 0 Error
+95 tests: 95 PASS, 0 FAIL, 0 TODO, 0 Error
 ```
 
 A suite returns non-zero if any test fails or errors, so `make test` fails the

@@ -4406,9 +4406,9 @@ TestResult test_is_narrow_codegen(void)
 {
     const char *source =
         "fun classify(x: Int32 | Bool | Nil): Int32\n"
-        "  if x.is<Int32>() then\n"
+        "  if typeof x is Int32 then\n"
         "    return x\n"
-        "  elseif x.is<Bool>() then\n"
+        "  elseif typeof x is Bool then\n"
         "    if x then\n"
         "      return 1\n"
         "    else\n"
@@ -4541,11 +4541,11 @@ TestResult test_is_static_codegen(void)
 {
     const char *source =
         "fun yes(x: Int32): Bool\n"
-        "  return x.is<Int32>()\n"
+        "  return typeof x is Int32\n"
         "end\n"
         "\n"
         "fun no(x: Int32): Bool\n"
-        "  return x.is<Bool>()\n"
+        "  return typeof x is Bool\n"
         "end\n";
 
     return compile_succeeds(source, golden_is_static_c,
@@ -4556,7 +4556,7 @@ TestResult test_is_nil_codegen(void)
 {
     const char *source =
         "fun is_nil(x: Int32 | Nil): Bool\n"
-        "  if x.is<Nil>() then\n"
+        "  if typeof x is Nil then\n"
         "    return true\n"
         "  end\n"
         "  return false\n"
@@ -4575,7 +4575,7 @@ TestResult test_union_struct_codegen(void)
         "end\n"
         "\n"
         "fun pick(p: Point | Nil): Point\n"
-        "  if p.is<Point>() then\n"
+        "  if typeof p is Point then\n"
         "    return p\n"
         "  end\n"
         "  return Point(0, 0)\n"
@@ -4658,7 +4658,7 @@ TestResult test_inject_call_codegen(void)
 {
     const char *source =
         "fun take(v: Int32 | Nil): Int32\n"
-        "  if v.is<Int32>() then\n"
+        "  if typeof v is Int32 then\n"
         "    return v\n"
         "  end\n"
         "  return 0\n"
@@ -6307,7 +6307,7 @@ TestResult test_checker_is_type_is_union(void)
 {
     const char *source =
         "fun f(x: Int32 | Bool): Int32\n"
-        "  if x.is<Int32 | Bool>() then\n"
+        "  if typeof x is Int32 | Bool then\n"
         "    return 0\n"
         "  end\n"
         "  return 1\n"
@@ -6502,34 +6502,6 @@ TestResult test_parser_expected_union_alternative(void)
                          MESSAGE_PARSER_EXPECTED_UNION_ALTERNATIVE);
 }
 
-TestResult test_parser_expected_is_lt(void)
-{
-    return compile_fails("fun f(x:Int32):Bool\n  return x.is\nend\n",
-                         "an is-test without '<'",
-                         MESSAGE_PARSER_EXPECTED_IS_LT);
-}
-
-TestResult test_parser_expected_is_gt(void)
-{
-    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32\nend\n",
-                         "an is-test without '>'",
-                         MESSAGE_PARSER_EXPECTED_IS_GT);
-}
-
-TestResult test_parser_expected_is_lparen(void)
-{
-    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32> end\nend\n",
-                         "an is-test without '('",
-                         MESSAGE_PARSER_EXPECTED_IS_LPAREN);
-}
-
-TestResult test_parser_expected_is_rparen(void)
-{
-    return compile_fails("fun f(x:Int32):Bool\n  return x.is<Int32>( end\nend\n",
-                         "an is-test without ')'",
-                         MESSAGE_PARSER_EXPECTED_IS_RPAREN);
-}
-
 TestResult test_parser_expected_member_name(void)
 {
     return compile_fails("fun f(x:Int32):Bool\n  return x. end\nend\n",
@@ -6708,14 +6680,12 @@ TestResult test_checker_alloc_type_argument(void)
                          MESSAGE_CHECKER_ALLOC_TYPE_ARG);
 }
 
-TestResult test_checker_alloc_union(void)
+TestResult test_checker_handle_args(void)
 {
-    const char *source =
-        "var s: Store = Store(16)\n"
-        "var p = s.alloc<Int32 | Nil>(1)\n";
-
-    return compile_fails(source, "alloc of a union",
-                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+    return compile_fails(
+        "var h: Handle<Int32, Bool> = 0\n",
+        "Handle type argument count",
+        MESSAGE_CHECKER_HANDLE_ELEMENT);
 }
 
 TestResult test_checker_alloc_store(void)
@@ -6725,7 +6695,7 @@ TestResult test_checker_alloc_store(void)
         "var p = s.alloc<Store>(nil)\n";
 
     return compile_fails(source, "alloc of a Store",
-                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+                         MESSAGE_CHECKER_HANDLE_FIXED);
 }
 
 TestResult test_checker_alloc_count(void)
@@ -6752,10 +6722,10 @@ TestResult test_checker_handle_element(void)
 {
     const char *source =
         "var s: Store = Store(16)\n"
-        "var h: Handle<Int32 | Nil> = s.alloc<Int32>(1)\n";
+        "var h: Handle<Store> = s.alloc<Int32>(1)\n";
 
-    return compile_fails(source, "a union handle element",
-                         MESSAGE_CHECKER_HANDLE_ELEMENT);
+    return compile_fails(source, "a Store handle element",
+                         MESSAGE_CHECKER_HANDLE_FIXED);
 }
 
 TestResult test_checker_unknown_store(void)
@@ -6950,7 +6920,7 @@ TestResult test_parser_string_length(void)
 {
     return compile_fails(
         "var s: String<> = \"\"\n",
-        "a missing String capacity",
+        "a missing Text capacity",
         MESSAGE_PARSER_EXPECTED_STRING_LENGTH);
 }
 
@@ -6958,15 +6928,15 @@ TestResult test_parser_string_gt(void)
 {
     return compile_fails(
         "var s: String<4, 8> = \"\"\n",
-        "a String capacity trailing comma",
+        "a Text capacity trailing comma",
         MESSAGE_PARSER_EXPECTED_STRING_GT);
 }
 
 TestResult test_checker_dynamic_string(void)
 {
     return compile_fails(
-        "var s: String = \"x\"\nvar f: String<8> = s\n",
-        "a dynamic String assigned to a fixed String",
+        "var s: Text = \"x\"\nvar f: String<8> = s\n",
+        "a dynamic Text assigned to a fixed Text",
         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "f", "String<8>");
 }
 
@@ -7006,7 +6976,7 @@ TestResult test_checker_string_capacity(void)
 {
     return compile_fails(
         "var s: String<4097> = \"\"\n",
-        "a String capacity above the limit",
+        "a Text capacity above the limit",
         MESSAGE_CHECKER_STRING_CAPACITY, 4096);
 }
 
@@ -7023,7 +6993,7 @@ TestResult test_checker_string_equality(void)
     return compile_fails(
         "var a: String<8> = \"hi\"\nvar b: String<16> = \"hi\"\nvar ok: Bool "
         "= a == b\n",
-        "comparing different String capacities",
+        "comparing different Text capacities",
         MESSAGE_CHECKER_OPERATOR_TYPE, "==");
 }
 
@@ -7108,6 +7078,14 @@ TestResult test_checker_redefines_string(void)
         MESSAGE_CHECKER_REDEFINES_STRING);
 }
 
+TestResult test_checker_redefines_text(void)
+{
+    return compile_fails(
+        "type Text = Int32\n",
+        "redefining Text",
+        MESSAGE_CHECKER_REDEFINES_TEXT);
+}
+
 TestResult test_checker_redefines_error(void)
 {
     return compile_fails(
@@ -7119,9 +7097,9 @@ TestResult test_checker_redefines_error(void)
 TestResult test_checker_string_variable_name(void)
 {
     return compile_fails(
-        "var String: Int32 = 1\n",
-        "a variable named String",
-        MESSAGE_CHECKER_DUPLICATE_NAME, "String");
+        "var Text: Int32 = 1\n",
+        "a variable named Text",
+        MESSAGE_CHECKER_DUPLICATE_NAME, "Text");
 }
 
 TestResult test_analyser_invalid_string_literal(void)
@@ -7351,7 +7329,7 @@ TestResult test_string_union_codegen(void)
 {
     const char *source =
         "var u: String<8> | Nil = \"hi\"\n"
-        "var ok: Bool = u.is<String<8>>()\n"
+        "var ok: Bool = typeof u is String<8>\n"
     ;
 
     return compile_succeeds(source, golden_string_union_c,
@@ -7779,7 +7757,7 @@ TestResult test_compiler_max_string_exceeded(void)
     compiler_result_free(&result);
     if (!ok) {
         fprintf(stderr,
-                "  String capacity above the configured maximum was accepted\n");
+                "  Text capacity above the configured maximum was accepted\n");
         return TEST_FAIL;
     }
     return TEST_PASS;
@@ -8100,7 +8078,7 @@ TestResult test_checker_concat_type(void)
     return compile_fails(
         "global arena: Store = Store(16)\n"
         "var f: String<8> = \"x\"\n"
-        "var s: String = arena.concat(f, \"y\")\n",
+        "var s: Text = arena.concat(f, \"y\")\n",
         "concat with a fixed string",
         MESSAGE_CHECKER_CONCAT_TYPE);
 }
@@ -8110,7 +8088,7 @@ TestResult test_checker_copy_type(void)
     return compile_fails(
         "global arena: Store = Store(16)\n"
         "var f: String<8> = \"x\"\n"
-        "var s: String = arena.copy(f)\n",
+        "var s: Text = arena.copy(f)\n",
         "copy with a fixed string",
         MESSAGE_CHECKER_COPY_TYPE);
 }
@@ -8118,15 +8096,15 @@ TestResult test_checker_copy_type(void)
 TestResult test_checker_store_string_type(void)
 {
     return compile_fails(
-        "global arena: Store = Store(16)\nvar s: String = arena.string(\"hi\")\n",
-        "store.string with a dynamic literal",
-        MESSAGE_CHECKER_STORE_STRING_TYPE);
+        "global arena: Store = Store(16)\nvar s: Text = arena.text(\"hi\")\n",
+        "store.text with a dynamic literal",
+        MESSAGE_CHECKER_STORE_TEXT_TYPE);
 }
 
 TestResult test_checker_slice_type(void)
 {
     return compile_fails(
-        "var s: String = \"hello\"\nvar t: String = s.slice(\"x\", 1)\n",
+        "var s: Text = \"hello\"\nvar t: Text = s.slice(\"x\", 1)\n",
         "slice with a non-Int32 start",
         MESSAGE_CHECKER_STRING_SLICE_TYPE);
 }
@@ -8134,7 +8112,7 @@ TestResult test_checker_slice_type(void)
 TestResult test_checker_dynamic_fixed_equality(void)
 {
     return compile_fails(
-        "var f: String<8> = \"x\"\nvar s: String = \"x\"\nvar ok: Bool = f == s\n",
+        "var f: String<8> = \"x\"\nvar s: Text = \"x\"\nvar ok: Bool = f == s\n",
         "comparing fixed and dynamic strings",
         MESSAGE_CHECKER_OPERATOR_TYPE, "==");
 }
@@ -8143,7 +8121,7 @@ TestResult test_checker_builder_capacity(void)
 {
     return compile_fails(
         "global arena: Store = Store(16)\n"
-        "var b: StringBuilder = arena.builder(\"x\")\n",
+        "var b: TextBuilder = arena.builder(\"x\")\n",
         "builder with a non-Int32 capacity",
         MESSAGE_CHECKER_BUILDER_CAPACITY);
 }
@@ -8153,7 +8131,7 @@ TestResult test_checker_builder_append_type(void)
     return compile_fails(
         "global arena: Store = Store(16)\n"
         "var f: String<8> = \"x\"\n"
-        "var b: StringBuilder = arena.builder(4)\n"
+        "var b: TextBuilder = arena.builder(4)\n"
         "b.append(f)\n",
         "builder append with a fixed string",
         MESSAGE_CHECKER_BUILDER_APPEND_TYPE);
@@ -8163,7 +8141,7 @@ TestResult test_checker_builder_byte_type(void)
 {
     return compile_fails(
         "global arena: Store = Store(16)\n"
-        "var b: StringBuilder = arena.builder(4)\n"
+        "var b: TextBuilder = arena.builder(4)\n"
         "b.append_byte(\"x\")\n",
         "builder append_byte with a string",
         MESSAGE_CHECKER_BUILDER_BYTE_TYPE);
@@ -8173,8 +8151,8 @@ TestResult test_checker_builder_args(void)
 {
     return compile_fails(
         "global arena: Store = Store(16)\n"
-        "var b: StringBuilder = arena.builder(4)\n"
-        "var s: String = b.finish(1)\n",
+        "var b: TextBuilder = arena.builder(4)\n"
+        "var s: Text = b.finish(1)\n",
         "builder finish with an argument",
         MESSAGE_CHECKER_MEMBER_ARGS, "finish");
 }
@@ -8182,31 +8160,31 @@ TestResult test_checker_builder_args(void)
 TestResult test_checker_builder_redefinition(void)
 {
     return compile_fails(
-        "type StringBuilder = Int32\n",
-        "redefining StringBuilder",
+        "type TextBuilder = Int32\n",
+        "redefining TextBuilder",
         MESSAGE_CHECKER_REDEFINES_BUILDER);
 }
 
 TestResult test_parser_list_capacity(void)
 {
     return compile_fails(
-        "var xs: List<Int32,> = [1]\n",
+        "var xs: Array<Int32,> = [1]\n",
         "list missing capacity",
-        MESSAGE_PARSER_EXPECTED_LIST_CAPACITY);
+        MESSAGE_PARSER_EXPECTED_ARRAY_CAPACITY);
 }
 
 TestResult test_parser_list_gt(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1 = [1]\n",
+        "var xs: Array<Int32, 1 = [1]\n",
         "list missing >",
-        MESSAGE_PARSER_EXPECTED_LIST_GT);
+        MESSAGE_PARSER_EXPECTED_ARRAY_GT);
 }
 
 TestResult test_parser_list_rbracket(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1> = [1\n",
+        "var xs: Array<Int32, 1> = [1\n",
         "list missing ]",
         MESSAGE_PARSER_EXPECTED_LIST_RBRACKET);
 }
@@ -8214,7 +8192,7 @@ TestResult test_parser_list_rbracket(void)
 TestResult test_parser_list_separator(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1> = [1 2]\n",
+        "var xs: Array<Int32, 1> = [1 2]\n",
         "list missing comma",
         MESSAGE_PARSER_EXPECTED_LIST_SEPARATOR);
 }
@@ -8238,7 +8216,7 @@ TestResult test_checker_list_inferred_context(void)
 TestResult test_checker_list_length(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 2> = [1, 2, 3]\n",
+        "var xs: Array<Int32, 2> = [1, 2, 3]\n",
         "fixed list over capacity",
         MESSAGE_CHECKER_LIST_LITERAL_LENGTH, 3, 2);
 }
@@ -8246,9 +8224,9 @@ TestResult test_checker_list_length(void)
 TestResult test_checker_list_element(void)
 {
     return compile_fails(
-        "var xs: List<Store, 1> = []\n",
+        "var xs: Array<Store, 1> = []\n",
         "list element not sized",
-        MESSAGE_CHECKER_LIST_ELEMENT);
+        MESSAGE_CHECKER_ARRAY_ELEMENT);
 }
 
 TestResult test_checker_list_args(void)
@@ -8262,23 +8240,15 @@ TestResult test_checker_list_args(void)
 TestResult test_checker_list_capacity(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 4097> = []\n",
+        "var xs: Array<Int32, 4097> = []\n",
         "list capacity too large",
-        MESSAGE_CHECKER_LIST_CAPACITY, NIPPY_DEFAULT_MAX_LIST_CAPACITY);
-}
-
-TestResult test_checker_list_set_fixed(void)
-{
-    return compile_fails(
-        "var xs: List<Int32, 1> = [1]\nxs.set(0, 2)\n",
-        "fixed list set",
-        MESSAGE_CHECKER_LIST_MUTABLE);
+        MESSAGE_CHECKER_ARRAY_CAPACITY, NIPPY_DEFAULT_MAX_LIST_CAPACITY);
 }
 
 TestResult test_checker_list_index(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1> = [1]\nvar n: Int32 = xs.get(\"x\")\n",
+        "var xs: Array<Int32, 1> = [1]\nvar n: Int32 = xs[\"x\"]\n",
         "list index type",
         MESSAGE_CHECKER_LIST_INDEX);
 }
@@ -8334,7 +8304,7 @@ TestResult test_compiler_max_list_capacity(void)
                              .source_name = "test.nip",
                              .max_list_capacity = 2};
     CompilerResult result = compiler_compile(
-        "var xs: List<Int32, 2> = [1, 2]\n", &config);
+        "var xs: Array<Int32, 2> = [1, 2]\n", &config);
     int ok;
 
     ok = result.succeeded;
@@ -8352,12 +8322,12 @@ TestResult test_compiler_max_list_exceeded(void)
                              .source_name = "test.nip",
                              .max_list_capacity = 2};
     CompilerResult result = compiler_compile(
-        "var xs: List<Int32, 3> = [1, 2, 3]\n", &config);
+        "var xs: Array<Int32, 3> = [1, 2, 3]\n", &config);
     char expected[256];
     int ok;
 
     expect_message(expected, sizeof(expected),
-                   MESSAGE_CHECKER_LIST_CAPACITY, 2);
+                   MESSAGE_CHECKER_ARRAY_CAPACITY, 2);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -8409,7 +8379,7 @@ TestResult test_checker_list_push_lvalue(void)
 TestResult test_checker_list_index_type(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1> = [1]\nvar n: Int32 = xs[\"x\"]\n",
+        "var xs: Array<Int32, 1> = [1]\nvar n: Int32 = xs[\"x\"]\n",
         "index type",
         MESSAGE_CHECKER_LIST_INDEX);
 }
@@ -8417,7 +8387,7 @@ TestResult test_checker_list_index_type(void)
 TestResult test_checker_slice_dynamic(void)
 {
     return compile_fails(
-        "var xs: List<Int32, 1> = [1]\nvar s: Slice<Int32> = xs.slice(0, 1)\n",
+        "var xs: Array<Int32, 1> = [1]\nvar s: Slice<Int32> = xs.slice(0, 1)\n",
         "slice fixed list",
         MESSAGE_CHECKER_SLICE_DYNAMIC);
 }
@@ -8431,18 +8401,6 @@ TestResult test_checker_slice_readonly(void)
         "var s: Slice<Int32> = xs.slice(0, 1)\n"
         "s[0] = 2\n",
         "slice index write",
-        MESSAGE_CHECKER_SLICE_READONLY);
-}
-
-TestResult test_checker_slice_set(void)
-{
-    return compile_fails(
-        "global arena: Store = Store(16)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "xs.push(1)\n"
-        "var s: Slice<Int32> = xs.slice(0, 1)\n"
-        "s.set(0, 2)\n",
-        "slice set method",
         MESSAGE_CHECKER_SLICE_READONLY);
 }
 
@@ -8468,6 +8426,499 @@ TestResult test_checker_slice_redefinition(void)
         "type Slice = Int32\n",
         "redefining Slice",
         MESSAGE_CHECKER_REDEFINES_SLICE);
+}
+
+TestResult test_checker_local_store(void)
+{
+    return compile_fails(
+        "fun f(): Nil\n  var s: Store = Store(1)\n  return nil\nend\n",
+        "local Store",
+        MESSAGE_CHECKER_LOCAL_STORE);
+}
+
+TestResult test_checker_local_scope(void)
+{
+    return compile_fails(
+        "fun f(): Int32\n"
+        "  if true then\n"
+        "    var y: Int32 = 1\n"
+        "  end\n"
+        "  return y\n"
+        "end\n",
+        "local out of scope",
+        MESSAGE_CHECKER_UNKNOWN_NAME, "y");
+}
+
+TestResult test_checker_local_shadow(void)
+{
+    return compile_fails(
+        "fun f(x: Int32): Int32\n  var x: Int32 = 1\n  return x\nend\n",
+        "local shadows parameter",
+        MESSAGE_CHECKER_DUPLICATE_NAME, "x");
+}
+
+TestResult test_checker_unknown_field(void)
+{
+    return compile_fails(
+        "type P\n  x: Int32\nend\nfun f(p: P): Int32\n  return p.y\nend\n",
+        "unknown field",
+        MESSAGE_CHECKER_UNKNOWN_FIELD, "y");
+}
+
+TestResult test_checker_error_field_write(void)
+{
+    return compile_fails(
+        "fun f(e: Error): Nil\n  e.line = 1\n  return nil\nend\n",
+        "Error field write",
+        MESSAGE_CHECKER_FIELD_LVALUE);
+}
+
+TestResult test_parser_for_in(void)
+{
+    return compile_fails(
+        "for x 1 do\nend\n",
+        "for missing in",
+        MESSAGE_PARSER_EXPECTED_IN);
+}
+
+TestResult test_parser_for_do(void)
+{
+    return compile_fails(
+        "var xs: Array<Int32, 2> = [1, 2]\nfor x in xs\nend\n",
+        "for missing do",
+        MESSAGE_PARSER_EXPECTED_DO);
+}
+
+TestResult test_checker_for_iterable(void)
+{
+    return compile_fails(
+        "for x in 1 do\nend\n",
+        "for non-iterable",
+        MESSAGE_CHECKER_FOR_ITERABLE);
+}
+
+TestResult test_checker_for_duplicate_binding(void)
+{
+    return compile_fails(
+        "var xs: Array<Int32, 2> = [1, 2]\nfor x, x in xs do\nend\n",
+        "for duplicate binding",
+        MESSAGE_CHECKER_DUPLICATE_NAME, "x");
+}
+
+TestResult test_checker_for_parameter_collision(void)
+{
+    return compile_fails(
+        "fun f(x: Int32, xs: Array<Int32, 2>): Nil\n"
+        "  for x in xs do\n"
+        "  end\n"
+        "  return nil\n"
+        "end\n",
+        "for parameter collision",
+        MESSAGE_CHECKER_DUPLICATE_NAME, "x");
+}
+
+TestResult test_checker_handle_collection(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var h: Handle<List<Int32>> = "
+        "arena.alloc<List<Int32>>(arena.list<Int32>(1))\n",
+        "handle of a collection",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_alloc_text(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var f: String<8> = \"x\"\n"
+        "var h: Handle<Text> = arena.alloc<Text>(arena.text(f))\n",
+        "alloc of a Text",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_list_of_list(void)
+{
+    return compile_fails(
+        "var xs: List<List<Int32>> = []\n",
+        "List of List",
+        MESSAGE_CHECKER_COLLECTION_ELEMENT);
+}
+
+TestResult test_checker_array_of_array(void)
+{
+    return compile_fails(
+        "var xs: Array<Array<Int32, 1>, 1> = []\n",
+        "Array of Array",
+        MESSAGE_CHECKER_ARRAY_ELEMENT);
+}
+
+TestResult test_checker_bare_string(void)
+{
+    return compile_fails(
+        "var s: String = \"hello\"\n",
+        "bare String",
+        MESSAGE_CHECKER_STRING_ARGS);
+}
+
+TestResult test_parser_dynamic_list_gt(void)
+{
+    return compile_fails(
+        "var xs: List<Int32 = []\n",
+        "dynamic list missing >",
+        MESSAGE_PARSER_EXPECTED_LIST_GT);
+}
+
+TestResult test_parser_list_capacity_split(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1]\n",
+        "List capacity",
+        MESSAGE_PARSER_LIST_CAPACITY);
+}
+
+TestResult test_checker_array_args(void)
+{
+    return compile_fails(
+        "var xs: Array = []\n",
+        "bare Array",
+        MESSAGE_CHECKER_ARRAY_ARGS);
+}
+
+TestResult test_checker_redefines_array(void)
+{
+    return compile_fails(
+        "type Array = Int32\n",
+        "redefining Array",
+        MESSAGE_CHECKER_REDEFINES_ARRAY);
+}
+
+TestResult test_checker_handle_builder(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var h: Handle<TextBuilder> = "
+        "arena.alloc<TextBuilder>(arena.builder(1))\n",
+        "handle of a builder",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_list_of_slice(void)
+{
+    return compile_fails(
+        "var xs: List<Slice<Int32>> = []\n",
+        "List of Slice",
+        MESSAGE_CHECKER_COLLECTION_ELEMENT);
+}
+
+TestResult test_checker_alloc_struct_with_text(void)
+{
+    return compile_fails(
+        "type S\n"
+        "  t: Text\n"
+        "end\n"
+        "global arena: Store = Store(64)\n"
+        "var f: String<8> = \"x\"\n"
+        "var t: Text = arena.text(f)\n"
+        "var s: S = S(t)\n"
+        "var h: Handle<S> = arena.alloc<S>(s)\n",
+        "alloc of a struct with Text",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_alloc_array_with_text(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(64)\n"
+        "var f: String<8> = \"x\"\n"
+        "var t: Text = arena.text(f)\n"
+        "var a: Array<Text, 1> = [t]\n"
+        "var h: Handle<Array<Text, 1>> = "
+        "arena.alloc<Array<Text, 1>>(a)\n",
+        "alloc of an Array with Text",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_print_statement(void)
+{
+    return compile_fails(
+        "var n: Nil = print(1)\n",
+        "print as a value",
+        MESSAGE_CHECKER_PRINT_STATEMENT);
+}
+
+TestResult test_checker_print_named(void)
+{
+    return compile_fails(
+        "print(x = 1)\n",
+        "print named argument",
+        MESSAGE_CHECKER_PRINT_NAMED);
+}
+
+TestResult test_checker_print_reserved(void)
+{
+    return compile_fails(
+        "fun print(x: Int32): Nil\n  return nil\nend\n",
+        "print reserved",
+        MESSAGE_CHECKER_PRINT_RESERVED);
+}
+
+TestResult test_checker_error_throw_args(void)
+{
+    return compile_fails(
+        "var e: Error = Error.throw(\"E\")\n",
+        "Error.throw argument count",
+        MESSAGE_CHECKER_ERROR_THROW_ARGS);
+}
+
+TestResult test_compiler_print_depth(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_print_depth = 3};
+    CompilerResult result = compiler_compile("print(1)\n", &config);
+    int ok = result.succeeded && result.c_source != NULL &&
+             strstr(result.c_source, "depth > 3") != NULL;
+
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  custom print depth was not emitted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_invalid_print_depth(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_print_depth = -1};
+    CompilerResult result = compiler_compile("print(1)\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_COMPILER_PRINT_DEPTH, NIPPY_MAX_PRINT_DEPTH);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  invalid print depth was accepted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_checker_record_context(void)
+{
+    return compile_fails(
+        "var x = {\"a\": true}\n",
+        "Record literal context",
+        MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+}
+
+TestResult test_checker_record_duplicate(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 4> = {\"a\": true, \"a\": false}\n",
+        "Record duplicate key",
+        MESSAGE_CHECKER_RECORD_DUPLICATE_KEY);
+}
+
+TestResult test_checker_record_key(void)
+{
+    return compile_fails(
+        "var x: Record<Int32, Bool, 4> = {}\n",
+        "Record key type",
+        MESSAGE_CHECKER_MAP_KEY);
+}
+
+TestResult test_checker_record_value(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, List<Int32>, 4> = {}\n",
+        "Record value collection",
+        MESSAGE_CHECKER_MAP_VALUE);
+}
+
+TestResult test_checker_record_capacity(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 4097> = {}\n",
+        "Record capacity",
+        MESSAGE_CHECKER_RECORD_CAPACITY);
+}
+
+TestResult test_checker_record_literal_capacity(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 1> = {\"a\": true, \"b\": false}\n",
+        "Record literal capacity",
+        MESSAGE_CHECKER_RECORD_CAPACITY);
+}
+
+TestResult test_checker_handle_record(void)
+{
+    return compile_fails(
+        "var x: Handle<Record<String<8>, Bool, 4>> = 0\n",
+        "Handle Record",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_alloc_record(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var x: Handle<Record<String<8>, Bool, 4>> = "
+        "arena.alloc<Record<String<8>, Bool, 4>>({})\n",
+        "alloc Record",
+        MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TestResult test_checker_table_key(void)
+{
+    return compile_fails(
+        "var x: Table<Text, Bool> = arena.table<Text, Bool>(1)\n",
+        "Table key type",
+        MESSAGE_CHECKER_MAP_KEY);
+}
+
+TestResult test_checker_table_literal(void)
+{
+    return compile_fails(
+        "var x: Table<String<8>, Bool> = {}\n",
+        "Table literal",
+        MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+}
+
+TestResult test_checker_record_args(void)
+{
+    return compile_fails(
+        "var x: Record = {}\n",
+        "bare Record",
+        MESSAGE_CHECKER_RECORD_ARGS);
+}
+
+TestResult test_checker_table_args(void)
+{
+    return compile_fails(
+        "var x: Table = arena.table(1)\n",
+        "bare Table",
+        MESSAGE_CHECKER_TABLE_ARGS);
+}
+
+TestResult test_checker_redefines_record(void)
+{
+    return compile_fails(
+        "type Record = Int32\n",
+        "redefining Record",
+        MESSAGE_CHECKER_REDEFINES_RECORD);
+}
+
+TestResult test_checker_redefines_table(void)
+{
+    return compile_fails(
+        "type Table = Int32\n",
+        "redefining Table",
+        MESSAGE_CHECKER_REDEFINES_TABLE);
+}
+
+TestResult test_parser_record_capacity(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool> = {}\n",
+        "Record missing capacity",
+        MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY);
+}
+
+TestResult test_parser_record_gt(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 2 = {}\n",
+        "Record missing >",
+        MESSAGE_PARSER_EXPECTED_RECORD_GT);
+}
+
+TestResult test_parser_table_gt(void)
+{
+    return compile_fails(
+        "var x: Table<String<8>, Bool = arena.table<String<8>, Bool>(1)\n",
+        "Table missing >",
+        MESSAGE_PARSER_EXPECTED_TABLE_GT);
+}
+
+TestResult test_parser_record_colon(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 2> = {\"a\" true}\n",
+        "Record missing colon",
+        MESSAGE_PARSER_EXPECTED_COLON);
+}
+
+TestResult test_parser_record_rbrace(void)
+{
+    return compile_fails(
+        "var x: Record<String<8>, Bool, 2> = {\"a\": true\n",
+        "Record missing }",
+        MESSAGE_PARSER_EXPECTED_RBRACE);
+}
+
+TestResult test_parser_typeof_missing_is(void)
+{
+    return compile_fails(
+        "var b: Bool = typeof 1\n",
+        "typeof missing is",
+        MESSAGE_PARSER_EXPECTED_IS);
+}
+
+TestResult test_parser_match_head(void)
+{
+    return compile_fails(
+        "match 1 with 1 then\nend\n",
+        "match head expression",
+        MESSAGE_PARSER_MATCH_HEAD);
+}
+
+TestResult test_parser_match_with(void)
+{
+    return compile_fails(
+        "var x: Bool = true\nmatch x 1 then\nend\n",
+        "match missing with",
+        MESSAGE_PARSER_EXPECTED_WITH);
+}
+
+TestResult test_parser_if_expression_else(void)
+{
+    return compile_fails(
+        "var z: Int32 = if true then 1 end\n",
+        "if expression missing else",
+        MESSAGE_PARSER_EXPECTED_ELSE);
+}
+
+TestResult test_checker_if_expression_mismatch(void)
+{
+    return compile_fails(
+        "var z: Int32 = if true then 1 else false end\n",
+        "if expression type mismatch",
+        MESSAGE_CHECKER_IF_EXPR_MISMATCH);
+}
+
+TestResult test_parser_match_expression_else(void)
+{
+    return compile_fails(
+        "var b: Bool = true\n"
+        "var z: Int32 = match b with true then 1 end\n",
+        "match expression missing else",
+        MESSAGE_PARSER_EXPECTED_ELSE);
+}
+
+TestResult test_checker_match_expression_mismatch(void)
+{
+    return compile_fails(
+        "var b: Bool = true\n"
+        "var z: Int32 = match b with true then 1 else false end\n",
+        "match expression type mismatch",
+        MESSAGE_CHECKER_IF_EXPR_MISMATCH);
 }
 
 static const TestCase tests[] = {
@@ -8644,10 +9095,6 @@ static const TestCase tests[] = {
     {"parser: type argument separator", test_parser_expected_type_argument_separator},
     {"parser: type argument gt", test_parser_expected_type_argument_gt},
     {"parser: union alternative", test_parser_expected_union_alternative},
-    {"parser: is lt", test_parser_expected_is_lt},
-    {"parser: is gt", test_parser_expected_is_gt},
-    {"parser: is lparen", test_parser_expected_is_lparen},
-    {"parser: is rparen", test_parser_expected_is_rparen},
     {"parser: member name", test_parser_expected_member_name},
     {"checker: redefines Nil", test_checker_redefines_nil},
     {"checker: function field", test_checker_function_field},
@@ -8671,8 +9118,38 @@ static const TestCase tests[] = {
     {"store: union alternative", test_checker_store_union},
     {"store: type arguments", test_checker_store_type_arguments},
     {"store: alloc type argument", test_checker_alloc_type_argument},
-    {"store: alloc union", test_checker_alloc_union},
     {"store: alloc Store", test_checker_alloc_store},
+    {"store: Handle argument count", test_checker_handle_args},
+    {"print as a value", test_checker_print_statement},
+    {"print named argument", test_checker_print_named},
+    {"print reserved", test_checker_print_reserved},
+    {"typeof missing is", test_parser_typeof_missing_is},
+    {"match head expression", test_parser_match_head},
+    {"match missing with", test_parser_match_with},
+    {"if expression missing else", test_parser_if_expression_else},
+    {"if expression type mismatch", test_checker_if_expression_mismatch},
+    {"match expression missing else", test_parser_match_expression_else},
+    {"match expression type mismatch", test_checker_match_expression_mismatch},
+    {"Record literal context", test_checker_record_context},
+    {"Record duplicate key", test_checker_record_duplicate},
+    {"Record missing colon", test_parser_record_colon},
+    {"Record missing }", test_parser_record_rbrace},
+    {"Record key type", test_checker_record_key},
+    {"Record value collection", test_checker_record_value},
+    {"Record capacity", test_checker_record_capacity},
+    {"Record literal capacity", test_checker_record_literal_capacity},
+    {"Handle Record", test_checker_handle_record},
+    {"alloc Record", test_checker_alloc_record},
+    {"Table key type", test_checker_table_key},
+    {"Table literal", test_checker_table_literal},
+    {"bare Record", test_checker_record_args},
+    {"bare Table", test_checker_table_args},
+    {"redefining Record", test_checker_redefines_record},
+    {"redefining Table", test_checker_redefines_table},
+    {"Record missing capacity", test_parser_record_capacity},
+    {"Record missing >", test_parser_record_gt},
+    {"Table missing >", test_parser_table_gt},
+    {"Error.throw argument count", test_checker_error_throw_args},
     {"store: alloc argument count", test_checker_alloc_count},
     {"store: alloc value type", test_checker_alloc_value_type},
     {"store: handle element", test_checker_handle_element},
@@ -8689,8 +9166,8 @@ static const TestCase tests[] = {
     {"string: an unterminated string literal", test_lexer_unterminated_string},
     {"string: a newline inside a string literal", test_lexer_string_newline},
     {"string: an invalid string escape", test_lexer_invalid_escape},
-    {"string: a missing String capacity", test_parser_string_length},
-    {"string: a String capacity trailing comma", test_parser_string_gt},
+    {"string: a missing Text capacity", test_parser_string_length},
+    {"string: a Text capacity trailing comma", test_parser_string_gt},
     {"string: dynamic to fixed conversion", test_checker_dynamic_string},
     {"string: concat with a fixed string", test_checker_concat_type},
     {"string: copy with a fixed string", test_checker_copy_type},
@@ -8703,9 +9180,10 @@ static const TestCase tests[] = {
     {"builder: builder append with a fixed string", test_checker_builder_append_type},
     {"builder: builder append_byte with a string", test_checker_builder_byte_type},
     {"builder: builder finish with an argument", test_checker_builder_args},
-    {"builder: redefining StringBuilder", test_checker_builder_redefinition},
+    {"builder: redefining TextBuilder", test_checker_builder_redefinition},
     {"list: list missing capacity", test_parser_list_capacity},
     {"list: list missing >", test_parser_list_gt},
+    {"list: dynamic list missing >", test_parser_dynamic_list_gt},
     {"list: list missing ]", test_parser_list_rbracket},
     {"list: list missing comma", test_parser_list_separator},
     {"list: dynamic list literal", test_checker_list_context},
@@ -8714,23 +9192,45 @@ static const TestCase tests[] = {
     {"list: list element not sized", test_checker_list_element},
     {"list: bare List", test_checker_list_args},
     {"list: list capacity too large", test_checker_list_capacity},
-    {"list: fixed list set", test_checker_list_set_fixed},
     {"list: index missing ]", test_parser_index_rbracket},
     {"list: push temporary list", test_checker_list_push_lvalue},
     {"list: index type", test_checker_list_index_type},
+    {"for missing in", test_parser_for_in},
+    {"for missing do", test_parser_for_do},
+    {"for non-iterable", test_checker_for_iterable},
+    {"for duplicate binding", test_checker_for_duplicate_binding},
+    {"for parameter collision", test_checker_for_parameter_collision},
     {"slice: slice fixed list", test_checker_slice_dynamic},
     {"slice: slice index write", test_checker_slice_readonly},
-    {"slice: slice set method", test_checker_slice_set},
     {"slice: bare Slice", test_checker_slice_args},
     {"slice: Slice element type", test_checker_slice_element},
     {"slice: redefining Slice", test_checker_slice_redefinition},
     {"list: list index type", test_checker_list_index},
+    {"handle of a collection", test_checker_handle_collection},
+    {"alloc of a Text", test_checker_alloc_text},
+    {"alloc of a struct with Text", test_checker_alloc_struct_with_text},
+    {"alloc of an Array with Text", test_checker_alloc_array_with_text},
+    {"List of List", test_checker_list_of_list},
+    {"handle of a builder", test_checker_handle_builder},
+    {"List of Slice", test_checker_list_of_slice},
+    {"Array of Array", test_checker_array_of_array},
+    {"bare String", test_checker_bare_string},
+    {"List capacity", test_parser_list_capacity_split},
+    {"bare Array", test_checker_array_args},
+    {"redefining Array", test_checker_redefines_array},
+    {"local Store", test_checker_local_store},
+    {"local out of scope", test_checker_local_scope},
+    {"local shadows parameter", test_checker_local_shadow},
+    {"unknown field", test_checker_unknown_field},
+    {"Error field write", test_checker_error_field_write},
     {"list: list value type", test_checker_list_value},
     {"list: list create type argument", test_checker_list_create_type_arg},
     {"list: list create argument count", test_checker_list_create_args},
     {"list: list capacity argument type", test_checker_list_capacity_arg},
     {"list: redefining List", test_checker_list_redefinition},
     {"list: custom maximum capacity", test_compiler_max_list_capacity},
+    {"print: custom maximum depth", test_compiler_print_depth},
+    {"print: invalid maximum depth", test_compiler_invalid_print_depth},
     {"list: configured maximum exceeded", test_compiler_max_list_exceeded},
     {"list: invalid maximum capacity", test_compiler_invalid_max_list},
     {"string: a string literal larger than its capacity", test_checker_string_too_long},
@@ -8740,9 +9240,9 @@ static const TestCase tests[] = {
      test_checker_string_compare_context},
     {"string: a literal that fits two union alternatives",
      test_checker_string_ambiguous},
-    {"string: a String capacity above the limit", test_checker_string_capacity},
+    {"string: a Text capacity above the limit", test_checker_string_capacity},
     {"string: assigning a String<8> to a String<16>", test_checker_string_assignment},
-    {"string: comparing different String capacities", test_checker_string_equality},
+    {"string: comparing different Text capacities", test_checker_string_equality},
     {"string: byte_len with an argument", test_checker_string_len_args},
     {"string: byte_at with a string index", test_checker_string_index_type},
     {"string: a type argument on byte_len", test_checker_string_method_type_arg},
@@ -8754,8 +9254,9 @@ static const TestCase tests[] = {
     {"string: Error with named arguments", test_checker_error_named_args},
     {"string: an Error field method on an Int32", test_checker_error_member},
     {"string: redefining String", test_checker_redefines_string},
+    {"string: redefining Text", test_checker_redefines_text},
     {"string: redefining Error", test_checker_redefines_error},
-    {"string: a variable named String", test_checker_string_variable_name},
+    {"string: a variable named Text", test_checker_string_variable_name},
     {"analyser: invalid string literal", test_analyser_invalid_string_literal},
     {"analyser: invalid Error shape", test_analyser_invalid_error},
     {"string: string basic codegen", test_string_basic_codegen},

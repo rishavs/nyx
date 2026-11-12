@@ -20,7 +20,9 @@ typedef enum {
     AST_BLOCK,
     AST_RETURN,
     AST_IF,
+    AST_IF_EXPRESSION,
     AST_WHILE,
+    AST_FOR,
     AST_BREAK,
     AST_CONTINUE,
     AST_INTEGER_LITERAL,
@@ -46,9 +48,14 @@ typedef enum {
     AST_TYPE_LIST,
     AST_TYPE_FIXED_LIST,
     AST_TYPE_SLICE,
+    AST_TYPE_RECORD,
+    AST_TYPE_TABLE,
+    AST_RECORD_LITERAL,
     AST_LIST_LITERAL,
     AST_INDEX,
-    AST_INDEX_ASSIGNMENT
+    AST_INDEX_ASSIGNMENT,
+    AST_MEMBER_ACCESS,
+    AST_MEMBER_ASSIGNMENT
 } AstNodeKind;
 
 /* Names live inline: a List element may not hold a pointer, so a symbol is a
@@ -68,6 +75,8 @@ typedef struct {
     int integer_value;
     NippyOperator op;
     size_t name_index;
+    /* AST_FOR: the value binding when an index binding is present. */
+    size_t second_name_index;
     size_t left_child;
     size_t right_child;
     size_t children_start;

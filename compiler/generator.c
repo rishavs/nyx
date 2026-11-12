@@ -127,6 +127,10 @@ static bool buffer_append(TextBuffer *buffer, const char *text)
     return true;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+static bool buffer_appendf(TextBuffer *buffer, const char *format, ...)
+    __attribute__((format(printf, 2, 3)));
+#endif
 static bool buffer_appendf(TextBuffer *buffer, const char *format, ...)
 {
     va_list args;
@@ -192,7 +196,7 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
         snprintf(out, out_size, "nippy_string");
         return true;
     }
-    if (type->kind == NIPPY_TYPE_STRING_BUILDER) {
+    if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
         snprintf(out, out_size, "nippy_builder");
         return true;
     }
@@ -206,6 +210,14 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
     }
     if (type->kind == NIPPY_TYPE_SLICE) {
         snprintf(out, out_size, "nippy_slice");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_RECORD) {
+        snprintf(out, out_size, "nippy_record_%zu", type_index);
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_TABLE) {
+        snprintf(out, out_size, "nippy_table");
         return true;
     }
     if (type->kind == NIPPY_TYPE_ERROR) {
@@ -348,7 +360,7 @@ static bool handle_element_type(const TypedProgram *program,
 
 /* Unions and struct instantiations are interned by the checker, but a function
    type is not guaranteed to share an index with a structurally equal one, so
-   `.is<T>` matches alternatives structurally. The depth bound keeps a function
+   `typeof x is T` matches alternatives structurally. The depth bound keeps a function
    type that mentions itself from recursing forever. */
 static bool types_equivalent(const TypedProgram *program, size_t first,
                              size_t second, unsigned depth)
@@ -509,10 +521,13 @@ static bool type_is_c_aggregate(const TypedProgram *program, size_t type_index)
                             type->kind == NIPPY_TYPE_HANDLE ||
                             type->kind == NIPPY_TYPE_STRING ||
                             type->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-                            type->kind == NIPPY_TYPE_STRING_BUILDER ||
+                            type->kind == NIPPY_TYPE_TEXT_BUILDER ||
                             type->kind == NIPPY_TYPE_LIST ||
                             type->kind == NIPPY_TYPE_FIXED_LIST ||
                             type->kind == NIPPY_TYPE_SLICE ||
+                            type->kind == NIPPY_TYPE_RECORD ||
+                            type->kind == NIPPY_TYPE_TABLE ||
+                            type->kind == NIPPY_TYPE_UNION ||
                             type->kind == NIPPY_TYPE_ERROR);
 }
 
@@ -667,6 +682,24 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         return true;
     }
+    if (node->kind == TYPED_IF_EXPRESSION) {
+        size_t else_expression = *(const size_t *)list_get(
+            &program->children, node->children_start);
+
+        if (!buffer_append(buffer, "(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, " ? ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, " : ") ||
+            !emit_expression(program, else_expression, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
     if (node->kind == TYPED_IS) {
         const TypedNode *value = typed_program_node(program, node->left_child);
         const TypedType *value_type =
@@ -709,7 +742,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return true;
         }
         {
-            /* `.is<T>` on a non-union value is decided statically. */
+            /* A type test on a non-union value is decided statically. */
             bool result;
 
             if (node->auxiliary_type != TYPED_NO_NODE) {
@@ -1341,6 +1374,280 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         return true;
     }
+    if (node->kind == TYPED_RECORD_LITERAL) {
+        const TypedType *type = typed_program_type(program, node->type_index);
+        char record_name[64];
+        char key_name[64];
+        char value_name[64];
+        size_t key_type;
+        size_t value_type;
+        size_t i;
+
+        if (type == NULL || type->child_count != 2 ||
+            !format_c_type(program, node->type_index, record_name,
+                           sizeof(record_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        key_type = *(const size_t *)list_get(&program->type_children,
+                                             type->first_child);
+        value_type = *(const size_t *)list_get(&program->type_children,
+                                               type->first_child + 1);
+        if (!format_c_type(program, key_type, key_name, sizeof(key_name),
+                           errors) ||
+            !format_c_type(program, value_type, value_name,
+                           sizeof(value_name), errors)) {
+            return false;
+        }
+        if (node->children_count == 0) {
+            if (!buffer_appendf(buffer, "(%s){0}", record_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer,
+                            "nippy_record_%zu_literal((%s[]){ ",
+                            node->type_index, key_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 0; i + 1 < node->children_count; i += 2) {
+            size_t key = *(const size_t *)list_get(&program->children,
+                                                   node->children_start + i);
+
+            if (i != 0 && !buffer_append(buffer, ", ")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (!emit_expression(program, key, buffer, errors)) {
+                return false;
+            }
+        }
+        if (!buffer_appendf(buffer, " }, (%s[]){ ", value_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 1; i < node->children_count; i += 2) {
+            size_t value = *(const size_t *)list_get(&program->children,
+                                                     node->children_start + i);
+
+            if (i != 1 && !buffer_append(buffer, ", ")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (!emit_expression(program, value, buffer, errors)) {
+                return false;
+            }
+        }
+        if (!buffer_appendf(buffer, " }, %zu)", node->children_count / 2)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_TABLE_CREATE) {
+        if (!buffer_appendf(buffer,
+                            "nippy_table_%zu_create(&nippy_stores[%zu], %zu, ",
+                            node->type_index, node->store_id, node->store_id) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_TABLE_GET) {
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+
+        if (receiver == NULL ||
+            !buffer_appendf(buffer, "nippy_table_%zu_get_required(",
+                            receiver->type_index) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_TABLE_HAS ||
+        node->kind == TYPED_TABLE_REMOVE ||
+        node->kind == TYPED_TABLE_LEN) {
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+        const char *suffix = node->kind == TYPED_TABLE_HAS
+                                 ? "has"
+                                 : (node->kind == TYPED_TABLE_REMOVE
+                                        ? "remove"
+                                        : "len");
+
+        if (receiver == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (node->kind == TYPED_TABLE_LEN) {
+            if (!buffer_appendf(buffer, "nippy_table_%zu_len(",
+                                receiver->type_index) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else {
+            if (!buffer_appendf(buffer, "nippy_table_%zu_%s(",
+                                receiver->type_index, suffix) ||
+                (node->kind == TYPED_TABLE_REMOVE &&
+                 !buffer_append(buffer, "&(")) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                (node->kind == TYPED_TABLE_REMOVE &&
+                 !buffer_append(buffer, ")")) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        return true;
+    }
+    if (node->kind == TYPED_RECORD_GET) {
+        const TypedType *receiver_type = NULL;
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+
+        receiver_type = receiver == NULL
+                            ? NULL
+                            : typed_program_type(program,
+                                                 receiver->type_index);
+        if (receiver_type == NULL ||
+            receiver_type->kind != NIPPY_TYPE_RECORD) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer, "nippy_record_%zu_get_required(&(",
+                            receiver->type_index) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, "), ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_RECORD_HAS ||
+        node->kind == TYPED_RECORD_REMOVE ||
+        node->kind == TYPED_RECORD_LEN) {
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+        const char *suffix = node->kind == TYPED_RECORD_HAS
+                                 ? "has"
+                                 : (node->kind == TYPED_RECORD_REMOVE
+                                        ? "remove"
+                                        : "len");
+        const char *prefix = node->kind == TYPED_RECORD_LEN
+                                 ? "nippy_record_%zu_len(&("
+                                 : "nippy_record_%zu_%s(&(";
+
+        if (receiver == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (node->kind == TYPED_RECORD_LEN) {
+            if (!buffer_appendf(buffer, prefix, receiver->type_index) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "))")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else {
+            if (!buffer_appendf(buffer, prefix, receiver->type_index,
+                                suffix) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "), ") ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        return true;
+    }
+    if (node->kind == TYPED_MEMBER_ACCESS) {
+        const char *field = typed_program_symbol_text(program,
+                                                      node->name_index);
+
+        if (!valid_identifier(field) ||
+            !buffer_append(buffer, "(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_appendf(buffer, ").%s", field)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_ERROR_THROW) {
+        char filename_type[NIPPY_IDENTIFIER_MAX + 32];
+        size_t i;
+
+        if (!format_c_type(program, node->auxiliary_type, filename_type,
+                           sizeof(filename_type), errors) ||
+            node->children_count != 2) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_append(buffer, "(nippy_error){ ") ||
+            !emit_expression(program, *(const size_t *)list_get(
+                                         &program->children,
+                                         node->children_start),
+                            buffer, errors)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            }
+            return false;
+        }
+        if (!buffer_append(buffer, ", ") ||
+            !emit_expression(program, *(const size_t *)list_get(
+                                         &program->children,
+                                         node->children_start + 1),
+                            buffer, errors) ||
+            !buffer_appendf(buffer, ", (%s){ { ", filename_type)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        for (i = 0; i < node->string_length; i++) {
+            unsigned char byte = *(const unsigned char *)list_get(
+                &program->bytes, node->string_offset + i);
+
+            if (!buffer_appendf(buffer, "%u%s", (unsigned)byte,
+                                i + 1 == node->string_length ? "" : ", ")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_appendf(buffer,
+                            "%s0 }, %zu }, %d, %d, %d }",
+                            node->string_length == 0 ? "" : ", ",
+                            node->string_length, (int)node->pos.line,
+                            (int)node->pos.column, (int)node->pos.offset)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
     if (node->kind == TYPED_ERROR_CONSTRUCT) {
         if (!buffer_append(buffer, "(nippy_error){ ") ||
             !emit_children_expressions(program, node, buffer, errors) ||
@@ -1834,6 +2141,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                                   TextBuffer *header, ErrorState *errors)
 {
     bool emitted_nil = false;
+    bool table_emitted = false;
     size_t i;
 
     for (i = 0; i < program->types.length; i++) {
@@ -1884,7 +2192,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
-        } else if (type->kind == NIPPY_TYPE_STRING_BUILDER) {
+        } else if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
             if (!buffer_append(
                     header,
                     "typedef struct {\n"
@@ -1918,6 +2226,48 @@ static bool emit_type_definitions(const TypedProgram *program,
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
+        } else if (type->kind == NIPPY_TYPE_RECORD) {
+            char key_name[NIPPY_IDENTIFIER_MAX + 32];
+            char value_name[NIPPY_IDENTIFIER_MAX + 32];
+            size_t key_type = *(const size_t *)list_get(
+                &program->type_children, type->first_child);
+            size_t value_type = *(const size_t *)list_get(
+                &program->type_children, type->first_child + 1);
+            size_t buckets = type->fixed_length == 0
+                                 ? 1
+                                 : type->fixed_length + 1;
+
+            if (!format_c_type(program, key_type, key_name,
+                               sizeof(key_name), errors) ||
+                !format_c_type(program, value_type, value_name,
+                               sizeof(value_name), errors) ||
+                !buffer_appendf(
+                    header,
+                    "typedef struct {\n"
+                    "    %s keys[%zu];\n"
+                    "    %s values[%zu];\n"
+                    "    uint8_t states[%zu];\n"
+                    "    size_t length;\n"
+                    "} nippy_record_%zu;\n\n",
+                    key_name, buckets, value_name, buckets, buckets, i)) {
+                if (!errors->reported) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_TABLE) {
+            if (!table_emitted &&
+                !buffer_append(
+                    header,
+                    "typedef struct {\n"
+                    "    uint32_t store;\n"
+                    "    size_t offset;\n"
+                    "    uint64_t generation;\n"
+                    "} nippy_table;\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            table_emitted = true;
         } else if (type->kind == NIPPY_TYPE_SLICE) {
             bool emitted = false;
             size_t j;
@@ -2151,6 +2501,189 @@ static bool append_indent(TextBuffer *source, size_t depth)
 static bool emit_statement(const TypedProgram *program, size_t node_index,
                            size_t depth, const char *effective_source,
                            TextBuffer *source, ErrorState *errors);
+static bool emit_print_statement(const TypedProgram *program,
+                                 const TypedNode *node, TextBuffer *source,
+                                 ErrorState *errors, size_t depth);
+
+static bool emit_block(const TypedProgram *program, size_t block_index,
+                       size_t depth, const char *effective_source,
+                       TextBuffer *source, ErrorState *errors);
+
+static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
+                          const TypedType *iterable_type, size_t depth,
+                          const char *effective_source, TextBuffer *source,
+                          ErrorState *errors)
+{
+    const char *key_name = typed_program_symbol_text(program,
+                                                     node->name_index);
+    const char *value_name =
+        node->second_name_index == TYPED_NO_NODE
+            ? NULL
+            : typed_program_symbol_text(program, node->second_name_index);
+    size_t key_type = *(const size_t *)list_get(&program->type_children,
+                                                iterable_type->first_child);
+    size_t value_type = *(const size_t *)list_get(
+        &program->type_children, iterable_type->first_child + 1);
+    char key_c[NIPPY_IDENTIFIER_MAX + 32];
+    char value_c[NIPPY_IDENTIFIER_MAX + 32];
+    size_t offset = node->pos.offset;
+
+    if (key_name == NULL || !valid_identifier(key_name) ||
+        (value_name != NULL && !valid_identifier(value_name)) ||
+        !format_c_type(program, key_type, key_c, sizeof(key_c), errors) ||
+        !format_c_type(program, value_type, value_c, sizeof(value_c), errors)) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+        return false;
+    }
+    if (iterable_type->kind == NIPPY_TYPE_RECORD) {
+        size_t buckets = iterable_type->fixed_length == 0
+                             ? 1
+                             : iterable_type->fixed_length + 1;
+
+        if (!append_indent(source, depth) ||
+            !buffer_append(source, "{\n") ||
+            !append_indent(source, depth + 1)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        {
+            size_t child = node->left_child;
+            const TypedNode *iter = typed_program_node(program, child);
+            char record_name[64];
+
+            if (iter == NULL ||
+                !format_c_type(program, iter->type_index, record_name,
+                               sizeof(record_name), errors) ||
+                !buffer_appendf(source, "%s nippy_for_src_%zu = ",
+                                record_name, offset) ||
+                !emit_expression(program, child, source, errors) ||
+                !buffer_append(source, ";\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!append_indent(source, depth + 1) ||
+            !buffer_appendf(source,
+                            "for (size_t nippy_for_i_%zu = 0; "
+                            "nippy_for_i_%zu < %zu; nippy_for_i_%zu++) {\n",
+                            offset, offset, buckets, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "if (nippy_for_src_%zu.states[nippy_for_i_%zu] "
+                            "!= 1) continue;\n",
+                            offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source, "%s %s = nippy_for_src_%zu.keys["
+                                    "nippy_for_i_%zu];\n",
+                            key_c, key_name, offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source, "(void)%s;\n", key_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (value_name != NULL) {
+            if (!append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "%s %s = nippy_for_src_%zu.values["
+                                        "nippy_for_i_%zu];\n",
+                                value_c, value_name, offset, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "(void)%s;\n", value_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+    } else {
+        const TypedNode *iterable = typed_program_node(program,
+                                                       node->left_child);
+        size_t table_type = iterable == NULL ? TYPED_NO_NODE
+                                             : iterable->type_index;
+
+        if (table_type == TYPED_NO_NODE ||
+            !append_indent(source, depth) ||
+            !buffer_append(source, "{\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "nippy_table nippy_for_src_%zu = ",
+                            offset) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source,
+                            "for (size_t nippy_for_i_%zu = 0;; "
+                            "nippy_for_i_%zu++) {\n",
+                            offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "nippy_table_state_%zu *nippy_for_state_%zu = "
+                            "nippy_table_%zu_state(nippy_for_src_%zu);\n",
+                            table_type, offset, table_type, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "if (nippy_for_i_%zu >= "
+                            "nippy_for_state_%zu->buckets) break;\n",
+                            offset, offset)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "nippy_store *nippy_for_store_%zu = "
+                            "&nippy_stores[nippy_for_src_%zu.store];\n",
+                            offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "uint8_t *nippy_for_states_%zu = (uint8_t *)"
+                            "(void *)(nippy_for_store_%zu->data + "
+                            "nippy_for_state_%zu->states_offset);\n"
+                            "        if (nippy_for_states_%zu[nippy_for_i_%zu]"
+                            " != 1) continue;\n",
+                            offset, offset, offset, offset, offset)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!append_indent(source, depth + 2) ||
+            !buffer_appendf(source,
+                            "%s *nippy_for_keys_%zu = (%s *)(void *)"
+                            "(nippy_for_store_%zu->data + "
+                            "nippy_for_state_%zu->keys_offset);\n",
+                            key_c, offset, key_c, offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source, "%s %s = nippy_for_keys_%zu["
+                                    "nippy_for_i_%zu];\n",
+                            key_c, key_name, offset, offset) ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source, "(void)%s;\n", key_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (value_name != NULL) {
+            if (!append_indent(source, depth + 2) ||
+                !buffer_appendf(source,
+                                "%s *nippy_for_values_%zu = (%s *)(void *)"
+                                "(nippy_for_store_%zu->data + "
+                                "nippy_for_state_%zu->values_offset);\n",
+                                value_c, offset, value_c, offset, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "%s %s = nippy_for_values_%zu["
+                                        "nippy_for_i_%zu];\n",
+                                value_c, value_name, offset, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "(void)%s;\n", value_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+    }
+    if (!emit_block(program, node->right_child, depth + 2, effective_source,
+                    source, errors) ||
+        !append_indent(source, depth + 1) ||
+        !buffer_append(source, "}\n") ||
+        !append_indent(source, depth) ||
+        !buffer_append(source, "}\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
 
 static bool emit_block(const TypedProgram *program, size_t block_index,
                        size_t depth, const char *effective_source,
@@ -2275,6 +2808,320 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         return true;
     }
 
+    if (node->kind == TYPED_FOR) {
+        const TypedNode *iterable_node = typed_program_node(
+            program, node->left_child);
+        const TypedType *iterable_type =
+            iterable_node == NULL
+                ? NULL
+                : typed_program_type(program, iterable_node->type_index);
+        const char *value_name = typed_program_symbol_text(
+            program, node->name_index);
+        const char *index_name =
+            node->second_name_index == TYPED_NO_NODE
+                ? NULL
+                : typed_program_symbol_text(program, node->second_name_index);
+        char iterable_name[NIPPY_IDENTIFIER_MAX + 32];
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        size_t offset = node->pos.offset;
+        const char *value_c;
+        const char *index_c;
+        bool check_length;
+
+        if (iterable_type != NULL &&
+            (iterable_type->kind == NIPPY_TYPE_RECORD ||
+             iterable_type->kind == NIPPY_TYPE_TABLE)) {
+            return emit_map_for(program, node, iterable_type, depth,
+                                effective_source, source, errors);
+        }
+        if (iterable_type == NULL || value_name == NULL ||
+            !valid_identifier(value_name) ||
+            (index_name != NULL && !valid_identifier(index_name)) ||
+            !format_c_type(program, iterable_node->type_index, iterable_name,
+                           sizeof(iterable_name), errors) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+            return false;
+        }
+        value_c = value_name;
+        index_c = index_name;
+        check_length = iterable_type->kind == NIPPY_TYPE_LIST ||
+                       iterable_type->kind == NIPPY_TYPE_FIXED_LIST;
+
+        if (!append_indent(source, depth) ||
+            !buffer_append(source, "{\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "%s nippy_for_src_%zu = ",
+                            iterable_name, offset) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "size_t nippy_for_len_%zu = (size_t)(",
+                            offset)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        if (iterable_type->kind == NIPPY_TYPE_LIST) {
+            if (!buffer_appendf(source, "nippy_list_len(nippy_for_src_%zu)",
+                                offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST ||
+                   iterable_type->kind == NIPPY_TYPE_STRING) {
+            if (!buffer_appendf(source,
+                                "((int32_t)(nippy_for_src_%zu).length)",
+                                offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
+            if (!buffer_appendf(source, "nippy_slice_len(nippy_for_src_%zu)",
+                                offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_appendf(source, "nippy_string_len(nippy_for_src_%zu)",
+                                offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+            return false;
+        }
+        if (!buffer_append(source, ");\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source,
+                            "for (size_t nippy_for_i_%zu = 0; "
+                            "nippy_for_i_%zu < nippy_for_len_%zu; "
+                            "nippy_for_i_%zu++) {\n",
+                            offset, offset, offset, offset) ||
+            !append_indent(source, depth + 2)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        if (check_length) {
+            if (iterable_type->kind == NIPPY_TYPE_LIST) {
+                if (!buffer_appendf(source,
+                                    "if ((size_t)nippy_list_len("
+                                    "nippy_for_src_%zu) != "
+                                    "nippy_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
+                                    "exit(1); }\n",
+                                    offset, offset,
+                                    MESSAGE_RUNTIME_FOR_MUTATED)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    return false;
+                }
+            } else if (!buffer_appendf(source,
+                                       "if ((size_t)(nippy_for_src_%zu).length "
+                                       "!= nippy_for_len_%zu) { "
+                                       "fprintf(stderr, \"%s\\n\"); "
+                                       "exit(1); }\n",
+                                       offset, offset,
+                                       MESSAGE_RUNTIME_FOR_MUTATED)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (!append_indent(source, depth + 2)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_appendf(source, "%s %s = ", element_name, value_c)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_appendf(source, "nippy_list_%zu_get(nippy_for_src_%zu, "
+                                        "nippy_for_i_%zu)",
+                                iterable_node->type_index, offset, offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_LIST) {
+            if (!buffer_appendf(source,
+                                "(*(%s *)nippy_list_data(nippy_for_src_%zu, "
+                                "nippy_for_i_%zu, sizeof(%s)))",
+                                element_name, offset, offset, element_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
+            if (!buffer_appendf(source,
+                                "(*(%s *)nippy_slice_data(nippy_for_src_%zu, "
+                                "nippy_for_i_%zu, sizeof(%s)))",
+                                element_name, offset, offset, element_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_STRING) {
+            if (!buffer_appendf(source, "nippy_string_%zu_at(nippy_for_src_%zu, "
+                                        "nippy_for_i_%zu)",
+                                iterable_type->fixed_length, offset, offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_appendf(source, "nippy_string_byte_at(nippy_for_src_%zu, "
+                                        "nippy_for_i_%zu)",
+                                offset, offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+            return false;
+        }
+        if (!buffer_append(source, ";\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (index_c != NULL) {
+            if (!append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "int32_t %s = (int32_t)nippy_for_i_%zu;\n",
+                                index_c, offset)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!emit_block(program, node->right_child, depth + 2,
+                        effective_source, source, errors)) {
+            return false;
+        }
+        if (check_length) {
+            if (!append_indent(source, depth + 2)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (iterable_type->kind == NIPPY_TYPE_LIST) {
+                if (!buffer_appendf(source,
+                                    "if ((size_t)nippy_list_len("
+                                    "nippy_for_src_%zu) != "
+                                    "nippy_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
+                                    "exit(1); }\n",
+                                    offset, offset,
+                                    MESSAGE_RUNTIME_FOR_MUTATED)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    return false;
+                }
+            } else if (!buffer_appendf(source,
+                                       "if ((size_t)(nippy_for_src_%zu).length "
+                                       "!= nippy_for_len_%zu) { "
+                                       "fprintf(stderr, \"%s\\n\"); "
+                                       "exit(1); }\n",
+                                       offset, offset,
+                                       MESSAGE_RUNTIME_FOR_MUTATED)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!append_indent(source, depth + 1) ||
+            !buffer_append(source, "}\n") ||
+            !append_indent(source, depth) ||
+            !buffer_append(source, "}\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_TABLE_SET) {
+        size_t key = *(const size_t *)list_get(&program->children,
+                                               node->children_start);
+        size_t value = *(const size_t *)list_get(&program->children,
+                                                 node->children_start + 1);
+        const TypedNode *receiver = typed_program_node(
+            program, node->left_child);
+
+        if (receiver == NULL || !append_indent(source, depth) ||
+            !buffer_appendf(source, "nippy_table_%zu_set(&(",
+                            receiver->type_index) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, "), ") ||
+            !emit_expression(program, key, source, errors) ||
+            !buffer_append(source, ", ") ||
+            !emit_expression(program, value, source, errors) ||
+            !buffer_append(source, ");\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_RECORD_SET) {
+        size_t key = *(const size_t *)list_get(&program->children,
+                                               node->children_start);
+        size_t value = *(const size_t *)list_get(&program->children,
+                                                 node->children_start + 1);
+        const TypedNode *receiver = typed_program_node(
+            program, node->left_child);
+
+        if (receiver == NULL || !append_indent(source, depth) ||
+            !buffer_append(source, "nippy_record_") ||
+            !buffer_appendf(source, "%zu", receiver->type_index) ||
+            !buffer_append(source, "_set(&(") ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, "), ") ||
+            !emit_expression(program, key, source, errors) ||
+            !buffer_append(source, ", ") ||
+            !emit_expression(program, value, source, errors) ||
+            !buffer_append(source, ");\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_LOCAL_DECLARATION) {
+        const char *name = typed_program_symbol_text(program,
+                                                     node->name_index);
+        char type_name[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (!valid_identifier(name) ||
+            !format_c_type(program, node->type_index, type_name,
+                           sizeof(type_name), errors) ||
+            node->left_child == TYPED_NO_NODE) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+            return false;
+        }
+        if (!append_indent(source, depth) ||
+            !buffer_appendf(source, "%s %s = ", type_name, name) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_MEMBER_WRITE) {
+        if (!append_indent(source, depth) ||
+            !buffer_append(source, "(void)(") ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, " = ") ||
+            !emit_expression(program, node->right_child, source, errors) ||
+            !buffer_append(source, ");\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
     if (node->kind == TYPED_ASSIGNMENT) {
         const char *name = typed_program_symbol_text(program,
                                                      node->name_index);
@@ -2308,7 +3155,18 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         return true;
     }
 
+    if (node->kind == TYPED_PRINT) {
+        return emit_print_statement(program, node, source, errors, depth);
+    }
+
     if (node->kind == TYPED_EXPRESSION_STATEMENT) {
+        const TypedNode *expression = typed_program_node(
+            program, node->left_child);
+
+        if (expression != NULL && expression->kind == TYPED_PRINT) {
+            return emit_print_statement(program, expression, source, errors,
+                                        depth);
+        }
         /* The outer cast discards the expression's value so a store reset or
            write statement is warning-free under -Wall. */
         if (!append_indent(source, depth) ||
@@ -2443,7 +3301,7 @@ static bool program_uses_string_builder(const TypedProgram *program)
     for (i = 0; i < program->types.length; i++) {
         const TypedType *type = typed_program_type(program, i);
 
-        if (type != NULL && type->kind == NIPPY_TYPE_STRING_BUILDER) {
+        if (type != NULL && type->kind == NIPPY_TYPE_TEXT_BUILDER) {
             return true;
         }
     }
@@ -4026,6 +4884,1029 @@ static bool validate_store_declarations(const TypedProgram *program,
     return true;
 }
 
+
+static bool program_uses_print(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node != NULL && node->kind == TYPED_PRINT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool print_type_in_list(const List *types, size_t type_index)
+{
+    size_t i;
+
+    for (i = 0; i < types->length; i++) {
+        if (*(const size_t *)list_get(types, i) == type_index) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool collect_print_type(const TypedProgram *program, size_t type_index,
+                               List *types, unsigned depth, ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
+
+    if (type == NULL || depth == 0) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    if (print_type_in_list(types, type_index)) {
+        return true;
+    }
+    if (!list_push(types, &type_index)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    switch (type->kind) {
+    case NIPPY_TYPE_UNION:
+        for (i = 0; i < type->child_count; i++) {
+            size_t alternative = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!collect_print_type(program, alternative, types,
+                                    depth - 1, errors)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_STRUCT: {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+
+        if (declaration == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, declaration->children_start + i);
+            const TypedNode *field = typed_program_node(program, child);
+
+            if (field == NULL ||
+                !collect_print_type(program, field->type_index, types,
+                                    depth - 1, errors)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    case NIPPY_TYPE_ERROR:
+        for (i = 0; i < type->child_count; i++) {
+            size_t field = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!collect_print_type(program, field, types, depth - 1,
+                                    errors)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_RECORD:
+    case NIPPY_TYPE_TABLE:
+        if (type->child_count != 2) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+        for (i = 0; i < 2; i++) {
+            size_t part = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!collect_print_type(program, part, types, depth - 1,
+                                    errors)) {
+                return false;
+            }
+        }
+        return true;
+    case NIPPY_TYPE_LIST:
+    case NIPPY_TYPE_FIXED_LIST:
+    case NIPPY_TYPE_SLICE:
+        if (type->child_count != 1) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+        return collect_print_type(
+            program, *(const size_t *)list_get(&program->type_children,
+                                               type->first_child),
+            types, depth - 1, errors);
+    case NIPPY_TYPE_STORE:
+    case NIPPY_TYPE_UNKNOWN:
+    case NIPPY_TYPE_STRING_LITERAL:
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    default:
+        return true;
+    }
+}
+
+static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
+                              size_t type_index, ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    char c_type[NIPPY_IDENTIFIER_MAX + 32];
+    size_t i;
+
+    if (type == NULL ||
+        !format_c_type(program, type_index, c_type, sizeof(c_type), errors)) {
+        return false;
+    }
+    if (!buffer_appendf(source,
+                        "static void nippy_print_%zu(%s value, int depth)\n"
+                        "{\n"
+                        "    (void)value;\n"
+                        "    if (depth > %d) {\n"
+                        "        fputs(\"<...>\", stdout);\n"
+                        "        return;\n"
+                        "    }\n",
+                        type_index, c_type, program->max_print_depth)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    switch (type->kind) {
+    case NIPPY_TYPE_INT32:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"%d\", (int)value);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_BYTE:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"%u\", (unsigned)value);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_BOOL:
+        if (!buffer_append(source,
+                           "    fputs(value ? \"true\" : \"false\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_NIL:
+        if (!buffer_append(source, "    fputs(\"nil\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_FUNCTION:
+        if (!buffer_append(source, "    fputs(\"<function>\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_DYNAMIC_STRING:
+        if (!buffer_append(source,
+                           "    if (value.length != 0) {\n"
+                           "        fwrite(nippy_string_data(value), 1, "
+                           "value.length, stdout);\n"
+                           "    }\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_STRING:
+        if (!buffer_append(source,
+                           "    if (value.length != 0) {\n"
+                           "        fwrite(value.data, 1, value.length, "
+                           "stdout);\n"
+                           "    }\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_TEXT_BUILDER:
+        if (!buffer_append(source,
+                           "    nippy_builder_state *state = "
+                           "nippy_builder_get_state(value);\n"
+                           "    nippy_store *store = nippy_builder_store(value);\n"
+                           "    if (state->length != 0) {\n"
+                           "        fwrite(store->data + state->offset, 1, "
+                           "state->length, stdout);\n"
+                           "    }\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_HANDLE:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"<handle store=%u offset=%zu "
+                           "generation=%llu>\", value.store, value.offset, "
+                           "(unsigned long long)value.generation);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_STRUCT: {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+        const char *name = type->source_name_index == TYPED_NO_NODE
+                               ? "struct"
+                               : typed_program_symbol_text(
+                                     program, type->source_name_index);
+
+        if (declaration == NULL || name == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+        if (!buffer_appendf(source, "    fputs(\"%s { \", stdout);\n", name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, declaration->children_start + i);
+            const TypedNode *field = typed_program_node(program, child);
+            const char *field_name =
+                field == NULL
+                    ? NULL
+                    : typed_program_symbol_text(program, field->name_index);
+
+            if (field == NULL || field_name == NULL) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            if (!buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
+                                i == 0 ? "" : ", ", field_name) ||
+                !buffer_appendf(source,
+                                "    nippy_print_%zu(value.%s, depth + 1);\n",
+                                field->type_index, field_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_append(source, "    fputs(\" }\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    case NIPPY_TYPE_UNION:
+        if (!buffer_append(source, "    switch (value.tag) {\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 0; i < type->child_count; i++) {
+            size_t alternative = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+            const TypedType *alternative_type = typed_program_type(
+                program, alternative);
+
+            if (alternative_type == NULL) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            if (!buffer_appendf(source, "    case %zu:\n", i)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (alternative_type->kind == NIPPY_TYPE_NIL) {
+                if (!buffer_append(source,
+                                   "        fputs(\"nil\", stdout);\n")) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    return false;
+                }
+            } else if (!buffer_appendf(
+                           source,
+                           "        nippy_print_%zu(value.value.v%zu, "
+                           "depth + 1);\n",
+                           alternative, i)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            if (!buffer_append(source, "        break;\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_append(source,
+                           "    default:\n"
+                           "        fputs(\"<invalid union>\", stdout);\n"
+                           "        break;\n"
+                           "    }\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_ERROR: {
+        static const char *const names[] = {
+            "header", "description", "filename", "line", "col", "pos"
+        };
+
+        if (!buffer_append(source, "    fputs(\"Error(\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 0; i < type->child_count && i < 6; i++) {
+            size_t field = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (!buffer_appendf(source, "    fputs(\"%s\", stdout);\n",
+                                i == 0 ? "" : ", ") ||
+                !buffer_appendf(source,
+                                "    nippy_print_%zu(value.%s, depth + 1);\n",
+                                field, names[i])) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_appendf(source,
+                            "    fprintf(stdout, \", %%d, %%d, %%d\", "
+                            "(int)value.line, (int)value.col, (int)value.pos);\n"
+                            "    fputs(\")\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    case NIPPY_TYPE_FIXED_LIST: {
+        size_t element = *(const size_t *)list_get(&program->type_children,
+                                                   type->first_child);
+
+        if (!buffer_append(source,
+                           "    fputs(\"[\", stdout);\n"
+                           "    for (size_t i = 0; i < value.length; i++) {\n"
+                           "        if (i != 0) fputs(\", \", stdout);\n") ||
+            !buffer_appendf(source,
+                            "        nippy_print_%zu(value.data[i], "
+                            "depth + 1);\n",
+                            element) ||
+            !buffer_append(source,
+                           "    }\n"
+                           "    fputs(\"]\", stdout);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    case NIPPY_TYPE_LIST:
+    case NIPPY_TYPE_SLICE: {
+        size_t element = *(const size_t *)list_get(&program->type_children,
+                                                   type->first_child);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        const char *get = type->kind == NIPPY_TYPE_LIST
+                              ? "nippy_list_len(value)"
+                              : "nippy_slice_len(value)";
+        const char *data = type->kind == NIPPY_TYPE_LIST
+                               ? "nippy_list_data"
+                               : "nippy_slice_data";
+
+        if (!format_c_type(program, element, element_name,
+                           sizeof(element_name), errors)) {
+            return false;
+        }
+        if (!buffer_appendf(source,
+                            "    fputs(\"[\", stdout);\n"
+                            "    for (size_t i = 0; i < (size_t)%s; i++) {\n"
+                            "        if (i != 0) fputs(\", \", stdout);\n"
+                            "        nippy_print_%zu(*(%s *)%s(value, i, "
+                            "sizeof(%s)), depth + 1);\n"
+                            "    }\n"
+                            "    fputs(\"]\", stdout);\n",
+                            get, element, element_name, data, element_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    case NIPPY_TYPE_RECORD: {
+        size_t key_type = *(const size_t *)list_get(&program->type_children,
+                                                    type->first_child);
+        size_t value_type = *(const size_t *)list_get(
+            &program->type_children, type->first_child + 1);
+        size_t buckets = type->fixed_length == 0 ? 1 : type->fixed_length + 1;
+
+        if (!buffer_append(source,
+                           "    fputs(\"{\", stdout);\n"
+                           "    size_t count = 0;\n"
+                           "    for (size_t i = 0; i < ") ||
+            !buffer_appendf(source, "%zu", buckets) ||
+            !buffer_append(source,
+                           "; i++) {\n"
+                           "        if (value.states[i] != 1) continue;\n"
+                           "        if (count++ != 0) fputs(\", \", stdout);\n") ||
+            !buffer_appendf(source, "        nippy_print_%zu(value.keys[i], "
+                                    "depth + 1);\n"
+                                    "        fputs(\": \", stdout);\n"
+                                    "        nippy_print_%zu(value.values[i], "
+                                    "depth + 1);\n"
+                                    "    }\n"
+                                    "    fputs(\"}\", stdout);\n",
+                            key_type, value_type)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    case NIPPY_TYPE_TABLE: {
+        size_t key_type = *(const size_t *)list_get(&program->type_children,
+                                                    type->first_child);
+        size_t value_type = *(const size_t *)list_get(
+            &program->type_children, type->first_child + 1);
+        char key_name[64];
+        char value_name[64];
+
+        if (!format_c_type(program, key_type, key_name, sizeof(key_name),
+                           errors) ||
+            !format_c_type(program, value_type, value_name,
+                           sizeof(value_name), errors)) {
+            return false;
+        }
+        if (!buffer_appendf(source,
+            "    nippy_table_state_%zu *state = nippy_table_%zu_state(value);\n"
+            "    nippy_store *store = &nippy_stores[value.store];\n"
+            "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
+            "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
+            "    uint8_t *states = (uint8_t *)(void *)(store->data + "
+            "state->states_offset);\n"
+            "    fputs(\"{\", stdout);\n"
+            "    size_t count = 0;\n"
+            "    for (size_t i = 0; i < state->buckets; i++) {\n"
+            "        if (states[i] != 1) continue;\n"
+            "        if (count++ != 0) fputs(\", \", stdout);\n"
+            "        nippy_print_%zu(keys[i], depth + 1);\n"
+            "        fputs(\": \", stdout);\n"
+            "        nippy_print_%zu(values[i], depth + 1);\n"
+            "    }\n"
+            "    fputs(\"}\", stdout);\n",
+            type_index, type_index, key_name, key_name, value_name,
+            value_name, key_type, value_type)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    }
+    default:
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    if (!buffer_append(source, "}\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_print_helpers(const TypedProgram *program, TextBuffer *source,
+                               ErrorState *errors)
+{
+    List types;
+    size_t i;
+    bool ok = true;
+
+    list_init(&types, sizeof(size_t));
+    for (i = 0; i < program->nodes.length && ok; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node == NULL || node->kind != TYPED_PRINT) {
+            continue;
+        }
+        for (size_t j = 0; j < node->children_count; j++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, node->children_start + j);
+            const TypedNode *argument = typed_program_node(program, child);
+
+            if (argument == NULL ||
+                !collect_print_type(program, argument->type_index, &types,
+                                    32, errors)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (ok) {
+        for (i = 0; i < types.length; i++) {
+            size_t type_index = *(const size_t *)list_get(&types, i);
+            char c_type[NIPPY_IDENTIFIER_MAX + 32];
+
+            if (!format_c_type(program, type_index, c_type,
+                               sizeof(c_type), errors) ||
+                !buffer_appendf(source,
+                                "static void nippy_print_%zu(%s value, int "
+                                "depth);\n",
+                                type_index, c_type)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                ok = false;
+                break;
+            }
+        }
+    }
+    for (i = 0; ok && i < types.length; i++) {
+        size_t type_index = *(const size_t *)list_get(&types, i);
+
+        if (!emit_print_helper(source, program, type_index, errors)) {
+            ok = false;
+        }
+    }
+    if (ok && types.length > 0 &&
+        !buffer_append(source, "\n")) {
+        ok = false;
+    }
+    list_free(&types);
+    return ok;
+}
+
+static bool emit_print_statement(const TypedProgram *program,
+                                 const TypedNode *node, TextBuffer *source,
+                                 ErrorState *errors, size_t depth)
+{
+    size_t i;
+
+    if (!append_indent(source, depth) ||
+        !buffer_append(source, "{\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &program->children, node->children_start + i);
+        const TypedNode *argument = typed_program_node(program, child);
+        char c_type[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (argument == NULL ||
+            !format_c_type(program, argument->type_index, c_type,
+                           sizeof(c_type), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "%s nippy_print_arg_%zu_%zu = ",
+                            c_type, node->pos.offset, i) ||
+            !emit_expression(program, child, source, errors) ||
+            !buffer_append(source, ";\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        if (i != 0) {
+            if (!append_indent(source, depth + 1) ||
+                !buffer_append(source, "fputc(' ', stdout);\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!append_indent(source, depth + 1) ||
+            !buffer_appendf(source,
+                            "nippy_print_%zu(nippy_print_arg_%zu_%zu, 0);\n",
+                            argument->type_index, node->pos.offset, i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+    }
+    if (!append_indent(source, depth + 1) ||
+        !buffer_append(source, "fputc('\\n', stdout);\n") ||
+        !append_indent(source, depth) ||
+        !buffer_append(source, "}\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+
+static bool map_key_names(const TypedProgram *program, size_t key_type,
+                          size_t value_type, char *key_name, size_t key_size,
+                          char *value_name, size_t value_size,
+                          ErrorState *errors)
+{
+    return format_c_type(program, key_type, key_name, key_size, errors) &&
+           format_c_type(program, value_type, value_name, value_size, errors);
+}
+
+static bool emit_record_runtime(const TypedProgram *program, size_t type_index,
+                                const TypedType *type, TextBuffer *source,
+                                ErrorState *errors)
+{
+    size_t key_type = *(const size_t *)list_get(&program->type_children,
+                                                type->first_child);
+    size_t value_type = *(const size_t *)list_get(
+        &program->type_children, type->first_child + 1);
+    char key_name[64];
+    char value_name[64];
+    char record_name[64];
+    size_t capacity = type->fixed_length;
+    size_t buckets = capacity == 0 ? 1 : capacity + 1;
+
+    if (!map_key_names(program, key_type, value_type, key_name,
+                       sizeof(key_name), value_name, sizeof(value_name),
+                       errors) ||
+        !format_c_type(program, type_index, record_name, sizeof(record_name),
+                       errors)) {
+        return false;
+    }
+    if (!buffer_appendf(source,
+        "static uint64_t nippy_record_%zu_hash(%s key)\n"
+        "{\n"
+        "    uint64_t h = 14695981039346656037ULL;\n"
+        "    for (size_t i = 0; i < key.length; i++) {\n"
+        "        h ^= key.data[i];\n"
+        "        h *= 1099511628211ULL;\n"
+        "    }\n"
+        "    return h;\n"
+        "}\n\n"
+        "static bool nippy_record_%zu_eq(%s a, %s b)\n"
+        "{\n"
+        "    return a.length == b.length &&\n"
+        "           memcmp(a.data, b.data, a.length) == 0;\n"
+        "}\n\n"
+        "static size_t nippy_record_%zu_find(const %s *r, %s key)\n"
+        "{\n"
+        "    size_t start = (size_t)(nippy_record_%zu_hash(key) %% %zu);\n"
+        "    for (size_t p = 0; p < %zu; p++) {\n"
+        "        size_t i = (start + p) %% %zu;\n"
+        "        if (r->states[i] == 0) return SIZE_MAX;\n"
+        "        if (r->states[i] == 1 && nippy_record_%zu_eq(r->keys[i], key)) "
+        "return i;\n"
+        "    }\n"
+        "    return SIZE_MAX;\n"
+        "}\n\n"
+        "static bool nippy_record_%zu_get(const %s *r, %s key, %s *out)\n"
+        "{\n"
+        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    if (i == SIZE_MAX) return false;\n"
+        "    *out = r->values[i];\n"
+        "    return true;\n"
+        "}\n\n"
+        "static bool nippy_record_%zu_has(const %s *r, %s key)\n"
+        "{\n"
+        "    return nippy_record_%zu_find(r, key) != SIZE_MAX;\n"
+        "}\n\n"
+        "static int32_t nippy_record_%zu_len(const %s *r)\n"
+        "{\n"
+        "    return (int32_t)r->length;\n"
+        "}\n\n"
+        "static void nippy_record_%zu_set(%s *r, %s key, %s value)\n"
+        "{\n"
+        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    if (i != SIZE_MAX) { r->values[i] = value; return; }\n"
+        "    if (r->length >= %zu) nippy_map_fail(\"%s\");\n"
+        "    size_t start = (size_t)(nippy_record_%zu_hash(key) %% %zu);\n"
+        "    for (size_t p = 0; p < %zu; p++) {\n"
+        "        size_t j = (start + p) %% %zu;\n"
+        "        if (r->states[j] != 1) {\n"
+        "            r->keys[j] = key;\n"
+        "            r->values[j] = value;\n"
+        "            r->states[j] = 1;\n"
+        "            r->length++;\n"
+        "            return;\n"
+        "        }\n"
+        "    }\n"
+        "    nippy_map_fail(\"%s\");\n"
+        "}\n\n"
+        "static bool nippy_record_%zu_remove(%s *r, %s key)\n"
+        "{\n"
+        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    if (i == SIZE_MAX) return false;\n"
+        "    r->states[i] = 2;\n"
+        "    r->length--;\n"
+        "    return true;\n"
+        "}\n\n"
+        "static %s nippy_record_%zu_get_required(const %s *r, %s key)\n"
+        "{\n"
+        "    %s out;\n"
+        "    if (!nippy_record_%zu_get(r, key, &out)) "
+        "nippy_map_fail(\"%s\");\n"
+        "    return out;\n"
+        "}\n\n"
+        "static %s nippy_record_%zu_literal(%s *keys, %s *values, size_t n)\n"
+        "{\n"
+        "    %s r = {0};\n"
+        "    for (size_t i = 0; i < n; i++) "
+        "nippy_record_%zu_set(&r, keys[i], values[i]);\n"
+        "    return r;\n"
+        "}\n\n",
+        type_index, key_name,
+        type_index, key_name, key_name,
+        type_index, record_name, key_name,
+        type_index, buckets, buckets, buckets, type_index,
+        type_index, record_name, key_name, value_name, type_index,
+        type_index, record_name, key_name, type_index,
+        type_index, record_name,
+        type_index, record_name, key_name, value_name, type_index,
+        capacity, MESSAGE_RUNTIME_RECORD_FULL,
+        type_index, buckets, buckets, buckets,
+        MESSAGE_RUNTIME_RECORD_FULL,
+        type_index, record_name, key_name, type_index,
+        value_name, type_index, record_name, key_name,
+        value_name, type_index, MESSAGE_RUNTIME_MAP_MISSING,
+        record_name, type_index, key_name, value_name,
+        record_name, type_index)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
+                             TextBuffer *source, ErrorState *errors)
+{
+    size_t i;
+    bool map_helpers = false;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL && (type->kind == NIPPY_TYPE_RECORD ||
+                             type->kind == NIPPY_TYPE_TABLE)) {
+            map_helpers = true;
+        }
+    }
+    if (!map_helpers) {
+        return true;
+    }
+    if (!buffer_append(source,
+        "static void nippy_map_fail(const char *message)\n"
+        "{\n"
+        "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    (void)store_count;
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type == NULL || type->kind != NIPPY_TYPE_RECORD) {
+            continue;
+        }
+        if (!emit_record_runtime(program, i, type, source, errors)) {
+            return false;
+        }
+    }
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+        size_t key_type;
+        size_t value_type;
+        char key_name[64];
+        char value_name[64];
+
+        if (type == NULL || type->kind != NIPPY_TYPE_TABLE) {
+            continue;
+        }
+        key_type = *(const size_t *)list_get(&program->type_children,
+                                             type->first_child);
+        value_type = *(const size_t *)list_get(&program->type_children,
+                                               type->first_child + 1);
+        if (!map_key_names(program, key_type, value_type, key_name,
+                           sizeof(key_name), value_name, sizeof(value_name),
+                           errors)) {
+            return false;
+        }
+        if (!buffer_appendf(source,
+            "typedef struct {\n"
+            "    size_t buckets;\n"
+            "    size_t length;\n"
+            "    size_t capacity;\n"
+            "    size_t keys_offset;\n"
+            "    size_t values_offset;\n"
+            "    size_t states_offset;\n"
+            "} nippy_table_state_%zu;\n\n"
+            "static uint64_t nippy_table_%zu_hash(%s key)\n"
+            "{\n"
+            "    uint64_t h = 14695981039346656037ULL;\n"
+            "    for (size_t i = 0; i < key.length; i++) {\n"
+            "        h ^= key.data[i];\n"
+            "        h *= 1099511628211ULL;\n"
+            "    }\n"
+            "    return h;\n"
+            "}\n\n"
+            "static bool nippy_table_%zu_eq(%s a, %s b)\n"
+            "{\n"
+            "    return a.length == b.length &&\n"
+            "           memcmp(a.data, b.data, a.length) == 0;\n"
+            "}\n\n"
+            "static nippy_table_state_%zu *nippy_table_%zu_state(nippy_table t)\n"
+            "{\n"
+            "    nippy_store *store;\n"
+            "    if (t.store >= (uint32_t)NIPPY_STORE_COUNT) "
+            "nippy_map_fail(\"%s\");\n"
+            "    store = &nippy_stores[t.store];\n"
+            "    if (store->generation != t.generation) "
+            "nippy_map_fail(\"%s\");\n"
+            "    if (t.offset > store->used ||\n"
+            "        sizeof(nippy_table_state_%zu) > store->used - t.offset) "
+            "nippy_map_fail(\"%s\");\n"
+            "    return (nippy_table_state_%zu *)(void *)(store->data + "
+            "t.offset);\n"
+            "}\n\n",
+            i, i, key_name, i, key_name, key_name,
+            i, i, MESSAGE_RUNTIME_STORE_RANGE, MESSAGE_RUNTIME_STALE_HANDLE,
+            i, MESSAGE_RUNTIME_HANDLE_BOUNDS, i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        /* The real finder needs the descriptor's store; use a helper with the
+           descriptor so it can locate both the state and the arrays. */
+        if (!buffer_appendf(source,
+            "static size_t nippy_table_%zu_find_in(nippy_table t, "
+            "nippy_table_state_%zu *s, %s key)\n"
+            "{\n"
+            "    nippy_store *store = &nippy_stores[t.store];\n"
+            "    %s *keys = (%s *)(void *)(store->data + s->keys_offset);\n"
+            "    uint8_t *states = (uint8_t *)(void *)(store->data + "
+            "s->states_offset);\n"
+            "    size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "s->buckets);\n"
+            "    for (size_t p = 0; p < s->buckets; p++) {\n"
+            "        size_t j = (start + p) %% s->buckets;\n"
+            "        if (states[j] == 0) return SIZE_MAX;\n"
+            "        if (states[j] == 1 && nippy_table_%zu_eq(keys[j], key)) "
+            "return j;\n"
+            "    }\n"
+            "    return SIZE_MAX;\n"
+            "}\n\n",
+            i, i, key_name, key_name, key_name, i, i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!buffer_appendf(source,
+            "static bool nippy_table_%zu_get(nippy_table t, %s key, %s *out)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s = nippy_table_%zu_state(t);\n"
+            "    nippy_store *store = &nippy_stores[t.store];\n"
+            "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
+            "    size_t p = nippy_table_%zu_find_in(t, s, key);\n"
+            "    if (p == SIZE_MAX) return false;\n"
+            "    *out = values[p];\n"
+            "    return true;\n"
+            "}\n\n"
+            "static bool nippy_table_%zu_has(nippy_table t, %s key)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s = nippy_table_%zu_state(t);\n"
+            "    return nippy_table_%zu_find_in(t, s, key) != SIZE_MAX;\n"
+            "}\n\n"
+            "static int32_t nippy_table_%zu_len(nippy_table t)\n"
+            "{\n"
+            "    return (int32_t)nippy_table_%zu_state(t)->length;\n"
+            "}\n\n",
+            i, key_name, value_name, i, i, value_name, value_name, i,
+            i, key_name, i, i, i, i, i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!buffer_appendf(source,
+            "static void nippy_table_%zu_grow(nippy_table *t)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
+            "    nippy_store *store = &nippy_stores[t->store];\n"
+            "    size_t old_buckets = s->buckets;\n"
+            "    size_t old_length = s->length;\n"
+            "    size_t old_keys = s->keys_offset;\n"
+            "    size_t old_values = s->values_offset;\n"
+            "    size_t old_states = s->states_offset;\n"
+            "    size_t new_capacity = s->capacity == 0 ? 1 : s->capacity * 2;\n"
+            "    size_t new_buckets = new_capacity * 2 + 1;\n"
+            "    size_t new_keys = nippy_store_alloc_bytes_aligned(store, "
+            "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
+            "    size_t new_values = nippy_store_alloc_bytes_aligned(store, "
+            "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
+            "    size_t new_states = nippy_store_alloc_bytes_aligned(store, "
+            "t->store, new_buckets, 1);\n"
+            "    %s *keys;\n"
+            "    %s *values;\n"
+            "    uint8_t *states;\n"
+            "    memset(store->data + new_states, 0, new_buckets);\n"
+            "    s = nippy_table_%zu_state(*t);\n"
+            "    keys = (%s *)(void *)(store->data + new_keys);\n"
+            "    values = (%s *)(void *)(store->data + new_values);\n"
+            "    states = (uint8_t *)(void *)(store->data + new_states);\n"
+            "    for (size_t i = 0; i < old_buckets; i++) {\n"
+            "        uint8_t *old_state = (uint8_t *)(void *)(store->data + "
+            "old_states);\n"
+            "        if (old_state[i] != 1) continue;\n"
+            "        %s key = *(%s *)(void *)(store->data + old_keys + "
+            "i * sizeof(%s));\n"
+            "        %s value = *(%s *)(void *)(store->data + old_values + "
+            "i * sizeof(%s));\n"
+            "        size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "new_buckets);\n"
+            "        for (size_t p = 0; p < new_buckets; p++) {\n"
+            "            size_t j = (start + p) %% new_buckets;\n"
+            "            if (states[j] == 0) {\n"
+            "                keys[j] = key; values[j] = value; states[j] = 1; "
+            "break;\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "    s->buckets = new_buckets;\n"
+            "    s->capacity = new_capacity;\n"
+            "    s->length = old_length;\n"
+            "    s->keys_offset = new_keys;\n"
+            "    s->values_offset = new_values;\n"
+            "    s->states_offset = new_states;\n"
+            "}\n\n"
+            "static void nippy_table_%zu_set(nippy_table *t, %s key, %s value)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
+            "    size_t p = nippy_table_%zu_find_in(*t, s, key);\n"
+            "    if (p != SIZE_MAX) {\n"
+            "        nippy_store *store = &nippy_stores[t->store];\n"
+            "        %s *values = (%s *)(void *)(store->data + "
+            "s->values_offset);\n"
+            "        values[p] = value;\n"
+            "        return;\n"
+            "    }\n"
+            "    if (s->length >= s->capacity) { nippy_table_%zu_grow(t); "
+            "s = nippy_table_%zu_state(*t); }\n"
+            "    nippy_store *store = &nippy_stores[t->store];\n"
+            "    %s *keys = (%s *)(void *)(store->data + s->keys_offset);\n"
+            "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
+            "    uint8_t *states = (uint8_t *)(void *)(store->data + "
+            "s->states_offset);\n"
+            "    size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "s->buckets);\n"
+            "    for (size_t q = 0; q < s->buckets; q++) {\n"
+            "        size_t j = (start + q) %% s->buckets;\n"
+            "        if (states[j] != 1) {\n"
+            "            keys[j] = key; values[j] = value; states[j] = 1;\n"
+            "            s->length++;\n"
+            "            return;\n"
+            "        }\n"
+            "    }\n"
+            "    nippy_map_fail(\"%s\");\n"
+            "}\n\n",
+            i, i, i, key_name, key_name, value_name, value_name, key_name,
+            value_name, i, key_name, value_name, key_name, key_name,
+            key_name, value_name, value_name, value_name, i,
+            i, key_name, value_name, i, i, i, value_name, value_name,
+            i, i, key_name, key_name, value_name, value_name, i,
+            MESSAGE_RUNTIME_RECORD_FULL)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!buffer_appendf(source,
+            "static bool nippy_table_%zu_remove(nippy_table *t, %s key)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
+            "    size_t p = nippy_table_%zu_find_in(*t, s, key);\n"
+            "    nippy_store *store;\n"
+            "    uint8_t *states;\n"
+            "    if (p == SIZE_MAX) return false;\n"
+            "    store = &nippy_stores[t->store];\n"
+            "    states = (uint8_t *)(void *)(store->data + s->states_offset);\n"
+            "    states[p] = 2;\n"
+            "    s->length--;\n"
+            "    return true;\n"
+            "}\n\n"
+            "static %s nippy_table_%zu_get_required(nippy_table t, %s key)\n"
+            "{\n"
+            "    %s out;\n"
+            "    if (!nippy_table_%zu_get(t, key, &out)) "
+            "nippy_map_fail(\"%s\");\n"
+            "    return out;\n"
+            "}\n\n"
+            "static nippy_table nippy_table_%zu_create(nippy_store *store, "
+            "uint32_t id, int32_t cap)\n"
+            "{\n"
+            "    nippy_table_state_%zu *s;\n"
+            "    nippy_table result;\n"
+            "    size_t capacity = cap < 0 ? 0 : (size_t)cap;\n"
+            "    size_t buckets = capacity == 0 ? 1 : capacity * 2 + 1;\n"
+            "    size_t state_offset = nippy_store_alloc_bytes_aligned(store, "
+            "id, sizeof(nippy_table_state_%zu), _Alignof(nippy_table_state_%zu));\n"
+            "    size_t keys_offset = nippy_store_alloc_bytes_aligned(store, "
+            "id, sizeof(%s) * buckets, _Alignof(%s));\n"
+            "    size_t values_offset = nippy_store_alloc_bytes_aligned(store, "
+            "id, sizeof(%s) * buckets, _Alignof(%s));\n"
+            "    size_t states_offset = nippy_store_alloc_bytes_aligned(store, "
+            "id, buckets, 1);\n"
+            "    memset(store->data + states_offset, 0, buckets);\n"
+            "    s = (nippy_table_state_%zu *)(void *)(store->data + "
+            "state_offset);\n"
+            "    s->buckets = buckets;\n"
+            "    s->length = 0;\n"
+            "    s->capacity = capacity;\n"
+            "    s->keys_offset = keys_offset;\n"
+            "    s->values_offset = values_offset;\n"
+            "    s->states_offset = states_offset;\n"
+            "    result.store = id;\n"
+            "    result.offset = state_offset;\n"
+            "    result.generation = store->generation;\n"
+            "    return result;\n"
+            "}\n\n",
+            i, key_name, i, i, i, value_name, i, key_name, value_name, i,
+            MESSAGE_RUNTIME_MAP_MISSING, i, i, i, i, key_name, key_name,
+            value_name, value_name, i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool generator_generate(const TypedProgram *program, const char *header_name,
                         const char *source_name, char **c_source,
                         char **h_source, ErrorState *errors)
@@ -4044,6 +5925,9 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool uses_list;
     bool uses_dynamic_list;
     bool uses_slice;
+    bool uses_print;
+    bool uses_map;
+    bool uses_table;
     size_t store_count;
     size_t i;
     bool ok = false;
@@ -4075,6 +5959,24 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     uses_list = program_uses_list(program);
     uses_dynamic_list = program_uses_dynamic_list(program);
     uses_slice = program_uses_slice(program);
+    uses_print = program_uses_print(program);
+    uses_map = false;
+    uses_table = false;
+    {
+        size_t type_i;
+
+        for (type_i = 0; type_i < program->types.length; type_i++) {
+            const TypedType *type = typed_program_type(program, type_i);
+
+            if (type != NULL && type->kind == NIPPY_TYPE_RECORD) {
+                uses_map = true;
+            }
+            if (type != NULL && type->kind == NIPPY_TYPE_TABLE) {
+                uses_map = true;
+                uses_table = true;
+            }
+        }
+    }
 
     if (!buffer_append(&header,
                        "#ifndef NIPPY_GENERATED_H\n"
@@ -4092,6 +5994,10 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         }
     }
     if (!buffer_append(&header, "\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        goto done;
+    }
+    if (uses_map && !buffer_append(&header, "#include <stddef.h>\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
@@ -4140,7 +6046,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             single_var = node;
         } else if (node->kind == TYPED_EXPRESSION_STATEMENT) {
             has_expression_statement = true;
-        } else if (node->kind == TYPED_ASSIGNMENT) {
+        } else if (node->kind == TYPED_ASSIGNMENT ||
+                   node->kind == TYPED_RECORD_SET ||
+                   node->kind == TYPED_TABLE_SET ||
+                   node->kind == TYPED_FOR ||
+                   node->kind == TYPED_IF) {
             /* An assignment changes the printed value instead of replacing the
                program-value entry point. */
         } else if (node->kind != TYPED_FUNCTION_DECLARATION) {
@@ -4175,7 +6085,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         goto done;
     }
     if (store_count > 0 || program_uses_string(program) ||
-        uses_dynamic_string || uses_list || uses_slice) {
+        uses_dynamic_string || uses_list || uses_slice || uses_print ||
+        uses_map) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
@@ -4201,7 +6112,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     if (store_count > 0 &&
         !emit_store_runtime(&source, store_count, uses_dynamic_string,
-                            uses_dynamic_list, errors)) {
+                            uses_dynamic_list || uses_table, errors)) {
         goto done;
     }
     if (program_uses_string(program) &&
@@ -4226,6 +6137,12 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     if (uses_slice && uses_dynamic_list && store_count > 0 &&
         !emit_slice_runtime(&source, errors)) {
+        goto done;
+    }
+    if (uses_map && !emit_map_runtime(program, store_count, &source, errors)) {
+        goto done;
+    }
+    if (uses_print && !emit_print_helpers(program, &source, errors)) {
         goto done;
     }
 
@@ -4262,7 +6179,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                 goto done;
             }
             if ((node->kind == TYPED_EXPRESSION_STATEMENT ||
-                 node->kind == TYPED_ASSIGNMENT) &&
+                 node->kind == TYPED_ASSIGNMENT ||
+                 node->kind == TYPED_RECORD_SET ||
+                 node->kind == TYPED_TABLE_SET ||
+                 node->kind == TYPED_FOR ||
+                 node->kind == TYPED_IF) &&
                 !emit_statement(program, root, 1, effective_source, &source,
                                 errors)) {
                 goto done;

@@ -96,7 +96,7 @@ program where a scoped handle can be used after its arena has died.
   limited form of block-scoped bindings; see “Prerequisites”.
 - A general borrow checker.
 - Concurrent access to a shared arena.
-- A dynamic `String` implementation. Strings are fixed/inline today; a future
+- A dynamic `Text` implementation. Strings are fixed/inline today; a future
   arena-backed string would carry the same scope region.
 
 ## Programs this model does not serve
@@ -297,7 +297,7 @@ worked examples below:
 
 1. **`borrow Store` parameters.** Parsers, formatters, and allocator helpers must
    be able to allocate into a caller’s arena.
-2. **Region-polymorphic returns.** A helper that allocates a `String` or AST in
+2. **Region-polymorphic returns.** A helper that allocates a `Text` or AST in
    the caller’s arena must return a value tied to that arena’s region.
 3. **Region propagation through aggregates.** `Context`, AST nodes, records, and
    game state naturally contain handles and borrows.
@@ -610,8 +610,8 @@ A function cannot allocate into a caller’s scoped arena by accident. It needs 
 capability parameter:
 
 ```nippy
-fun parse_request(arena: borrow Store, raw: String): Request
-  var path: String = string_copy(borrow arena, ...)
+fun parse_request(arena: borrow Store, raw: Text): Request
+  var path: Text = string_copy(borrow arena, ...)
   return Request("GET", path, raw)
 end
 ```
@@ -689,7 +689,7 @@ Under those assumptions the model can guarantee:
 
 This is a memory-safe language subset in the Rust sense: accepted safe programs
 do not have undefined behaviour. It is not “all checks happen at compile time.”
-Dynamic indexing such as `String.byte_at(i)` and future `Buffer`/slice indexing
+Dynamic indexing such as `Text.byte_at(i)` and future `Buffer`/slice indexing
 still needs a runtime bounds check, which panics rather than corrupts memory.
 Rust does the same for dynamic indexing.
 
@@ -914,7 +914,7 @@ Scoped stores are visible only inside their block. A function that must allocate
 into a scoped store receives `borrow Store`:
 
 ```nippy
-fun parse_request(arena: borrow Store, raw: String): Request
+fun parse_request(arena: borrow Store, raw: Text): Request
   ...
 end
 ```
@@ -960,7 +960,7 @@ is not a separate tier.
 ## Worked examples and findings
 
 These examples are target code under the proposal, not current compiler syntax.
-They assume block-scoped locals, arena-backed `String`, field access, `borrow
+They assume block-scoped locals, arena-backed `Text`, field access, `borrow
 Store`, and region-polymorphic helpers.
 
 ### 1. CLI log analyzer
@@ -969,14 +969,14 @@ A file gets one arena for aggregates; each line gets a short-lived arena for
 parsing scratch.
 
 ```nippy
-fun analyze(path: String): Nil
+fun analyze(path: Text): Nil
   scope file_arena = Store(1024 * 1024) do
     var stats: Handle<Stats> = file_arena.alloc<Stats>(Stats(0, 0, nil))
     var file: File = open_file(path)
 
     while has_line(file)
       scope line_arena = Store(4096) do
-        var line: String = read_line(file, borrow line_arena)
+        var line: Text = read_line(file, borrow line_arena)
         var fields: LineFields = parse_log_line(borrow line_arena, line)
 
         var s: Stats = stats.read()
@@ -1009,9 +1009,9 @@ A document arena owns the AST, strings, and parser state. The parser is a
 helper that allocates into the caller’s arena and returns a handle tied to it.
 
 ```nippy
-fun load_config(path: String): Nil
+fun load_config(path: Text): Nil
   scope doc = Store(256 * 1024) do
-    var source: String = read_text_file(borrow doc, path)
+    var source: Text = read_text_file(borrow doc, path)
     var parsed: Handle<Json> | Error = parse_json(borrow doc, source)
 
     if parsed.is<Error>() then
@@ -1032,7 +1032,7 @@ arena-backed strings.
 Rejected:
 
 ```nippy
-fun load_config(path: String): Config
+fun load_config(path: Text): Config
   scope doc = Store(256 * 1024) do
     return decode_config(...) // error: Config contains doc-region strings
   end
@@ -1042,7 +1042,7 @@ end
 To return a document, the caller must supply the arena:
 
 ```nippy
-fun load_document(arena: borrow Store, path: String): Handle<Json> | Error
+fun load_document(arena: borrow Store, path: Text): Handle<Json> | Error
 ```
 
 Finding: recursive ASTs make region-polymorphic returns and aggregate
@@ -1055,7 +1055,7 @@ Each image gets an arena for its encoded bytes, decoded pixels, and resized
 output. C decoding/encoding functions operate on arena-backed buffers.
 
 ```nippy
-fun process_image(input: String, output: String): Nil
+fun process_image(input: Text, output: Text): Nil
   scope image_arena = Store(8 * 1024 * 1024) do
     var encoded: Buffer = read_file(borrow image_arena, input)
     var img: Image = decode_image(borrow image_arena, encoded)
@@ -1079,7 +1079,7 @@ buffers.
 
 1. **Store capabilities are required.** Parsers, formatters, and allocators must
    allocate into a caller’s arena and return values tied to it.
-2. **Region-polymorphic returns are required.** Helpers returning `String`,
+2. **Region-polymorphic returns are required.** Helpers returning `Text`,
    `Handle<Json>`, or a record in the caller’s region are the normal shape.
 3. **Aggregate propagation is required.** `Context`, AST nodes, stats records,
    and game state contain scoped handles or arena borrows.

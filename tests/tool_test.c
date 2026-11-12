@@ -260,7 +260,7 @@ TestResult test_runtime_union_narrowing(void)
         "end\n"
         "\n"
         "fun unwrap(v: Int32 | Nil): Int32\n"
-        "  if v.is<Int32>() then\n"
+        "  if typeof v is Int32 then\n"
         "    return v\n"
         "  end\n"
         "  return 0\n"
@@ -536,9 +536,9 @@ static const char *const oom_source =
     "end\n"
     "\n"
     "fun classify(x: Int32 | Bool | Nil): Int32\n"
-    "  if x.is<Int32>() then\n"
+    "  if typeof x is Int32 then\n"
     "    return x\n"
-    "  elseif x.is<Bool>() then\n"
+    "  elseif typeof x is Bool then\n"
     "    if x then return 1 else return 0 end\n"
     "  end\n"
     "  return 0\n"
@@ -921,7 +921,7 @@ TestResult test_runtime_string_union(void)
 {
     const char *source =
         "fun len_or_zero(u: String<16> | Nil): Int32\n"
-        "  if u.is<String<16>>() then\n"
+        "  if typeof u is String<16> then\n"
         "    return u.byte_len()\n"
         "  end\n"
         "  return 0\n"
@@ -935,7 +935,7 @@ TestResult test_runtime_error_fields(void)
 {
     const char *source =
         "fun describe(e: Error | Nil): Int32\n"
-        "  if e.is<Error>() then\n"
+        "  if typeof e is Error then\n"
         "    return e.line()\n"
         "  end\n"
         "  return 0\n"
@@ -968,7 +968,7 @@ TestResult test_runtime_string_in_store(void)
         "var arena: Store = Store(32)\n"
         "var n: Int32 = len_of(arena.alloc<String<16>>(\"hi\"))\n";
 
-    return run_generated(source, "2\n", "String in a store");
+    return run_generated(source, "2\n", "Text in a store");
 }
 
 
@@ -1009,9 +1009,9 @@ TestResult test_runtime_assignment_union_narrowing(void)
 {
     const char *source =
         "fun check(x: Int32 | Bool): Int32\n"
-        "  if x.is<Int32>() then\n"
+        "  if typeof x is Int32 then\n"
         "    x = true\n"
-        "    if x.is<Bool>() then\n"
+        "    if typeof x is Bool then\n"
         "      return 1\n"
         "    end\n"
         "  end\n"
@@ -1120,11 +1120,11 @@ TestResult test_runtime_assignment_nested_narrowing(void)
 {
     const char *source =
         "fun check(x: Int32 | Bool, y: Int32 | Bool): Int32\n"
-        "  if x.is<Int32>() then\n"
-        "    if y.is<Int32>() then\n"
+        "  if typeof x is Int32 then\n"
+        "    if typeof y is Int32 then\n"
         "      x = true\n"
         "      y = true\n"
-        "      if x.is<Bool>() && y.is<Bool>() then\n"
+        "      if typeof x is Bool && typeof y is Bool then\n"
         "        return 1\n"
         "      end\n"
         "    end\n"
@@ -1142,7 +1142,7 @@ TestResult test_runtime_assignment_union(void)
     const char *source =
         "fun set(u: Int32 | Bool): Int32\n"
         "  u = true\n"
-        "  if u.is<Bool>() then\n"
+        "  if typeof u is Bool then\n"
         "    return 1\n"
         "  end\n"
         "  return 0\n"
@@ -1170,13 +1170,13 @@ TestResult test_runtime_dynamic_strings(void)
 {
     const char *source =
         "global arena: Store = Store(256)\n"
-        "fun len(s: String): Int32\n"
+        "fun len(s: Text): Int32\n"
         "  return s.byte_len()\n"
         "end\n"
         "fun fixed_len(f: String<8>): Int32\n"
-        "  return arena.string(f).byte_len()\n"
+        "  return arena.text(f).byte_len()\n"
         "end\n"
-        "fun is_world(s: String): Int32\n"
+        "fun is_world(s: Text): Int32\n"
         "  if s.slice(6, 5) == \"world\" then\n"
         "    return 1\n"
         "  end\n"
@@ -1191,23 +1191,11 @@ TestResult test_runtime_dynamic_strings(void)
     return run_generated(source, "21\n", "dynamic strings");
 }
 
-TestResult test_runtime_dynamic_string_in_handle(void)
-{
-    const char *source =
-        "global arena: Store = Store(64)\n"
-        "fun first(h: Handle<String>): Int32\n"
-        "  return h.read().byte_len()\n"
-        "end\n"
-        "var n: Int32 = first(arena.alloc<String>(\"hi\"))\n";
-
-    return run_generated(source, "2\n", "dynamic String in a handle");
-}
-
 TestResult test_runtime_dynamic_string_stale(void)
 {
     const char *source =
         "global arena: Store = Store(16)\n"
-        "var s: String = arena.copy(\"hi\")\n"
+        "var s: Text = arena.copy(\"hi\")\n"
         "arena.reset()\n"
         "var b: Byte = s.byte_at(0)\n";
 
@@ -1219,7 +1207,7 @@ TestResult test_runtime_dynamic_string_stale(void)
 TestResult test_runtime_dynamic_string_bounds(void)
 {
     const char *source =
-        "fun at(s: String): Byte\n"
+        "fun at(s: Text): Byte\n"
         "  return s.byte_at(10)\n"
         "end\n"
         "var b: Byte = at(\"hi\")\n";
@@ -1232,7 +1220,7 @@ TestResult test_runtime_dynamic_string_stale_len(void)
 {
     const char *source =
         "global arena: Store = Store(16)\n"
-        "var s: String = arena.copy(\"hi\")\n"
+        "var s: Text = arena.copy(\"hi\")\n"
         "arena.reset()\n"
         "var n: Int32 = s.byte_len()\n";
 
@@ -1244,15 +1232,15 @@ TestResult test_runtime_dynamic_string_stale_len(void)
 TestResult test_runtime_dynamic_string_union(void)
 {
     const char *source =
-        "fun len_or_zero(u: String | Nil): Int32\n"
-        "  if u.is<String>() then\n"
+        "fun len_or_zero(u: Text | Nil): Int32\n"
+        "  if typeof u is Text then\n"
         "    return u.byte_len()\n"
         "  end\n"
         "  return 0\n"
         "end\n"
         "var n: Int32 = len_or_zero(\"hi\")\n";
 
-    return run_generated(source, "2\n", "dynamic String union");
+    return run_generated(source, "2\n", "dynamic Text union");
 }
 
 
@@ -1260,7 +1248,7 @@ TestResult test_runtime_string_builder(void)
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun fill(b: StringBuilder): Int32\n"
+        "fun fill(b: TextBuilder): Int32\n"
         "  b.append(\"hello\")\n"
         "  b.append_byte(44)\n"
         "  b.append(\" world\")\n"
@@ -1268,20 +1256,20 @@ TestResult test_runtime_string_builder(void)
         "end\n"
         "var n: Int32 = fill(arena.builder(2))\n";
 
-    return run_generated(source, "24\n", "StringBuilder");
+    return run_generated(source, "24\n", "TextBuilder");
 }
 
 TestResult test_runtime_string_builder_stale(void)
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "var b: StringBuilder = arena.builder(4)\n"
+        "var b: TextBuilder = arena.builder(4)\n"
         "b.append(\"hi\")\n"
         "arena.reset()\n"
         "b.append(\"x\")\n";
 
     return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale StringBuilder");
+                                 "stale TextBuilder");
 }
 
 
@@ -1289,7 +1277,7 @@ TestResult test_runtime_string_builder_content(void)
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun content(b: StringBuilder): Int32\n"
+        "fun content(b: TextBuilder): Int32\n"
         "  b.append(\"hello\")\n"
         "  b.append_byte(44)\n"
         "  b.append(\" world\")\n"
@@ -1300,7 +1288,7 @@ TestResult test_runtime_string_builder_content(void)
         "end\n"
         "var n: Int32 = content(arena.builder(1))\n";
 
-    return run_generated(source, "1\n", "StringBuilder content");
+    return run_generated(source, "1\n", "TextBuilder content");
 }
 
 
@@ -1308,7 +1296,7 @@ TestResult test_runtime_string_builder_reuse(void)
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun reuse(b: StringBuilder): Int32\n"
+        "fun reuse(b: TextBuilder): Int32\n"
         "  b.append(\"hi\")\n"
         "  if b.finish() == \"hi\" then\n"
         "    b.append(\"!\")\n"
@@ -1320,15 +1308,15 @@ TestResult test_runtime_string_builder_reuse(void)
         "end\n"
         "var n: Int32 = reuse(arena.builder(2))\n";
 
-    return run_generated(source, "1\n", "StringBuilder reuse after finish");
+    return run_generated(source, "1\n", "TextBuilder reuse after finish");
 }
 
 
 TestResult test_runtime_fixed_list(void)
 {
     const char *source =
-        "fun score(xs: List<Int32, 3>): Int32\n"
-        "  return xs.get(0) + xs.get(1) + xs.get(2) + xs.len()\n"
+        "fun score(xs: Array<Int32, 3>): Int32\n"
+        "  return xs[0] + xs[1] + xs[2] + xs.len()\n"
         "end\n"
         "var n: Int32 = score([1, 2, 3])\n";
 
@@ -1342,8 +1330,8 @@ TestResult test_runtime_dynamic_list(void)
         "fun fill(xs: List<Int32>): Int32\n"
         "  xs.push(1)\n"
         "  xs.push(2)\n"
-        "  xs.set(0, 10)\n"
-        "  return xs.get(0) + xs.get(1) + xs.len()\n"
+        "  xs[0] = 10\n"
+        "  return xs[0] + xs[1] + xs.len()\n"
         "end\n"
         "var n: Int32 = fill(arena.list<Int32>(1))\n";
 
@@ -1353,8 +1341,8 @@ TestResult test_runtime_dynamic_list(void)
 TestResult test_runtime_list_bounds(void)
 {
     const char *source =
-        "fun at(xs: List<Int32, 1>): Int32\n"
-        "  return xs.get(1)\n"
+        "fun at(xs: Array<Int32, 1>): Int32\n"
+        "  return xs[1]\n"
         "end\n"
         "var n: Int32 = at([1])\n";
 
@@ -1379,7 +1367,7 @@ TestResult test_runtime_list_stale(void)
 TestResult test_runtime_fixed_list_zero(void)
 {
     const char *source =
-        "fun count(xs: List<Int32, 0>): Int32\n"
+        "fun count(xs: Array<Int32, 0>): Int32\n"
         "  return xs.len()\n"
         "end\n"
         "var n: Int32 = count([])\n";
@@ -1390,8 +1378,8 @@ TestResult test_runtime_fixed_list_zero(void)
 TestResult test_runtime_fixed_list_strings(void)
 {
     const char *source =
-        "fun count(xs: List<String<8>, 2>): Int32\n"
-        "  if xs.get(0) == \"a\" then\n"
+        "fun count(xs: Array<String<8>, 2>): Int32\n"
+        "  if xs[0] == \"a\" then\n"
         "    return xs.len()\n"
         "  end\n"
         "  return 0\n"
@@ -1420,7 +1408,7 @@ TestResult test_runtime_two_dynamic_lists(void)
 TestResult test_runtime_inferred_list(void)
 {
     const char *source =
-        "var n: Int32 = [1, 2, 3].get(0) + [1, 2, 3].len()\n";
+        "var n: Int32 = [1, 2, 3][0] + [1, 2, 3].len()\n";
 
     return run_generated(source, "4\n", "inferred list literal");
 }
@@ -1429,7 +1417,7 @@ TestResult test_runtime_inferred_list(void)
 TestResult test_runtime_fixed_list_mutation(void)
 {
     const char *source =
-        "fun ops(xs: List<Int32, 3>): Int32\n"
+        "fun ops(xs: Array<Int32, 3>): Int32\n"
         "  xs.push(2)\n"
         "  xs.push(3)\n"
         "  xs[0] = 10\n"
@@ -1460,12 +1448,12 @@ TestResult test_runtime_list_pop_value(void)
 {
     const char *source =
         "fun unwrap(v: Int32 | Nil): Int32\n"
-        "  if v.is<Int32>() then\n"
+        "  if typeof v is Int32 then\n"
         "    return v\n"
         "  end\n"
         "  return 0\n"
         "end\n"
-        "fun pop_value(xs: List<Int32, 3>): Int32\n"
+        "fun pop_value(xs: Array<Int32, 3>): Int32\n"
         "  return unwrap(xs.pop())\n"
         "end\n"
         "var n: Int32 = pop_value([1, 2, 3])\n";
@@ -1477,12 +1465,12 @@ TestResult test_runtime_list_pop_empty(void)
 {
     const char *source =
         "fun unwrap(v: Int32 | Nil): Int32\n"
-        "  if v.is<Int32>() then\n"
+        "  if typeof v is Int32 then\n"
         "    return v\n"
         "  end\n"
         "  return 0\n"
         "end\n"
-        "fun empty(xs: List<Int32, 1>): Int32\n"
+        "fun empty(xs: Array<Int32, 1>): Int32\n"
         "  return unwrap(xs.pop())\n"
         "end\n"
         "var n: Int32 = empty([])\n";
@@ -1493,7 +1481,7 @@ TestResult test_runtime_list_pop_empty(void)
 TestResult test_runtime_fixed_list_full(void)
 {
     const char *source =
-        "fun full(xs: List<Int32, 1>): Int32\n"
+        "fun full(xs: Array<Int32, 1>): Int32\n"
         "  xs.push(1)\n"
         "  xs.push(2)\n"
         "  return xs.len()\n"
@@ -1512,7 +1500,7 @@ TestResult test_runtime_list_union_and_function(void)
         "fun inc(x: Int32): Int32\n"
         "  return x + 1\n"
         "end\n"
-        "fun count(xs: List<Int32 | Bool, 2>,\n"
+        "fun count(xs: Array<Int32 | Bool, 2>,\n"
         "           fs: List<Fun<(Int32):Int32>>): Int32\n"
         "  fs.push(inc)\n"
         "  return xs.len() + fs.len()\n"
@@ -1531,12 +1519,12 @@ TestResult test_runtime_function_list_pop(void)
         "  return x + 1\n"
         "end\n"
         "fun is_fn(v: Fun<(Int32):Int32> | Nil): Int32\n"
-        "  if v.is<Fun<(Int32):Int32>>() then\n"
+        "  if typeof v is Fun<(Int32):Int32> then\n"
         "    return 1\n"
         "  end\n"
         "  return 0\n"
         "end\n"
-        "fun pop_fn(xs: List<Fun<(Int32):Int32>, 1>): Int32\n"
+        "fun pop_fn(xs: Array<Fun<(Int32):Int32>, 1>): Int32\n"
         "  return is_fn(xs.pop())\n"
         "end\n"
         "var n: Int32 = pop_fn([inc])\n";
@@ -1548,12 +1536,12 @@ TestResult test_runtime_union_list_pop(void)
 {
     const char *source =
         "fun unwrap(v: Int32 | Bool | Nil): Int32\n"
-        "  if v.is<Bool>() then\n"
+        "  if typeof v is Bool then\n"
         "    return 2\n"
         "  end\n"
         "  return 0\n"
         "end\n"
-        "fun pop_u(xs: List<Int32 | Bool, 2>): Int32\n"
+        "fun pop_u(xs: Array<Int32 | Bool, 2>): Int32\n"
         "  return unwrap(xs.pop())\n"
         "end\n"
         "var n: Int32 = pop_u([1, true])\n";
@@ -1594,6 +1582,549 @@ TestResult test_runtime_slice_stale(void)
                                  "stale slice");
 }
 
+
+TestResult test_runtime_locals_and_fields(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "fun f(): Int32\n"
+        "  var p: Point = Point(1, 2)\n"
+        "  p.x = 3\n"
+        "  var xs: Array<Int32, 2> = [10, 20]\n"
+        "  xs[1] = 30\n"
+        "  return p.x + p.y + xs[0] + xs[1]\n"
+        "end\n"
+        "var n: Int32 = f()\n";
+
+    return run_generated(source, "45\n", "locals, fields, and indexing");
+}
+
+TestResult test_runtime_error_field_access(void)
+{
+    const char *source =
+        "fun line_of(e: Error): Int32\n"
+        "  return e.line\n"
+        "end\n"
+        "var n: Int32 = line_of(Error(\"E\", \"d\", \"f\", 7, 2, 3))\n";
+
+    return run_generated(source, "7\n", "Error field access");
+}
+
+
+TestResult test_runtime_handle_union(void)
+{
+    const char *source =
+        "fun classify(h: Handle<Int32 | Bool>): Int32\n"
+        "  var x: Int32 | Bool = h.read()\n"
+        "  if typeof x is Int32 then\n"
+        "    return 1\n"
+        "  end\n"
+        "  return 0\n"
+        "end\n"
+        "global arena: Store = Store(64)\n"
+        "var n: Int32 = classify(arena.alloc<Int32 | Bool>(1))\n";
+
+    return run_generated(source, "1\n", "handle of a union");
+}
+
+TestResult test_runtime_handle_function(void)
+{
+    const char *source =
+        "fun inc(x: Int32): Int32\n"
+        "  return x + 1\n"
+        "end\n"
+        "fun call(h: Handle<Fun<(Int32):Int32>>): Int32\n"
+        "  var f: Fun<(Int32):Int32> = h.read()\n"
+        "  return f(1)\n"
+        "end\n"
+        "global arena: Store = Store(64)\n"
+        "var n: Int32 = call(arena.alloc<Fun<(Int32):Int32>>(inc))\n";
+
+    return run_generated(source, "2\n", "handle of a function");
+}
+
+
+TestResult test_runtime_for_fixed_list(void)
+{
+    const char *source =
+        "fun sum(): Int32\n"
+        "  var xs: Array<Int32, 3> = [1, 2, 3]\n"
+        "  var total: Int32 = 0\n"
+        "  for x in xs do\n"
+        "    total = total + x\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "6\n", "for over a fixed list");
+}
+
+TestResult test_runtime_for_fixed_string(void)
+{
+    const char *source =
+        "fun count(): Int32\n"
+        "  var s: String<8> = \"hello\"\n"
+        "  var n: Int32 = 0\n"
+        "  for b in s do\n"
+        "    n = n + 1\n"
+        "  end\n"
+        "  return n\n"
+        "end\n"
+        "var n: Int32 = count()\n";
+
+    return run_generated(source, "5\n", "for over a fixed string");
+}
+
+TestResult test_runtime_for_index(void)
+{
+    const char *source =
+        "fun sum(): Int32\n"
+        "  var s: String<8> = \"hello\"\n"
+        "  var total: Int32 = 0\n"
+        "  for i, b in s do\n"
+        "    total = total + i\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "10\n", "for with an index");
+}
+
+TestResult test_runtime_for_fixed_strings(void)
+{
+    const char *source =
+        "fun sum(): Int32\n"
+        "  var names: Array<String<8>, 3> = [\"ada\", \"grace\", \"linus\"]\n"
+        "  var total: Int32 = 0\n"
+        "  for name in names do\n"
+        "    total = total + name.byte_len()\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "13\n", "for over fixed strings");
+}
+
+TestResult test_runtime_for_dynamic_list(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun sum(): Int32\n"
+        "  var xs: List<Int32> = arena.list<Int32>(4)\n"
+        "  xs.push(1)\n"
+        "  xs.push(2)\n"
+        "  xs.push(3)\n"
+        "  var total: Int32 = 0\n"
+        "  for x in xs do\n"
+        "    total = total + x\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "6\n", "for over an arena list");
+}
+
+TestResult test_runtime_for_slice(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun sum(): Int32\n"
+        "  var xs: List<Int32> = arena.list<Int32>(4)\n"
+        "  xs.push(10)\n"
+        "  xs.push(20)\n"
+        "  xs.push(30)\n"
+        "  var part: Slice<Int32> = xs.slice(1, 2)\n"
+        "  var total: Int32 = 0\n"
+        "  for x in part do\n"
+        "    total = total + x\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "50\n", "for over a slice");
+}
+
+TestResult test_runtime_for_arena_strings(void)
+{
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "fun sum(): Int32\n"
+        "  var a: String<8> = \"ada\"\n"
+        "  var b: String<8> = \"grace\"\n"
+        "  var c: String<8> = \"linus\"\n"
+        "  var names: List<Text> = arena.list<Text>(3)\n"
+        "  names.push(arena.text(a))\n"
+        "  names.push(arena.text(b))\n"
+        "  names.push(arena.text(c))\n"
+        "  var total: Int32 = 0\n"
+        "  for name in names do\n"
+        "    total = total + name.byte_len()\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated(source, "13\n", "for over arena strings");
+}
+
+TestResult test_runtime_for_mutation(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun sum(): Int32\n"
+        "  var xs: List<Int32> = arena.list<Int32>(4)\n"
+        "  xs.push(1)\n"
+        "  xs.push(2)\n"
+        "  var total: Int32 = 0\n"
+        "  for x in xs do\n"
+        "    xs.push(3)\n"
+        "    total = total + x\n"
+        "  end\n"
+        "  return total\n"
+        "end\n"
+        "var n: Int32 = sum()\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_FOR_MUTATED,
+                                 "for mutation");
+}
+
+
+TestResult test_runtime_alloc_array(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun first(): Int32\n"
+        "  var a: Array<Int32, 2> = [7, 8]\n"
+        "  var h: Handle<Array<Int32, 2>> = "
+        "arena.alloc<Array<Int32, 2>>(a)\n"
+        "  var copy: Array<Int32, 2> = h.read()\n"
+        "  return copy[0]\n"
+        "end\n"
+        "var n: Int32 = first()\n";
+
+    return run_generated(source, "7\n", "alloc of an Array");
+}
+
+
+TestResult test_runtime_print_all(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "fun inc(x: Int32): Int32\n"
+        "  return x + 1\n"
+        "end\n"
+        "global arena: Store = Store(512)\n"
+        "fun run(): Nil\n"
+        "  var fixed: String<8> = \"ada\"\n"
+        "  var t: Text = arena.text(fixed)\n"
+        "  var arr: Array<Int32, 3> = [1, 2, 3]\n"
+        "  var p: Point = Point(4, 5)\n"
+        "  var u: Int32 | Bool = 1\n"
+        "  var e: Error = Error(\"E\", \"desc\", \"file\", 3, 7, 42)\n"
+        "  var b: TextBuilder = arena.builder(16)\n"
+        "  b.append(\"hi\")\n"
+        "  var h: Handle<Int32> = arena.alloc<Int32>(9)\n"
+        "  var xs: List<Int32> = arena.list<Int32>(2)\n"
+        "  xs.push(10)\n"
+        "  xs.push(20)\n"
+        "  var s: Slice<Int32> = xs.slice(0, 2)\n"
+        "  print(\"scalar\", 1, true, nil, b)\n"
+        "  print(fixed)\n"
+        "  print(t)\n"
+        "  print(arr)\n"
+        "  print(p)\n"
+        "  print(u)\n"
+        "  print(e)\n"
+        "  print(b)\n"
+        "  print(h)\n"
+        "  print(inc)\n"
+        "  print(xs)\n"
+        "  print(s)\n"
+        "  print()\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+    const char *expected =
+        "scalar 1 true nil hi\n"
+        "ada\n"
+        "ada\n"
+        "[1, 2, 3]\n"
+        "Point { x: 4, y: 5 }\n"
+        "1\n"
+        "Error(E, desc, file, 3, 7, 42)\n"
+        "hi\n"
+        "<handle store=0 offset=48 generation=1>\n"
+        "<function>\n"
+        "[10, 20]\n"
+        "[10, 20]\n"
+        "\n";
+
+    return run_generated(source, expected, "print every value kind");
+}
+
+TestResult test_runtime_print_nested(void)
+{
+    const char *source =
+        "type Item\n"
+        "  name: Text\n"
+        "  n: Int32\n"
+        "end\n"
+        "global arena: Store = Store(256)\n"
+        "fun run(): Nil\n"
+        "  var a: String<8> = \"ada\"\n"
+        "  var t: Text = arena.text(a)\n"
+        "  var names: List<Text> = arena.list<Text>(2)\n"
+        "  names.push(t)\n"
+        "  names.push(t)\n"
+        "  var item: Item = Item(t, 3)\n"
+        "  var items: Array<Item, 1> = [item]\n"
+        "  print(names)\n"
+        "  print(item)\n"
+        "  print(items)\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+    const char *expected =
+        "[ada, ada]\n"
+        "Item { name: ada, n: 3 }\n"
+        "[Item { name: ada, n: 3 }]\n";
+
+    return run_generated(source, expected, "nested print");
+}
+
+
+TestResult test_runtime_error_throw(void)
+{
+    const char *source =
+        "var e: Error = Error.throw(\"E\", \"desc\")\n"
+        "print(e)\n";
+    const char *expected =
+        "Error(E, desc, test.nip, 1, 22, 21)\n";
+
+    return run_generated(source, expected, "Error.throw");
+}
+
+TestResult test_runtime_nested_structs(void)
+{
+    const char *source =
+        "type Inner\n"
+        "  x: Int32\n"
+        "end\n"
+        "type Middle\n"
+        "  inner: Inner\n"
+        "end\n"
+        "type Outer\n"
+        "  middle: Middle\n"
+        "end\n"
+        "print(Outer(Middle(Inner(7))))\n";
+    const char *expected =
+        "Outer { middle: Middle { inner: Inner { x: 7 } } }\n";
+
+    return run_generated(source, expected, "nested struct print");
+}
+
+
+TestResult test_runtime_record_ops(void)
+{
+    const char *source =
+        "var x: Record<String<8>, Int32, 4> = {\"a\": 1, \"b\": 2}\n"
+        "print(x[\"a\"], x.has(\"b\"), x.len())\n"
+        "x[\"c\"] = 3\n"
+        "print(x.remove(\"a\"), x.has(\"a\"), x[\"b\"], x.len())\n"
+        "print(x)\n";
+    const char *expected =
+        "1 true 2\n"
+        "true false 2 2\n"
+        "{c: 3, b: 2}\n";
+
+    return run_generated(source, expected, "Record operations");
+}
+
+TestResult test_runtime_table_ops(void)
+{
+    const char *source =
+        "global arena: Store = Store(1024)\n"
+        "fun run(): Nil\n"
+        "  var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(1)\n"
+        "  t[\"a\"] = 1\n"
+        "  t[\"b\"] = 2\n"
+        "  t[\"c\"] = 3\n"
+        "  print(t[\"a\"], t[\"b\"], t[\"c\"], t.has(\"z\"), t.len())\n"
+        "  print(t.remove(\"a\"), t.len())\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+    const char *expected =
+        "1 2 3 false 3\n"
+        "true 2\n";
+
+    return run_generated(source, expected, "Table operations");
+}
+
+TestResult test_runtime_record_full(void)
+{
+    const char *source =
+        "var x: Record<String<8>, Int32, 1> = {\"a\": 1}\n"
+        "x[\"b\"] = 2\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_RECORD_FULL,
+                                 "Record full");
+}
+
+TestResult test_runtime_table_missing(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(2)\n"
+        "var n: Int32 = t[\"z\"]\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_MAP_MISSING,
+                                 "Table missing key");
+}
+
+TestResult test_runtime_table_stale(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(2)\n"
+        "arena.reset()\n"
+        "var n: Int32 = t[\"a\"]\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
+                                 "stale Table");
+}
+
+
+TestResult test_runtime_table_print(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun run(): Nil\n"
+        "  var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(1)\n"
+        "  t[\"a\"] = 1\n"
+        "  print(t)\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+    return run_generated(source, "{a: 1}\n", "Table print");
+}
+
+
+TestResult test_runtime_record_for(void)
+{
+    const char *source =
+        "var r: Record<String<8>, Int32, 4> = {\"a\": 1, \"b\": 2, \"c\": 3}\n"
+        "var sum: Int32 = 0\n"
+        "var count: Int32 = 0\n"
+        "for k, v in r do\n"
+        "  sum = sum + v\n"
+        "  count = count + 1\n"
+        "end\n"
+        "for k in r do\n"
+        "  count = count + 1\n"
+        "end\n"
+        "print(sum, count)\n";
+    return run_generated(source, "6 6\n", "Record iteration");
+}
+
+TestResult test_runtime_table_for(void)
+{
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "fun run(): Nil\n"
+        "  var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(1)\n"
+        "  t[\"a\"] = 1\n"
+        "  t[\"b\"] = 2\n"
+        "  t[\"c\"] = 3\n"
+        "  var sum: Int32 = 0\n"
+        "  var count: Int32 = 0\n"
+        "  for k, v in t do\n"
+        "    sum = sum + v\n"
+        "    count = count + 1\n"
+        "  end\n"
+        "  for k in t do\n"
+        "    count = count + 1\n"
+        "  end\n"
+        "  print(sum, count)\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+    return run_generated(source, "6 6\n", "Table iteration");
+}
+
+
+TestResult test_runtime_typeof_if(void)
+{
+    const char *source =
+        "type V = Int32 | Bool | Nil\n"
+        "var x: V = 1\n"
+        "if typeof x is Int32 then\n"
+        "  print(\"int\", x)\n"
+        "elseif typeof x is Bool then\n"
+        "  print(\"bool\", x)\n"
+        "else\n"
+        "  print(\"nil\")\n"
+        "end\n";
+    return run_generated(source, "int 1\n", "typeof if");
+}
+
+TestResult test_runtime_typeof_match(void)
+{
+    const char *source =
+        "type V = Int32 | Bool | Nil\n"
+        "var x: V = true\n"
+        "match typeof x with Int32 then\n"
+        "  print(\"int\", x)\n"
+        "with Bool then\n"
+        "  print(\"bool\", x)\n"
+        "else\n"
+        "  print(\"nil\")\n"
+        "end\n";
+    return run_generated(source, "bool true\n", "typeof match");
+}
+
+TestResult test_runtime_value_match(void)
+{
+    const char *source =
+        "var x: Bool = true\n"
+        "match x with true then\n"
+        "  print(\"yes\")\n"
+        "with false then\n"
+        "  print(\"no\")\n"
+        "end\n";
+    return run_generated(source, "yes\n", "value match");
+}
+
+TestResult test_runtime_if_match_expressions(void)
+{
+    const char *source =
+        "type V = Int32 | Bool\n"
+        "var x: V = 1\n"
+        "var y: Bool = true\n"
+        "var a: Int32 = if typeof x is Int32 then 10 else 20 end\n"
+        "var b: Int32 = if y == true then 1 else 0 end\n"
+        "var c: Int32 = match y with true then 5 with false then 6 else 7 end\n"
+        "var d: Int32 = match typeof x with Int32 then 8 with Bool then 9 else 0 end\n"
+        "print(a, b, c, d)\n";
+    return run_generated(source, "10 1 5 8\n", "if/match expressions");
+}
+
 /* Every test in this suite, in run order. The table lives here so adding
    a test needs only its definition above and one entry below. */
 static const TestCase tests[] = {
@@ -1611,22 +2142,50 @@ static const TestCase tests[] = {
     {"runtime: string union", test_runtime_string_union},
     {"runtime: Error fields", test_runtime_error_fields},
     {"runtime: Error in store", test_runtime_error_in_store},
-    {"runtime: String in store", test_runtime_string_in_store},
+    {"runtime: Text in store", test_runtime_string_in_store},
     {"runtime: global store", test_runtime_global_store},
     {"runtime: dynamic strings", test_runtime_dynamic_strings},
-    {"runtime: dynamic String handle", test_runtime_dynamic_string_in_handle},
     {"runtime: stale dynamic string", test_runtime_dynamic_string_stale},
     {"runtime: dynamic string bounds", test_runtime_dynamic_string_bounds},
-    {"runtime: dynamic String union", test_runtime_dynamic_string_union},
-    {"runtime: StringBuilder", test_runtime_string_builder},
-    {"runtime: StringBuilder content", test_runtime_string_builder_content},
-    {"runtime: StringBuilder reuse", test_runtime_string_builder_reuse},
+    {"runtime: dynamic Text union", test_runtime_dynamic_string_union},
+    {"runtime: TextBuilder", test_runtime_string_builder},
+    {"runtime: TextBuilder content", test_runtime_string_builder_content},
+    {"runtime: TextBuilder reuse", test_runtime_string_builder_reuse},
     {"runtime: fixed list", test_runtime_fixed_list},
     {"runtime: zero-length fixed list", test_runtime_fixed_list_zero},
     {"runtime: fixed list of strings", test_runtime_fixed_list_strings},
     {"runtime: dynamic list", test_runtime_dynamic_list},
     {"runtime: two dynamic list types", test_runtime_two_dynamic_lists},
     {"runtime: inferred list literal", test_runtime_inferred_list},
+    {"runtime: locals and fields", test_runtime_locals_and_fields},
+    {"runtime: for fixed list", test_runtime_for_fixed_list},
+    {"runtime: for fixed string", test_runtime_for_fixed_string},
+    {"runtime: for index", test_runtime_for_index},
+    {"runtime: for fixed strings", test_runtime_for_fixed_strings},
+    {"runtime: for dynamic list", test_runtime_for_dynamic_list},
+    {"runtime: for slice", test_runtime_for_slice},
+    {"runtime: for arena strings", test_runtime_for_arena_strings},
+    {"runtime: for mutation", test_runtime_for_mutation},
+    {"runtime: handle union", test_runtime_handle_union},
+    {"runtime: handle function", test_runtime_handle_function},
+    {"runtime: alloc array", test_runtime_alloc_array},
+    {"runtime: Record operations", test_runtime_record_ops},
+    {"runtime: Table operations", test_runtime_table_ops},
+    {"runtime: Table print", test_runtime_table_print},
+    {"runtime: Record iteration", test_runtime_record_for},
+    {"runtime: Table iteration", test_runtime_table_for},
+    {"runtime: typeof if", test_runtime_typeof_if},
+    {"runtime: typeof match", test_runtime_typeof_match},
+    {"runtime: value match", test_runtime_value_match},
+    {"runtime: if/match expressions", test_runtime_if_match_expressions},
+    {"runtime: Record full", test_runtime_record_full},
+    {"runtime: Table missing", test_runtime_table_missing},
+    {"runtime: Table stale", test_runtime_table_stale},
+    {"runtime: print all", test_runtime_print_all},
+    {"runtime: print nested", test_runtime_print_nested},
+    {"runtime: Error.throw", test_runtime_error_throw},
+    {"runtime: nested structs", test_runtime_nested_structs},
+    {"runtime: Error fields", test_runtime_error_fields},
     {"runtime: fixed list mutation", test_runtime_fixed_list_mutation},
     {"runtime: dynamic list mutation", test_runtime_dynamic_list_mutation},
     {"runtime: list pop value", test_runtime_list_pop_value},
@@ -1639,7 +2198,7 @@ static const TestCase tests[] = {
     {"runtime: fixed list capacity", test_runtime_fixed_list_full},
     {"runtime: list bounds", test_runtime_list_bounds},
     {"runtime: stale list", test_runtime_list_stale},
-    {"runtime: stale StringBuilder", test_runtime_string_builder_stale},
+    {"runtime: stale TextBuilder", test_runtime_string_builder_stale},
     {"runtime: stale dynamic string length", test_runtime_dynamic_string_stale_len},
     {"runtime: top-level assignment", test_runtime_assignment_top},
     {"runtime: parameter assignment", test_runtime_assignment_parameter},

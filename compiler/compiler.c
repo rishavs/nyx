@@ -121,6 +121,19 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
             }
             program.max_list_capacity = max_list;
         }
+        {
+            int max_print = config->max_print_depth;
+
+            if (max_print == 0) {
+                max_print = NIPPY_DEFAULT_MAX_PRINT_DEPTH;
+            }
+            if (max_print < 1 || max_print > NIPPY_MAX_PRINT_DEPTH) {
+                error_report(&errors, MESSAGE_COMPILER_PRINT_DEPTH,
+                             NIPPY_MAX_PRINT_DEPTH);
+                goto failed;
+            }
+            program.max_print_depth = max_print;
+        }
         if (!resolve_error_capacity(
                 config->error_header_capacity,
                 NIPPY_DEFAULT_ERROR_HEADER_CAPACITY, "header", max_string,

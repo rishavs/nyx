@@ -160,6 +160,24 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 return false;
             }
         }
+        if (node->kind == TYPED_ERROR_THROW) {
+            const TypedType *type = typed_program_type(program,
+                                                       node->type_index);
+            const TypedType *filename_type = typed_program_type(
+                program, node->auxiliary_type);
+
+            if (type == NULL || type->kind != NIPPY_TYPE_ERROR ||
+                node->children_count != 2 ||
+                filename_type == NULL ||
+                filename_type->kind != NIPPY_TYPE_STRING ||
+                node->string_offset > program->bytes.length ||
+                node->string_length >
+                    program->bytes.length - node->string_offset) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_ERROR, i);
+                return false;
+            }
+        }
         if (node->kind == TYPED_ERROR_FIELD) {
             if (node->integer_value < 0 || node->integer_value > 5) {
                 error_report_at(errors, node->pos,
