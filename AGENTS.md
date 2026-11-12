@@ -100,7 +100,7 @@ the goal.
 |---|---|
 | Rule 8 — incremental compilation | Absent. `make` rebuilds every translation unit. |
 | Rule 10 — concurrency | Absent, and no design recorded yet. |
-| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
+| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, lists, and slices are runtime-checked for bounds and staleness; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
 
 ## Documentation map
 

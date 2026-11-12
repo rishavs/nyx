@@ -14,6 +14,7 @@ A program is a sequence of items, read in source order:
 - a struct type declaration, `type Name ... end`;
 - a type alias, `type Name = Type`;
 - a value declaration, `var name [: Type] = expression`;
+- a global store declaration, `global name: Store = Store(bytes)`;
 - a function declaration, `fun name(parameters): Type ... end`;
 - an expression statement, which must be a call, such as `points.reset()`.
 
@@ -66,6 +67,22 @@ A type is a type expression. The implemented forms are:
 - **`Store`** — a global byte arena. It is a declaration resource, not an
   ordinary passable value.
 - **`Handle<T>`** — an opaque reference to one `T` allocated in a store.
+- **`String`** — a built-in dynamic-length, immutable byte string, backed by
+  a Store or by static literal data. It carries a store id, offset, generation,
+  and byte length; it does not hold a pointer.
+- **`StringBuilder`** — a built-in mutable builder for dynamic strings. It is a
+  store-backed value with `append`, `append_byte`, `byte_len`, and `finish`.
+- **`List<T>`** — a built-in dynamic-length list backed by a Store. It is
+  mutable and created with `store.list<T>(capacity)`.
+- **`List<T,N>`** — a built-in inline list with capacity `N` and a runtime
+  length. It is mutable and initialized by a list literal.
+- **`Slice<T>`** — a read-only, non-owning view over part of a dynamic
+  `List<T>`. It has a store generation, offset, and length.
+- **`String<N>`** — a built-in fixed-capacity string: at most `N` bytes stored
+  inline in the value. `N` is an `Int32` byte capacity in
+  `0..max_string_capacity` (default 4096).
+- **`Error`** — a built-in fixed-layout error value with a short header, a
+  description, a filename, and a source position.
 - **struct types** — declared by the program, with fields, and nominal.
 - **union types** — written `A | B | C`, structural.
 - **function types** — written `Fun<(Int32, Int32):Int32>`, naming the parameter
@@ -119,13 +136,18 @@ is `Fun<(Int32, Int32):Int32>`.
 
 Expressions are:
 
-- integer literals, boolean literals (`true`, `false`), and `nil`;
+- integer literals, string literals, list literals (`[a, b]`), boolean
+  literals (`true`, `false`), and
+  `nil`;
 - names of variables, parameters, and functions;
 - calls, `name(arguments)`;
 - struct constructors, written as calls whose name resolves to a struct type;
 - `.is<T>()` tests;
 - store and handle methods: `s.alloc<T>(value)`, `s.reset()`, `h.read()`,
   `h.write(value)`;
+- fixed-string methods: `s.byte_len()`, `s.byte_at(i)`;
+- Error methods: `e.header()`, `e.description()`, `e.filename()`, `e.line()`,
+  `e.col()`, `e.pos()`;
 - arithmetic, comparison, equality, and logical operators;
 - grouped expressions, `( expression )`.
 
@@ -137,7 +159,7 @@ Operator precedence, tightest first:
 | unary | `!` | `Bool` | `Bool` |
 | additive | `+` | `Int32`, `Int32` | `Int32` |
 | relational | `<`, `<=`, `>`, `>=` | `Int32`, `Int32` | `Bool` |
-| equality | `==`, `!=` | same type: `Int32`, `Bool`, or `Byte` | `Bool` |
+| equality | `==`, `!=` | same type: `Int32`, `Bool`, `Byte`, `String`, or `String<N>` | `Bool` |
 | logical and | `&&` | `Bool`, `Bool` | `Bool` |
 | logical or | `\|\|` | `Bool`, `Bool` | `Bool` |
 
@@ -154,6 +176,25 @@ it is injected into a union that has `Byte` but no `Int32`. The literal must be
 in `0..255`. This is contextual literal typing, not an implicit conversion;
 `Byte` and `Int32` values do not convert into each other. `Byte` supports `==`
 and `!=` (including against integer literals) but no arithmetic yet.
+
+A string literal is a sequence of bytes between double quotes. The escapes are
+`\n`, `\t`, `\r`, `\\`, and `\"`; a raw newline, a NUL byte, or any other
+escape is rejected. Source bytes are UTF-8 by convention and are not validated
+or normalized; literals pass through as bytes.
+
+A string literal is typed by context. There is no standalone string literal
+type: `var s = "x"` is rejected.
+
+- In a `String` context, the literal is a static dynamic string: its bytes live
+  in generated read-only data and it needs no Store.
+- In a `String<N>` context, the literal is a fixed inline value; it must fit `N`
+  and the remaining capacity is padded.
+- A literal longer than a fixed capacity is rejected.
+- `String` and `String<N>` do not convert implicitly. Use `store.string` to copy
+  a fixed value into a dynamic string.
+- A literal in a union is injected into the unique alternative that can hold it.
+  Two fitting alternatives, such as `String | String<8>`, are ambiguous and
+  rejected.
 
 A name expression must resolve to a variable, parameter, or function. A type
 name is not a value and is rejected when used without a call. A non-generic
@@ -265,7 +306,8 @@ type:
 There is no other implicit conversion. `var x: SomeStruct = 13` is an error, and
 so is `var x: Int32 = Point(1, 2)`.
 
-A declaration is initialised at its declaration point. There is no
+A declaration is initialised at its declaration point. Variables are mutable;
+see [Assignment](#assignment). There is no
 uninitialised variable and no default-initialisation. A program-level variable
 may refer to variables and functions declared before it.
 
@@ -273,23 +315,79 @@ Program-level variables are local to the generated `main` (or to
 `nippy_program_value` when the program is a single `Int32` variable). They are
 therefore not visible inside function bodies yet.
 
+
+## Assignment
+
+A variable or parameter is mutable. Assignment is a statement:
+
+```nippy
+var x: Int32 = 1
+x = 2
+
+fun bump(x: Int32): Int32
+  x = x + 1
+  return x
+end
+```
+
+- The target must be a variable or parameter in scope. Stores, functions, type
+  names, fields, and arbitrary expressions are not assignable.
+- Program-level variables are assignable at program level. Function bodies can
+  assign their parameters, but cannot assign program-level variables because
+  those names are not visible inside functions.
+- The right-hand side is checked against the target's **declared** type. It may
+  be identical, a union alternative injected into a union target, or a literal
+  typed by context (`Byte`, `String<N>`). There is no general implicit
+  conversion.
+- A variable's type never changes. Assigning a different union alternative
+  requires the variable to have a union type.
+- The right-hand side is evaluated first, then copied into the target. Struct,
+  `String`, `StringBuilder`, `List<T>`, `List<T,N>`, `String<N>`, `Error`,
+  union, and `Handle<T>` values are assigned by value.
+- Assignment is not an expression: `var y: Int32 = (x = 1)` is rejected. There
+  is no chained assignment and no compound assignment such as `+=`.
+- A variable must already be declared; assignment does not declare or infer a
+  new variable.
+
+### Assignment and narrowing
+
+Inside `if x.is<T>() then`, `x` is narrowed to `T`. An assignment to `x` is
+allowed, but it invalidates that narrowing:
+
+```nippy
+if x.is<Int32>() then
+  x = true
+  if x.is<Bool>() then
+    ...
+  end
+end
+```
+
+The right-hand side of the assignment is checked under the old narrowing; after
+the assignment, later uses see `x`'s declared union type again. This keeps
+narrowing sound. Assigning to a variable that is not narrowed leaves other
+narrowings intact.
+
 ## Stores and handles
 
 Dynamic memory is managed only by arenas, called **Stores**. A store is declared
-at program level and is global:
+at program level with `global` and is visible everywhere:
 
 ```nippy
-var points: Store = Store(4096)
+global points: Store = Store(4096)
 ```
 
+- `global name: Store = Store(bytes)`. The annotation must be `Store`; a
+  `global` declaration of any other type is rejected. The older `var ...: Store`
+  spelling is still accepted for compatibility, but `global` is canonical.
 - `Store(bytes)` takes a constant `Int32` expression, interpreted as bytes
   (literals and `+`). `Store(0)` is allowed.
 - Stores are visible inside function bodies. This is the one exception to the
   rule that functions cannot see program-level variables: a store is a
   resource, not ordinary storage.
 - Stores are not first-class: they cannot be passed, returned, stored in a
-  field, used as a union alternative, or used as a value. Only `s.alloc` and
-  `s.reset` take a store.
+  field, used as a union alternative, or used as a value. Only `s.alloc`,
+  `s.reset`, `s.concat`, `s.copy`, `s.string`, and `s.builder` take a store.
 - The declared size is an initial reservation, not a cap. Stores grow by
   doubling as needed. `reset()` keeps the grown capacity.
 - Stores are freed at program exit.
@@ -304,9 +402,10 @@ var b: Handle<Byte> = points.alloc<Byte>(7)
 
 `alloc<T>(value)` copies `value` into the arena and returns `Handle<T>`. `T`
 must be a **single sized type**: `Int32`, `Bool`, `Byte`, `Nil`, a struct or
-concrete generic struct, or a `Handle<U>`. Unions, function types, and `Store`
-are rejected as allocation element types; a store may still hold values of many
-different types, one allocation at a time.
+concrete generic struct, a `Handle<U>`, a `String`, a `StringBuilder`, a
+`List<T>`, a `List<T,N>`, a `String<N>`, or `Error`. Unions, function types,
+and `Store` are rejected as allocation element types; a store may still hold
+values of many different types, one allocation at a time.
 
 `Handle<T>` records the store id, a byte offset, and the store generation. It is
 opaque: there is no field access. Its operations are:
@@ -329,6 +428,317 @@ there is no per-object free. Using an invalidated handle is a runtime error
 
 Allocation failure (running out of memory while growing) aborts with
 `nippy: out of memory`. Allocation never returns uninitialized memory.
+
+
+## Lists
+
+Lists are either fixed inline values or mutable store-backed values.
+
+### Fixed `List<T,N>`
+
+A fixed list has inline capacity `N` and a runtime length:
+
+```nippy
+var xs: List<Int32, 3> = [1, 2]
+
+var n: Int32 = xs.len()       // 2
+var first: Int32 = xs[0]
+
+xs.push(3)
+xs[0] = 10
+
+var last: Int32 | Nil = xs.pop()
+```
+
+- A list literal may supply `0..N` elements. The remaining capacity is
+  zero-initialized and hidden by `len()`.
+- `push(value)` requires `len() < N`; pushing at capacity is a runtime error.
+- `pop()` returns `T | Nil`; popping an empty list returns `nil`. It decrements
+  the length and leaves the removed slot allocated inline.
+- `xs[i]` reads; `xs[i] = value` writes. The index is `Int32` and checked
+  against the current length.
+- `len()` returns the current length, which may be less than `N`.
+- `List<T,0>` is represented with a one-element dummy C array; `len()` is `0`;
+  `push` and every index are out of bounds.
+- Mutation (`push`, `pop`, `xs[i] =`) requires the list expression to be a
+  variable or parameter, because the inline length/data must be updated.
+- `get(i)` and `set(i, value)` also exist as method forms; `xs[i]` is the
+  preferred indexing surface.
+- `N` is in `0..max_list_capacity`. The default maximum is 4096;
+  `CompilerConfig.max_list_capacity` can change it up to `1 MiB`.
+- Fixed lists are mutable inline values; copies are independent.
+
+### Dynamic `List<T>`
+
+A dynamic list grows in a Store:
+
+```nippy
+global arena: Store = Store(256)
+
+var xs: List<Int32> = arena.list<Int32>(2)
+
+xs.push(1)
+xs.push(2)
+xs[0] = 10
+
+var n: Int32 = xs.len()       // 2
+var first: Int32 = xs[0]      // 10
+var last: Int32 | Nil = xs.pop()
+```
+
+- `store.list<T>(capacity)` allocates the list state and initial buffer.
+  Capacity may be `0`; negative capacity is a runtime error.
+- `push(value)` adds one element and grows the buffer by doubling when needed.
+  Old buffers remain in the store until reset.
+- `pop()` removes the last element and returns `T | Nil`.
+- `xs[i]` reads and `xs[i] = value` writes; both are bounds-checked.
+- `len()` returns the current length.
+- Dynamic lists are mutable. Copying a `List<T>` copies the descriptor and all
+  copies alias the same list state, like `StringBuilder`.
+- `reset()` invalidates the list descriptor and its elements; access is a
+  runtime stale check.
+- There is no per-list free.
+- List literals are only valid for fixed `List<T,N>`. A dynamic list must be
+  created with `store.list<T>(capacity)`.
+
+### Element types
+
+List elements may be any value with a concrete size: `Int32`, `Bool`, `Byte`,
+`Nil`, structs, unions, handles, strings, builders, other lists, and `Error`.
+
+- `Store` is not a value and is not listable.
+- Fixed and dynamic lists may hold function types; fixed-list function
+  elements get an inline element typedef in the generated header.
+- `pop()` supports union and function elements. A union element is flattened
+  into the result union, with payload tags remapped by the generated helper.
+
+### List literals
+
+`[a, b, c]` is always a fixed list. It can be typed by an expected fixed-list
+context or inferred when every element has one common type:
+
+```nippy
+var xs: List<Int32, 3> = [1, 2, 3]       // explicit context
+var zs = [1, 2, 3]                       // inferred List<Int32,3>
+var strings = ["a", "b"]                 // inferred List<String,2>
+var empty: List<Int32, 0> = []           // empty needs a context
+var mixed: List<Int32 | Bool, 2> = [1, true]  // explicit union context
+```
+
+Elements are checked against the list's element type, including Byte, fixed
+string, and union injection. The literal may be shorter than the capacity.
+Inference fails for an empty literal, mixed element types without a union
+context, or elements with no common type.
+
+## Slices
+
+A slice is a read-only, non-owning view over a dynamic list:
+
+```nippy
+global arena: Store = Store(256)
+
+var xs: List<Int32> = arena.list<Int32>(3)
+xs.push(10)
+xs.push(20)
+xs.push(30)
+
+var s: Slice<Int32> = xs.slice(1, 2)
+
+var n: Int32 = s.len()   // 2
+var first: Int32 = s[0]  // 20
+```
+
+- `list.slice(start, length)` checks bounds and returns a `Slice<T>`.
+- `slice.slice(start, length)` returns a subview.
+- `Slice<T>` has `len()` and `[]` reads. It has no mutation operations.
+- The view stores `{store, offset, length, generation}`. It does not allocate
+  or own storage.
+- Parent `set`/`xs[i] =` writes are visible through the view.
+- Parent `push` may allocate a new buffer; the old buffer stays alive until
+  reset, so the view still reads the old element range safely.
+- `reset()` invalidates the view through the generation check.
+- Fixed lists do not support `.slice`: their inline data has no stable
+  address for a non-owning view. Copy the fixed list instead if a detached
+  sequence is needed.
+
+## Strings and Error
+
+### `String`
+
+A dynamic string is an immutable byte sequence whose length is not part of its
+type. It is backed by a Store or by static literal data:
+
+```nippy
+global arena: Store = Store(256)
+
+var greeting: String = "hello"          // static, no allocation
+var joined: String = arena.concat(greeting, " world")
+var copy: String = arena.copy(joined)
+var slice: String = joined.slice(0, 5)
+
+var n: Int32 = joined.byte_len()
+var b: Byte = joined.byte_at(0)
+var same: Bool = joined == "hello world"
+```
+
+- A `String` value is a descriptor `{ store id, offset, byte length,
+  generation, static data }`. It does not store a pointer in the source model.
+- Static literals have a static data pointer and no store; they never become
+  stale.
+- Arena-backed strings are allocated with `store.copy`, `store.concat`, or
+  `store.string`. They are invalidated by `store.reset()`, like handles.
+- The descriptor is copied by value. Strings are immutable; slicing and copying
+  cannot mutate an existing string.
+- `byte_len()` is the byte length, not a codepoint count.
+- `byte_at(i)` is bounds-checked and returns a `Byte`.
+- `slice(start, length)` is a zero-copy view with the same backing store and
+  generation. A slice is not independently NUL-terminated; only the original
+  static/arena string has a terminator at its own end. C projection is not
+  implemented yet.
+- `==`/`!=` compare content. There is no implicit conversion between `String`
+  and `String<N>`.
+- `String` is a sized value: it can be a field, union alternative, parameter,
+  return type, or `alloc<String>` element.
+
+Store methods:
+
+```nippy
+var a: String = arena.copy("hello")       // allocate a copy
+var b: String = arena.concat(a, " world") // allocate concatenation
+var f: String<8> = "hi"
+var c: String = arena.string(f)           // fixed -> dynamic, allocating
+```
+
+`concat` and `copy` require dynamic strings; a fixed string must be converted
+explicitly with `store.string`. Allocation failure is fatal.
+
+Dynamic strings are runtime-checked in the current model. Region/escape
+checking, C string projection, and the `build ... do` block syntax are not
+implemented yet.
+
+### `StringBuilder`
+
+A builder grows a byte sequence with amortized capacity and finishes with an
+immutable `String` copy:
+
+```nippy
+global arena: Store = Store(256)
+
+var b: StringBuilder = arena.builder(16)
+b.append("hello")
+b.append_byte(44)      // comma
+b.append(" world")
+b.append_byte(33)      // exclamation mark
+
+var n: Int32 = b.byte_len()
+var s: String = b.finish()
+```
+
+- `arena.builder(capacity)` allocates a builder state and an initial buffer in
+  the store. Capacity may be `0`.
+- `append(s)` appends a dynamic `String` (or a literal typed as one).
+- `append_byte(b)` appends one `Byte`.
+- `byte_len()` returns the current length.
+- `finish()` allocates a fresh immutable `String` containing a copy of the
+  current bytes. The builder remains usable afterward.
+- `StringBuilder` is a value. Copying it copies the descriptor, and all copies
+  alias the same builder state; appends through one copy are visible through
+  another. This is memory-safe but deliberately shared, not unique ownership.
+- Builder state and buffers live in the store. `reset()` invalidates the
+  builder and every `String` it produced; later use is a runtime stale check.
+- Growth allocates a new buffer in the same store, copies the old bytes, and
+  abandons the old buffer until reset. There is no per-builder free.
+- Builder length is `Int32` on the surface; allocation failure is fatal.
+- Strings are byte sequences. `append_byte(0)` can embed a NUL; methods use the
+  stored length, so this is well-defined. C projection is not implemented and
+  must not assume the first NUL is the end.
+
+### `String<N>`
+
+A fixed string is an immutable value with capacity `N` bytes, stored inline:
+
+```nippy
+var name: String<16> = "nyx"
+var n: Int32 = name.byte_len()
+var b: Byte = name.byte_at(1)
+var same: Bool = name == "nyx"
+```
+
+- `N` is a byte capacity in `0..max_string_capacity`. The default maximum is
+  4096; `CompilerConfig.max_string_capacity` can raise or lower it up to the
+  hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `String<0>` can hold only the
+  empty string.
+- The value carries `N + 1` inline bytes and a length. The byte at
+  `data[length]` is NUL, so the layout is directly usable from C; capacity bytes
+  after the terminator are zero padding.
+- `String<N>` values are copied by value. They do not allocate and are not
+  arena-backed.
+- `byte_len()` returns the byte length, not the capacity.
+- `byte_at(i)` returns a `Byte` and checks `0 <= i < byte_len()`. An
+  out-of-bounds index is a deterministic runtime error
+  (`nippy: string index out of bounds`).
+- `==` and `!=` compare content, but only between the same `String<N>` type.
+  Different capacities are different types.
+- `String` and `String<N>` are distinct types; the only implemented conversion
+  is `store.string(fixed)`.
+- String literals are contextual, as described above.
+
+A fixed string can be stored in a Store like any other sized value:
+
+```nippy
+global arena: Store = Store(64)
+var h: Handle<String<16>> = arena.alloc<String<16>>("nyx")
+var s: String<16> = h.read()
+```
+
+The arena slot contains the fixed string value, including its inline bytes.
+`Handle<String<16>>` is an ordinary handle.
+
+### `Error`
+
+`Error` is a built-in fixed-layout value:
+
+```text
+type Error
+  header: String<32>
+  description: String<128>
+  filename: String<128>
+  line: Int32
+  col: Int32
+  pos: Int32
+end
+```
+
+It is constructed positionally and read through methods, because field access is
+not implemented:
+
+```nippy
+var e: Error = Error("E_CONCAT", "concat failed", "main.nip", 3, 7, 42)
+
+var line: Int32 = e.line()
+var header: String<32> = e.header()
+var description: String<128> = e.description()
+```
+
+- `Error` is a sized value; it does not allocate.
+- It can be passed, returned, stored in a Store, stored in a struct field, and
+  used as a union alternative, for example `String<8> | Error`.
+- `.is<Error>()` narrows a union alternative normally.
+- The constructor takes exactly `header`, `description`, `filename`, `line`,
+  `col`, `pos`. Named arguments are not accepted.
+- The field capacities default to `32` (header), `128` (description), and `128`
+  (filename) bytes. `CompilerConfig.error_header_capacity`,
+  `error_description_capacity`, and `error_filename_capacity` override them;
+  `0` selects the default, clamped to `max_string_capacity`, and explicit values
+  must be in `1..max_string_capacity`.
+- There is no implicit conversion from a smaller fixed string, so pass a
+  matching value or a literal.
+- `Error` is a fixed-size inline value (about 300 bytes at the defaults) and is
+  copied by value.
+
+Dynamic strings and `StringBuilder` are described under
+[Strings and Error](#strings-and-error). C string projection and the
+`build ... as ... do` block are not implemented yet.
 
 ## Function declarations
 
@@ -382,9 +792,10 @@ statements returns before control can fall out of the block. An `if` returns
 only when it has an `else` and both branches return. A `while` never guarantees
 a return. A function whose body may reach its end is rejected.
 
-A function body cannot contain local variables, blocks, or assignment yet. It
-also cannot refer to program-level variables. It can refer to its parameters, to
-functions declared before it, and to itself. Because a function is bound before
+A function body cannot declare local variables or contain bare nested blocks.
+It can assign its parameters, but it cannot refer to or assign program-level
+variables. It can
+refer to its parameters, to functions declared before it, and to itself. Because a function is bound before
 its body is checked, direct recursion is accepted; mutual recursion is not,
 because the later function is not declared yet.
 
@@ -464,6 +875,26 @@ language's behaviour:
 
 - `Int32` becomes `int32_t`, `Bool` becomes `bool`, `Byte` becomes `uint8_t`,
   and `Nil` becomes a one-byte `nippy_nil` typedef.
+- `String` becomes a `nippy_string` descriptor with a static-data pointer, store
+  id, byte offset, byte length, and generation. A static literal points at a
+  generated read-only byte array. Arena-backed strings are allocated by the
+  store runtime and checked for store id, generation, and bounds on access.
+- `StringBuilder` becomes a `nippy_builder` descriptor pointing at an aligned
+  builder-state record in the store. The state holds the buffer offset, current
+  length, and capacity. Growth and finishing are runtime helpers.
+- `List<T,N>` becomes a `nippy_list_<index>` struct with an inline
+  `T data[N]` array (`data[1]` for `N == 0`) and a `uint32_t length`.
+- `List<T>` becomes a `nippy_list` descriptor pointing at store-backed state.
+  The state holds the element-buffer offset, length, and capacity; push, pop,
+  grow, index, and set are runtime helpers.
+- `Slice<T>` becomes a `nippy_slice` descriptor with store id, offset, length,
+  and generation. List/sub-slice creation and indexed reads are runtime
+  helpers; no allocation occurs.
+- `String<N>` becomes a `nippy_string_N` struct with a `uint8_t data[N+1]` array
+  and a `uint32_t length`. A literal becomes a compound literal with its byte
+  values, a NUL, zero padding, and the literal length.
+- `Error` becomes a `nippy_error` struct containing the two fixed-string fields
+  and the three `Int32` fields, in declaration order.
 - Each struct type, and each concrete instantiation of a generic struct, becomes
   a `typedef struct` with one member per field, in declaration order.
 - Each distinct union type becomes a tagged struct: a `uint32_t tag` and a union
@@ -492,6 +923,9 @@ language's behaviour:
   carries the arena helpers: initialize, grow, allocate, bounds/generation
   checks, write, reset, and free. `Handle<T>` becomes the opaque
   `nippy_handle` struct. Call statements become `(void)(call);`.
+- String helpers check `byte_at` bounds and compare bytes for equality. Error
+  field methods become direct struct-member reads. The helper runtime is emitted
+  only when the program uses a string or Error type.
 
 ## Diagnostics
 
@@ -515,8 +949,9 @@ If compilation fails with no diagnostic recorded, the message is exactly
 
 ## Not yet decided or not yet implemented
 
-- Local variables, assignment, blocks, scopes, and shadowing.
-- Assignment statements and any way to mutate a parameter or variable.
+- Local variables, blocks, scopes, and shadowing.
+- Compound assignments (`+=`, `-=`, etc.), chained assignment, and assignment
+  as an expression.
 - `for` loops and loop labels.
 - Field access.
 - Operators beyond the table above: subtraction, multiplication, division,
@@ -535,6 +970,15 @@ If compilation fails with no diagnostic recorded, the message is exactly
   first-class store value, and no local store declaration yet.
 - Exposing handle fields (`index`, `store`, `generation`); handles are opaque.
 - Byte arithmetic, ordering, and conversion to/from Int32.
+- UTF-8 validation, codepoint indexing, and string ordering/search.
+- The `build ... as ... do` block syntax; `StringBuilder` is first-class now.
+- C string projection (`cstr`), foreign string adoption, and explicit
+  dynamic-to-fixed conversion.
+- Region/escape checking for dynamic strings and lists; they are runtime-checked
+  until scoped arenas exist.
+- Fixed-list slices, dynamic list literals, and list equality.
+- Field access, including direct `Error` fields; `Error` fields are read through
+  methods for now.
 - Scoped `access` blocks for reading store data; `read` currently copies.
 - Concurrency and multithreading.
 - Modules and imports.

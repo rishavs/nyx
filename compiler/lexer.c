@@ -8,6 +8,9 @@
 
 static TokenType keyword_type(const char *text, size_t length)
 {
+    if (length == 6 && memcmp(text, "global", 6) == 0) {
+        return TOKEN_KEYWORD_GLOBAL;
+    }
     if (length == 3 && memcmp(text, "var", 3) == 0) {
         return TOKEN_KEYWORD_VAR;
     }
@@ -83,6 +86,7 @@ void lexer_result_free(LexerResult *result)
 {
     list_free(&result->tokens);
     list_free(&result->errors);
+    list_free(&result->string_bytes);
 }
 
 LexerResult lexer_tokenize(const char *code)
@@ -94,6 +98,7 @@ LexerResult lexer_tokenize(const char *code)
 
     list_init(&result.tokens, sizeof(Token));
     list_init(&result.errors, sizeof(LexerError));
+    list_init(&result.string_bytes, sizeof(unsigned char));
 
     while (code[cursor] != '\0') {
         unsigned char current = (unsigned char)code[cursor];
@@ -128,6 +133,100 @@ LexerResult lexer_tokenize(const char *code)
             token.type = TOKEN_INTEGER;
             token.integer_value = (int)parsed;
             token.pos = start;
+            if (!list_push(&result.tokens, &token)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            continue;
+        }
+
+        if (current == '"') {
+            SourcePos start = {cursor, line, column};
+            size_t byte_start = result.string_bytes.length;
+            bool literal_ok = true;
+            Token token = {0};
+
+            advance(code, &cursor, &line, &column);
+            for (;;) {
+                unsigned char byte = (unsigned char)code[cursor];
+
+                if (byte == '\0') {
+                    LexerError error = {LEXER_UNTERMINATED_STRING, start, 0};
+                    if (!list_push(&result.errors, &error)) {
+                        result.out_of_memory = true;
+                        goto failed;
+                    }
+                    literal_ok = false;
+                    break;
+                }
+                if (byte == '\n' || byte == '\r') {
+                    LexerError error = {LEXER_STRING_NEWLINE,
+                                        (SourcePos){cursor, line, column}, 0};
+                    if (!list_push(&result.errors, &error)) {
+                        result.out_of_memory = true;
+                        goto failed;
+                    }
+                    literal_ok = false;
+                    break;
+                }
+                if (byte == '"') {
+                    advance(code, &cursor, &line, &column);
+                    break;
+                }
+                if (byte == '\\') {
+                    unsigned char escaped;
+
+                    advance(code, &cursor, &line, &column);
+                    escaped = (unsigned char)code[cursor];
+                    if (escaped == '\0') {
+                        LexerError error = {LEXER_UNTERMINATED_STRING, start,
+                                            0};
+                        if (!list_push(&result.errors, &error)) {
+                            result.out_of_memory = true;
+                            goto failed;
+                        }
+                        literal_ok = false;
+                        break;
+                    }
+                    if (escaped == 'n') {
+                        byte = '\n';
+                    } else if (escaped == 't') {
+                        byte = '\t';
+                    } else if (escaped == 'r') {
+                        byte = '\r';
+                    } else if (escaped == '\\') {
+                        byte = '\\';
+                    } else if (escaped == '"') {
+                        byte = '"';
+                    } else {
+                        LexerError error = {LEXER_INVALID_ESCAPE,
+                                            (SourcePos){cursor, line, column},
+                                            escaped};
+                        if (!list_push(&result.errors, &error)) {
+                            result.out_of_memory = true;
+                            goto failed;
+                        }
+                        literal_ok = false;
+                        advance(code, &cursor, &line, &column);
+                        continue;
+                    }
+                    advance(code, &cursor, &line, &column);
+                } else {
+                    advance(code, &cursor, &line, &column);
+                }
+                if (!list_push(&result.string_bytes, &byte)) {
+                    result.out_of_memory = true;
+                    goto failed;
+                }
+            }
+            if (!literal_ok) {
+                result.string_bytes.length = byte_start;
+                continue;
+            }
+            token.type = TOKEN_STRING;
+            token.pos = start;
+            token.string_offset = byte_start;
+            token.string_length = result.string_bytes.length - byte_start;
             if (!list_push(&result.tokens, &token)) {
                 result.out_of_memory = true;
                 goto failed;
@@ -210,6 +309,28 @@ LexerResult lexer_tokenize(const char *code)
             SourcePos start = {cursor, line, column};
 
             if (!push_token(&result.tokens, TOKEN_RPAREN, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '[') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_LBRACKET, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == ']') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_RBRACKET, start)) {
                 result.out_of_memory = true;
                 goto failed;
             }
@@ -358,5 +479,6 @@ LexerResult lexer_tokenize(const char *code)
 failed:
     list_free(&result.tokens);
     list_free(&result.errors);
+    list_free(&result.string_bytes);
     return result;
 }

@@ -9,6 +9,7 @@
 #include <stddef.h>
 
 typedef enum {
+    TOKEN_KEYWORD_GLOBAL,
     TOKEN_KEYWORD_VAR,
     TOKEN_KEYWORD_TYPE,
     TOKEN_KEYWORD_FUN,
@@ -26,12 +27,15 @@ typedef enum {
     TOKEN_KEYWORD_END,
     TOKEN_IDENTIFIER,
     TOKEN_INTEGER,
+    TOKEN_STRING,
     TOKEN_COLON,
     TOKEN_EQUALS,
     TOKEN_EQEQ,
     TOKEN_NE,
     TOKEN_LPAREN,
     TOKEN_RPAREN,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
     TOKEN_COMMA,
     TOKEN_PLUS,
     TOKEN_LT,
@@ -55,6 +59,9 @@ typedef struct {
     SourcePos pos;
     size_t length;
     char text[NIPPY_IDENTIFIER_MAX];
+    /* TOKEN_STRING points into LexerResult.string_bytes. */
+    size_t string_offset;
+    size_t string_length;
 } Token;
 
 typedef List TokenList;
@@ -62,7 +69,10 @@ typedef List TokenList;
 typedef enum {
     LEXER_UNEXPECTED_CHARACTER,
     LEXER_INTEGER_OUT_OF_RANGE,
-    LEXER_IDENTIFIER_TOO_LONG
+    LEXER_IDENTIFIER_TOO_LONG,
+    LEXER_UNTERMINATED_STRING,
+    LEXER_STRING_NEWLINE,
+    LEXER_INVALID_ESCAPE
 } LexerErrorKind;
 
 typedef struct {
@@ -78,6 +88,8 @@ typedef struct {
     bool out_of_memory;
     TokenList tokens;
     LexerErrorList errors;
+    /* Decoded bytes for string literals; tokens store offsets into this. */
+    List string_bytes;
 } LexerResult;
 
 LexerResult lexer_tokenize(const char *code);

@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 
-bool parser_parse(const TokenList *tokens, Ast *ast, ErrorState *errors);
+bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                  ErrorState *errors);
 
 #endif

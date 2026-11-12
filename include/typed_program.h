@@ -11,6 +11,15 @@
 
 #define TYPED_NO_NODE ((size_t)-1)
 
+/* Fixed-string capacity limit, and the default capacities of the built-in
+   Error fields. The compiler config can override the Error capacities. */
+#define NIPPY_DEFAULT_MAX_STRING_CAPACITY 4096
+#define NIPPY_DEFAULT_MAX_LIST_CAPACITY 4096
+#define NIPPY_MAX_STRING_CAPACITY (1024 * 1024)
+#define NIPPY_DEFAULT_ERROR_HEADER_CAPACITY 32
+#define NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY 128
+#define NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY 128
+
 typedef enum {
     TYPED_DECLARATION,
     TYPED_TYPE_DECLARATION,
@@ -39,7 +48,32 @@ typedef enum {
     TYPED_STORE_RESET,
     TYPED_HANDLE_READ,
     TYPED_HANDLE_WRITE,
-    TYPED_EXPRESSION_STATEMENT
+    TYPED_EXPRESSION_STATEMENT,
+    TYPED_ASSIGNMENT,
+    TYPED_STRING_LITERAL,
+    TYPED_STRING_LEN,
+    TYPED_STRING_AT,
+    TYPED_STRING_SLICE,
+    TYPED_STRING_CONCAT,
+    TYPED_STRING_COPY,
+    TYPED_STRING_FROM_FIXED,
+    TYPED_BUILDER_CREATE,
+    TYPED_BUILDER_APPEND,
+    TYPED_BUILDER_APPEND_BYTE,
+    TYPED_BUILDER_LEN,
+    TYPED_BUILDER_FINISH,
+    TYPED_LIST_LITERAL,
+    TYPED_LIST_LEN,
+    TYPED_LIST_GET,
+    TYPED_LIST_SET,
+    TYPED_LIST_PUSH,
+    TYPED_LIST_POP,
+    TYPED_LIST_CREATE,
+    TYPED_SLICE_CREATE,
+    TYPED_SLICE_LEN,
+    TYPED_SLICE_GET,
+    TYPED_ERROR_CONSTRUCT,
+    TYPED_ERROR_FIELD
 } TypedNodeKind;
 
 typedef enum {
@@ -52,7 +86,15 @@ typedef enum {
     NIPPY_TYPE_FUNCTION,
     NIPPY_TYPE_UNION,
     NIPPY_TYPE_STORE,
-    NIPPY_TYPE_HANDLE
+    NIPPY_TYPE_HANDLE,
+    NIPPY_TYPE_STRING,
+    NIPPY_TYPE_DYNAMIC_STRING,
+    NIPPY_TYPE_STRING_BUILDER,
+    NIPPY_TYPE_LIST,
+    NIPPY_TYPE_FIXED_LIST,
+    NIPPY_TYPE_SLICE,
+    NIPPY_TYPE_STRING_LITERAL,
+    NIPPY_TYPE_ERROR
 } NippyType;
 
 /* A resolved type. Struct types refer to their declaration name and, for an
@@ -68,6 +110,7 @@ typedef struct {
     size_t child_count;
     size_t declaration_node; /* TYPED_NO_NODE unless NIPPY_TYPE_STRUCT */
     size_t source_name_index; /* source struct name, TYPED_NO_NODE otherwise */
+    size_t fixed_length;      /* byte capacity for NIPPY_TYPE_STRING */
 } TypedType;
 
 typedef struct {
@@ -97,6 +140,9 @@ typedef struct {
     size_t auxiliary_type;
     /* Global store id for the store/handle nodes; TYPED_NO_NODE otherwise. */
     size_t store_id;
+    /* TYPED_STRING_LITERAL points into TypedProgram.bytes. */
+    size_t string_offset;
+    size_t string_length;
 } TypedNode;
 
 typedef struct {
@@ -113,6 +159,14 @@ typedef struct {
     List signature_parameters;
     /* Runs of type indices: union alternatives and struct type arguments. */
     List type_children;
+    /* Decoded bytes for string literals; nodes store offsets into this. */
+    List bytes;
+    /* Capacities used to build the built-in Error field strings. */
+    int error_header_capacity;
+    int error_description_capacity;
+    int error_filename_capacity;
+    int max_string_capacity;
+    int max_list_capacity;
 } TypedProgram;
 
 void typed_program_init(TypedProgram *program);
@@ -134,6 +188,7 @@ bool typed_program_add_signature(TypedProgram *program,
 bool typed_program_add_signature_parameter(TypedProgram *program,
                                            size_t type_index);
 bool typed_program_add_type_child(TypedProgram *program, size_t type_index);
+bool typed_program_push_byte(TypedProgram *program, unsigned char byte);
 bool typed_program_push_child(TypedProgram *program, size_t index);
 
 #endif

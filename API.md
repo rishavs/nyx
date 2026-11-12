@@ -28,6 +28,12 @@ artifacts those stages exchange. Application code should prefer `compiler.h`.
 typedef struct {
     const char *header_name;  /* generated header filename; NULL -> "nippy.h" */
     const char *source_name;  /* shown in diagnostics and #line; NULL -> "nippy.nip" */
+    int error_header_capacity;      /* 0 -> default 32 */
+    int error_description_capacity; /* 0 -> default 128 */
+    int error_filename_capacity;    /* 0 -> default 128 */
+    int max_source_bytes;           /* source-size limit; 0 -> 4096 */
+    int max_string_capacity;        /* String<N> upper bound; 0 -> 4096 */
+    int max_list_capacity;          /* List<T,N> upper bound; 0 -> 4096 */
 } CompilerConfig;
 
 typedef struct {
@@ -43,7 +49,15 @@ void compiler_result_free(CompilerResult *result);
 
 `compiler_compile` runs lexer, parser, checker, analyser, and generator and
 returns owned strings. Both string pointers in `config` are borrowed for the
-duration of the call and are never freed by the compiler.
+duration of the call and are never freed by the compiler. Configuration values
+are copied. Error capacities default to 32, 128, and 128 and are clamped to
+`max_string_capacity`; an explicit Error capacity outside `1..max_string_capacity`
+fails the compilation. `max_string_capacity` defaults to 4096 and may not exceed
+the hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` defaults
+to 4096 and may not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB).
+`max_source_bytes` defaults to 4096;
+`compiler_compile` rejects longer source strings, and the command-line driver
+uses the same limit when reading a file.
 
 Ownership rules:
 
@@ -60,8 +74,8 @@ Ownership rules:
 `compiler_compile` is called with `source != NULL`. Passing NULL is also
 handled — it returns a failed result with `compiler: source string is null` —
 but the caller is responsible for the string's lifetime, and it must be
-NUL-terminated. The 4096-byte size limit is a driver policy, not an API
-constraint.
+NUL-terminated. Source size is limited by `CompilerConfig.max_source_bytes`
+(default 4096); both `compiler_compile` and the command-line driver enforce it.
 
 Example:
 
@@ -197,6 +211,7 @@ typedef struct {
     List roots;           /* indices into nodes */
     List children;        /* indices into nodes, for variable-arity children */
     List type_parameters; /* indices into nodes, for generic declarations */
+    List bytes;           /* decoded string-literal bytes */
 } Ast;
 
 typedef struct {
@@ -209,8 +224,18 @@ typedef struct {
     List signature_parameters; /* indices into types */
     List type_children;        /* indices into types: union alternatives and
                                   struct type arguments */
+    List bytes;                /* decoded string-literal bytes */
+    int error_header_capacity;      /* built-in Error field capacities */
+    int error_description_capacity;
+    int error_filename_capacity;
+    int max_string_capacity;        /* upper bound for String<N> */
+    int max_list_capacity;          /* upper bound for List<T,N> */
 } TypedProgram;
 ```
+
+`typed_program_init` seeds the capacities with the defaults: string maximum
+4096, list maximum 4096, and Error fields 32/128/128. `compiler_compile` overwrites them from
+`CompilerConfig`.
 
 `AstNode` and `TypedNode` carry `left_child`/`right_child` for direct links and
 `children_start`/`children_count` for a run of variable-arity children in the
@@ -221,6 +246,15 @@ owning `children` list. `AstNode` additionally carries
 argument in `right_child`, its method name in `name_index`, and its positional
 arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
 expression in `left_child`; the checker accepts it only for call expressions.
+`AST_DECLARATION` sets `is_global` for a `global` declaration. `AST_ASSIGNMENT`
+stores the target name in `name_index` and the value in `left_child`. `AST_STRING_LITERAL` stores an offset and byte length into `Ast.bytes`;
+`AST_TYPE_FIXED_STRING` stores its capacity in `integer_value`.
+`AST_TYPE_LIST` has its element type in `left_child`; `AST_TYPE_FIXED_LIST`
+also stores its capacity in `integer_value`; `AST_TYPE_SLICE` has its element
+type in `left_child`; `AST_LIST_LITERAL` stores its elements in an
+`Ast.children` run. `AST_INDEX` has the list in `left_child` and
+the index in `right_child`; `AST_INDEX_ASSIGNMENT` has the indexed target in
+`left_child` and the value in `right_child`.
 `TypedNode.auxiliary_type` holds the tested type for a `TYPED_IS` node and is
 `TYPED_NO_NODE` otherwise. Function bodies and `if`/`while` bodies are block
 nodes; block statements and `if` branches are stored in `children`.
@@ -239,7 +273,15 @@ typedef enum {
     NIPPY_TYPE_FUNCTION,
     NIPPY_TYPE_UNION,
     NIPPY_TYPE_STORE,
-    NIPPY_TYPE_HANDLE
+    NIPPY_TYPE_HANDLE,
+    NIPPY_TYPE_STRING,
+    NIPPY_TYPE_DYNAMIC_STRING,
+    NIPPY_TYPE_STRING_BUILDER,
+    NIPPY_TYPE_LIST,
+    NIPPY_TYPE_FIXED_LIST,
+    NIPPY_TYPE_SLICE,
+    NIPPY_TYPE_STRING_LITERAL,
+    NIPPY_TYPE_ERROR
 } NippyType;
 
 typedef struct {
@@ -250,6 +292,7 @@ typedef struct {
     size_t child_count;
     size_t declaration_node;  /* concrete struct declaration, or NO_NODE */
     size_t source_name_index; /* source struct name for inference, or NO_NODE */
+    size_t fixed_length;      /* byte capacity for NIPPY_TYPE_STRING */
 } TypedType;
 
 typedef struct {
@@ -269,6 +312,7 @@ size_t ast_intern_symbol(Ast *ast, const char *text, size_t length);
 const char *ast_symbol_text(const Ast *ast, size_t index);
 bool ast_push_child(Ast *ast, size_t index);
 bool ast_push_type_parameter(Ast *ast, size_t index);
+bool ast_push_byte(Ast *ast, unsigned char byte);
 
 void typed_program_init(TypedProgram *program);
 void typed_program_free(TypedProgram *program);
@@ -291,6 +335,7 @@ bool typed_program_add_signature_parameter(TypedProgram *program,
                                            size_t type_index);
 bool typed_program_add_type_child(TypedProgram *program, size_t type_index);
 bool typed_program_push_child(TypedProgram *program, size_t index);
+bool typed_program_push_byte(TypedProgram *program, unsigned char byte);
 ```
 
 A `NIPPY_TYPE_UNION` type's `first_child`/`child_count` run in
@@ -302,20 +347,72 @@ struct), and `declaration_node` points at the concrete
 The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 `TYPED_SUM_PAYLOAD`, `TYPED_IS`, `TYPED_STORE_DECLARATION`,
 `TYPED_STORE_ALLOC`, `TYPED_STORE_RESET`, `TYPED_HANDLE_READ`,
-`TYPED_HANDLE_WRITE`, and `TYPED_EXPRESSION_STATEMENT`. For injection and
+`TYPED_HANDLE_WRITE`, `TYPED_EXPRESSION_STATEMENT`, `TYPED_ASSIGNMENT`,
+`TYPED_STRING_LITERAL`,
+`TYPED_STRING_LEN`, `TYPED_STRING_AT`, `TYPED_STRING_SLICE`,
+`TYPED_STRING_CONCAT`, `TYPED_STRING_COPY`, `TYPED_STRING_FROM_FIXED`,
+`TYPED_BUILDER_CREATE`, `TYPED_BUILDER_APPEND`, `TYPED_BUILDER_APPEND_BYTE`,
+`TYPED_BUILDER_LEN`, `TYPED_BUILDER_FINISH`, `TYPED_LIST_LITERAL`,
+`TYPED_LIST_LEN`, `TYPED_LIST_GET`, `TYPED_LIST_SET`, `TYPED_LIST_PUSH`,
+`TYPED_LIST_POP`, `TYPED_LIST_CREATE`, `TYPED_SLICE_CREATE`, `TYPED_SLICE_LEN`,
+`TYPED_SLICE_GET`, `TYPED_ERROR_CONSTRUCT`, and `TYPED_ERROR_FIELD`. For injection and
 payload projection, `integer_value` is the alternative's canonical tag.
 `TYPED_IS` stores the tested type in `auxiliary_type` and a tag in
 `integer_value`; a statically decided test is emitted as a boolean literal, not
 a tag comparison.
 
 `TypedNode.store_id` carries the global store id for a store declaration,
-allocation, or reset, and is `TYPED_NO_NODE` elsewhere. A
+allocation, reset, concat, copy, fixed-to-dynamic conversion, or builder
+creation, and is `TYPED_NO_NODE` elsewhere. A
 `TYPED_STORE_DECLARATION` has type `Store` and `integer_value` = initial bytes;
 a `TYPED_STORE_ALLOC` has type `Handle<T>` and its value in `left_child`; a
 `TYPED_HANDLE_READ` has type `T` and the handle in `left_child`; a
 `TYPED_HANDLE_WRITE` has type `Nil`, the handle in `left_child`, and the value
-in `right_child`. A handle type's element type is its single entry in
+in `right_child`. `TYPED_ASSIGNMENT` has the target variable's type and name, and
+the coerced value in `left_child`. A handle type's element type is its single entry in
 `program->type_children`.
+
+`TYPED_STRING_LITERAL` stores an offset and byte length into
+`TypedProgram.bytes`; after contextual typing its type is `String` (dynamic,
+statically backed) or `String<N>` (fixed), whose `fixed_length` is the capacity.
+`TYPED_STRING_LEN` has type `Int32` and the string in `left_child`;
+`TYPED_STRING_AT` has type `Byte`, the string in `left_child`, and the index in
+`right_child`; `TYPED_STRING_SLICE` has type `String`, the string in
+`left_child`, and two children for start and length. `TYPED_STRING_CONCAT` has
+type `String`, the first string in `left_child`, the second in `right_child`, and
+the destination store in `store_id`; `TYPED_STRING_COPY` has the source in
+`left_child`; `TYPED_STRING_FROM_FIXED` has a fixed `String<N>` in
+`left_child`. All three allocate in `store_id`. `TYPED_BUILDER_CREATE` has the
+capacity in `left_child` and the destination store in `store_id`;
+`TYPED_LIST_CREATE` has the capacity in `left_child`, the element type in
+`auxiliary_type`, and the destination store in `store_id`;
+`TYPED_LIST_LITERAL` has type `List<T,N>` and its elements in a children run;
+`TYPED_LIST_GET` has type `T` with the list in `left_child` and index in
+`right_child`; `TYPED_LIST_SET` has type `Nil`, the list in `left_child`, and
+two children for index and value; `TYPED_LIST_PUSH` has type `Nil`, the list
+in `left_child`, the value in `right_child`, and `auxiliary_type` for the
+element type; `TYPED_LIST_POP` has type `T | Nil`, the list in `left_child`, and
+`auxiliary_type` for the element type; `TYPED_LIST_LEN` has type `Int32` and the
+list in `left_child`; `TYPED_SLICE_CREATE` has type `Slice<T>`, the list/slice
+in `left_child`, and children for start/length; `TYPED_SLICE_LEN` has type
+`Int32`; `TYPED_SLICE_GET` has type `T`, the slice in `left_child`, and the
+index in `right_child`;
+`TYPED_BUILDER_APPEND` and `TYPED_BUILDER_APPEND_BYTE` have the builder in
+`left_child` and the value in `right_child`; `TYPED_BUILDER_LEN` and
+`TYPED_BUILDER_FINISH` have the builder in `left_child`. `TYPED_ERROR_CONSTRUCT` has type
+`Error` and six children: header, description, filename, line, col, pos.
+`TYPED_ERROR_FIELD` has the field's type, the Error value in `left_child`, and
+the field index in `integer_value` (0 header, 1 description, 2 filename, 3 line,
+4 col, 5 pos). `NIPPY_TYPE_ERROR` is a built-in sized type with the fixed
+layout `header: String<32>`, `description: String<128>`,
+`filename: String<128>`, `line/col/pos: Int32` by default. The three string
+types are the Error type's three entries in `program->type_children`, in that
+order. `NIPPY_TYPE_STRING_LITERAL` is the checker's internal
+uncontextual literal type; a literal is retyped to `String` or `String<N>` by
+injection, and the generator rejects any literal that remains uncontextual.
+`NIPPY_TYPE_DYNAMIC_STRING` and `NIPPY_TYPE_STRING_BUILDER` are sized public
+types with no child types. `NIPPY_TYPE_LIST`, `NIPPY_TYPE_FIXED_LIST`, and `NIPPY_TYPE_SLICE` have one
+element type in `type_children`; fixed lists also use `fixed_length`.
 
 The `add_*` helpers append and return the new index. The caller must check
 `bool` results; a false return means allocation failed. `typed_program_copy_symbol`
@@ -333,7 +430,8 @@ binary links them all.
 LexerResult lexer_tokenize(const char *code);
 void        lexer_result_free(LexerResult *result);
 
-bool parser_parse(const TokenList *tokens, Ast *ast, ErrorState *errors);
+bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                  ErrorState *errors);
 void ast_init(Ast *ast);
 void ast_free(Ast *ast);
 
@@ -358,7 +456,10 @@ Rules that hold for every stage:
   `generator_generate`'s two strings).
 - `generator_generate` sets both output pointers to NULL before doing anything,
   so they are always either both valid or both NULL.
-- `lexer_tokenize` returns either tokens or errors, never both.
+- `lexer_tokenize` returns either tokens or errors, never both. String-literal
+  bytes live in `LexerResult.string_bytes`; a `TOKEN_STRING` stores an offset
+  and length into that pool. `parser_parse` copies the bytes it needs into
+  `Ast.bytes`, so it borrows the pool only for the duration of the call.
 
 ## Compatibility
 

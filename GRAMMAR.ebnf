@@ -19,10 +19,12 @@
 program            = item, { item }, end-of-input ;
 
 item               = declaration
+                   | assignment-statement
                    | expression-statement ;
 
 declaration        = type-declaration
                    | value-declaration
+                   | global-declaration
                    | function-declaration ;
 
 (* ---- type declarations ---- *)
@@ -41,6 +43,10 @@ field              = identifier, ":", type ;
 (* ---- values ---- *)
 
 value-declaration  = "var", identifier, [ ":", type ], "=", expression ;
+
+(* The checker requires a global declaration's type to be Store. The legacy
+   "var name: Store = Store(bytes)" spelling is still accepted. *)
+global-declaration = "global", identifier, [ ":", type ], "=", expression ;
 
 (* ---- functions ---- *)
 
@@ -61,7 +67,13 @@ statement          = return-statement
                    | while-statement
                    | break-statement
                    | continue-statement
+                   | assignment-statement
                    | expression-statement ;
+
+(* Assignment is a statement, not an expression. The target is a variable or
+   parameter; stores, functions, types, and fields are not assignable. *)
+assignment-statement = identifier, "=", expression
+                     | identifier, "[", expression, "]", "=", expression ;
 
 (* The checker accepts an expression statement only when the expression is a
    call; the value is discarded. *)
@@ -85,23 +97,27 @@ type               = union-type ;
 
 union-type         = primary-type, { "|", primary-type } ;
 
-primary-type       = type-name, [ "<", type-arguments, ">" ]
+primary-type       = "String", "<", integer-literal, ">"
+                   | "List", "<", type, [ ",", integer-literal ], ">"
+                   | "Slice", "<", type, ">"
+                   | type-name, [ "<", type-arguments, ">" ]
                    | function-type
                    | "(", type, ")" ;
 
 type-name          = identifier ;
-                     (* "Int32", "Bool", "Byte", "Nil", "Store", "Handle", a
-                        declared struct or alias, or a type parameter in scope.
-                        Store is only valid as the annotation on a store
-                        declaration; Handle needs exactly one type argument,
-                        whose type is a single sized type. *)
-
-type-arguments     = type, { ",", type } ;
-
-(* Function types are structural. "Fun" is an identifier, but in type position
-   it starts a function type when followed by '<'. *)
-function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")", ":",
-                     type, ">" ;
+                     (* "Int32", "Bool", "Byte", "Nil", "String",
+                        "StringBuilder", "List", "Slice", "Store", "Handle",
+                        "Error", a declared struct or alias, or a type parameter
+                        in scope.
+                        Bare "String" is the dynamic arena/static-backed
+                        string. List<T> is dynamic; List<T,N> is fixed-capacity with a runtime
+                        length. Slice<T> is a read-only view of a dynamic list.
+                        String<N> is a fixed-capacity
+                        inline string; N is a byte capacity in 0..4096 by
+                        default (the configured maximum can raise or lower that
+                        bound, up to 1 MiB). Store is only valid as the
+                        annotation on a store declaration; Handle needs exactly
+                        one type argument, whose type is a single sized type. *)
 
 (* ---- expressions ---- *)
 
@@ -123,20 +139,29 @@ unary              = "!", unary
                    | postfix ;
 
 (* `.is<T>()` is the only member operation. It binds tighter than unary. *)
-postfix            = primary, { ".", member-operation } ;
+postfix            = primary, { "[", expression, "]" | ".",
+                                 member-operation } ;
 
 member-operation   = "is", "<", type, ">", "(", ")"
                    | identifier, [ "<", type, ">" ],
                      "(", [ expression, { ",", expression } ], ")" ;
 
 primary            = integer-literal
+                   | string-literal
+                   | list-literal
                    | boolean-literal
                    | nil-literal
                    | identifier
                    | call
                    | "(", expression, ")" ;
-(* "Store", "Byte", and "Handle" are ordinary identifiers; the checker gives
-   them their built-in meaning. *)
+
+list-literal       = "[", [ expression, { ",", expression } ], "]" ;
+(* "Store", "Byte", "Handle", "String", "StringBuilder", "List", "Slice", and
+   "Error"
+   are ordinary identifiers;
+   the checker gives them their built-in meaning. String literals are written
+   with double quotes and are typed by context: a String expected type gives a
+   static dynamic string; a String<N> expected type gives a fixed inline value. *)
 
 (* A call's name is resolved by the checker: a struct type makes it a
    constructor, a function or function-typed value makes it a function call.
@@ -159,6 +184,15 @@ integer-literal    = digit, { digit } ;
                      (* decimal only; must fit in a signed 32-bit int, so a
                         larger literal is a lexer error, not a wrap-around *)
 
+string-literal     = '"', { string-character }, '"' ;
+                     (* string-character is any source byte except a double
+                        quote, a raw newline, a NUL byte, or a backslash. A
+                        backslash starts one of: \n, \t, \r, \\, or \".
+                        Any other escape is a lexer error. UTF-8 source bytes
+                        pass through unchanged. The value is not NUL-terminated
+                        in source; the fixed string representation adds the
+                        terminator. *)
+
 boolean-literal    = "true" | "false" ;
 
 nil-literal        = "nil" ;
@@ -177,6 +211,7 @@ digit              = "0" | ... | "9" ;
 (* ---- lexical structure ---- *)
 
 (* Keywords *)
+global             = "global" ;
 var                = "var" ;
 type               = "type" ;
 fun                = "fun" ;
@@ -199,6 +234,8 @@ end                = "end" ;
 "=="               = "==" ;
 "!="               = "!=" ;
 "("                = "(" ;
+"["                = "[" ;
+"]"                = "]" ;
 ")"                = ")" ;
 ","                = "," ;
 "+"                = "+" ;
@@ -217,40 +254,95 @@ end                = "end" ;
 
 (* ---- stores ---- *)
 
-(* Syntactically a store is a value declaration whose annotation is Store and
-   whose initializer is Store(bytes):
+(* A store is a global declaration whose annotation is Store and whose
+   initializer is Store(bytes):
 
-       var points: Store = Store(4096)
+       global points: Store = Store(4096)
 
    `bytes` is a constant Int32 expression (integer literals and +). Stores are
    global, non-first-class, and allocated at program start. The methods are:
 
        points.alloc<T>(value)   -> Handle<T>
        points.reset()           -> Nil
+       points.concat(a, b)      -> String
+       points.copy(s)           -> String
+       points.string(f)         -> String
+       points.builder(capacity) -> StringBuilder
+       points.list<T>(capacity)-> List<T>
        handle.read()            -> T
        handle.write(value)      -> Nil
 
    T must be a single sized type: Int32, Bool, Byte, Nil, a struct or concrete
-   generic struct, or a Handle<U>. Unions, function types, and Store are not
-   allocation element types. *)
+   generic struct, a Handle<U>, a String, a StringBuilder, a List<T>, a
+   List<T,N>, a String<N>, or Error. Unions, function types, and Store are not allocation element types.
+
+   Dynamic String, fixed String<N>, and StringBuilder add value methods:
+
+       s.byte_len()             -> Int32
+       s.byte_at(i)             -> Byte (bounds-checked)
+       s.slice(start, length)   -> String (dynamic strings only)
+       b.append(s)              -> Nil (dynamic String argument)
+       b.append_byte(byte)      -> Nil
+       b.finish()               -> String
+       xs.len()                 -> Int32
+       xs.push(value)           -> Nil (fixed and dynamic)
+       xs.pop()                 -> T | Nil (fixed and dynamic)
+       xs[i], xs[i] = value     -> list indexing (bounds-checked)
+       xs.slice(start, length)  -> Slice<T> (dynamic lists only)
+       s.len(), s[i]            -> read-only slice access
+       e.header()               -> String<32>  (default capacity)
+       e.description()          -> String<128> (default capacity)
+       e.filename()             -> String<128> (default capacity)
+       e.line(), e.col(), e.pos() -> Int32
+
+   String equality is content equality for the same String or String<N> type.
+   String and String<N> do not convert implicitly; use points.string(fixed) for
+   fixed-to-dynamic. StringBuilder copies alias the same builder state, and
+   List<T> copies alias the same list state. A fixed list literal may contain
+   0..capacity elements. A dynamic list is created with
+   points.list<T>(capacity). Error is constructed with Error(header, description,
+   filename, line, col, pos). *)
 
 (* ---- rejected forms worth naming ---- *)
 
 (* A bare expression is not a program:
-       13                      (* parser: expected 'var', 'type', or 'fun' ... *)
+       13                      (* parser: expected 'global', 'var', 'type', or 'fun' ... *)
    A struct declaration needs at least one field:
        type Point end          (* parser: expected at least one field ... *)
    A generic type needs its arguments where it is named:
        type Box<T> value: T end
        var b: Box = Box(1)     (* checker: type 'Box' needs type arguments *)
    A store needs its Store(bytes) initializer:
-       var s: Store = 16       (* checker: store 's' must be initialised ... *)
+       global s: Store = 16    (* checker: store 's' must be initialised ... *)
+   A global declaration must be a Store:
+       global x: Int32 = 1     (* checker: global 'x' must be declared ... *)
    A store is not a value, parameter, field, or union alternative:
        var t = s               (* checker: store 's' is not a value *)
    alloc needs a single sized element type:
        s.alloc<Int32 | Nil>(1) (* checker: Handle element type ... *)
    read and write need a handle:
        x.read()                (* checker: 'read' must be called on ... *)
+   A string literal needs a String or String<N> context:
+       var s = "x"             (* checker: string literal needs a String ... *)
+   A literal that exceeds its fixed capacity is rejected:
+       var s: String<4> = "hello"  (* checker: string literal of 5 bytes ... *)
+   A non-empty list literal can infer a fixed List<T,N> from one common element
+   type; an empty or mixed literal needs a fixed-list/union context:
+       var xs = [1, 2]             (* inferred List<Int32,2> *)
+       var xs: List<Int32, 5> = [1, 2] (* capacity 5, length 2 *)
+       var xs: List<Int32> = [1]   (* checker: dynamic list literal rejected *)
+       var xs: List<Int32, 2> = [1, 2, 3] (* checker: over capacity *)
+       var xs = []                 (* checker: cannot infer element type *)
+   String and String<N> do not convert implicitly:
+       var a: String<8> = "x"
+       var b: String = a       (* checker: initialiser type does not match *)
+       var c: String<16> = a   (* checker: initialiser type does not match *)
+   Error needs all six arguments in order:
+       Error("E", "d")         (* checker: Error takes header, description ... *)
+   Assignment is not an expression:
+       var y: Int32 = (x = 1)  (* parser: expected ')' *)
+   Assignment targets a variable, not a store or function:
+       s = 1                   (* checker: 's' is not an assignable variable *)
    An expression statement must be a call:
        fun f(): Int32 1 end    (* checker: expression statement must be a call *)
    Type arguments are inferred at calls, not written:

@@ -9,6 +9,7 @@ void ast_init(Ast *ast)
     list_init(&ast->roots, sizeof(size_t));
     list_init(&ast->children, sizeof(size_t));
     list_init(&ast->type_parameters, sizeof(size_t));
+    list_init(&ast->bytes, sizeof(unsigned char));
 }
 
 void ast_free(Ast *ast)
@@ -21,6 +22,7 @@ void ast_free(Ast *ast)
     list_free(&ast->roots);
     list_free(&ast->children);
     list_free(&ast->type_parameters);
+    list_free(&ast->bytes);
 }
 
 const AstNode *ast_get_node(const Ast *ast, size_t index)
@@ -72,4 +74,9 @@ bool ast_push_child(Ast *ast, size_t index)
 bool ast_push_type_parameter(Ast *ast, size_t index)
 {
     return list_push(&ast->type_parameters, &index);
+}
+
+bool ast_push_byte(Ast *ast, unsigned char byte)
+{
+    return list_push(&ast->bytes, &byte);
 }

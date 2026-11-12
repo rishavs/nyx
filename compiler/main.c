@@ -7,15 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_SOURCE_SIZE 4096
-
 static void print_errors(ErrorState *errors)
 {
     error_unknown_if_none(errors);
     fputs(errors->message, stderr);
 }
 
-static char *read_source(const char *path, ErrorState *errors)
+static char *read_source(const char *path, size_t max_source_size,
+                         ErrorState *errors)
 {
     FILE *file = fopen(path, "rb");
     char *source;
@@ -27,24 +26,24 @@ static char *read_source(const char *path, ErrorState *errors)
         return NULL;
     }
 
-    source = nippy_malloc(MAX_SOURCE_SIZE + 1);
+    source = nippy_malloc(max_source_size + 1);
     if (source == NULL) {
         error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_BUFFER);
         fclose(file);
         return NULL;
     }
-    length = fread(source, 1, MAX_SOURCE_SIZE, file);
+    length = fread(source, 1, max_source_size, file);
     if (ferror(file)) {
         error_report(errors, MESSAGE_DRIVER_FAILED_TO_READ, path);
         free(source);
         fclose(file);
         return NULL;
     }
-    if (length == MAX_SOURCE_SIZE) {
+    if (length == max_source_size) {
         next = fgetc(file);
         if (next != EOF) {
             error_report(errors, MESSAGE_DRIVER_SOURCE_TOO_LARGE, path,
-                         MAX_SOURCE_SIZE);
+                         max_source_size);
             free(source);
             fclose(file);
             return NULL;
@@ -182,7 +181,7 @@ static size_t fail_allocation_from_environment(void)
 int main(int argc, char **argv)
 {
     ErrorState errors;
-    CompilerConfig config;
+    CompilerConfig config = {0};
     CompilerResult compiled;
     char *source;
     char *c_path;
@@ -200,7 +199,12 @@ int main(int argc, char **argv)
     }
     errors.source_name = argv[1];
 
-    source = read_source(argv[1], &errors);
+    source = read_source(
+        argv[1],
+        config.max_source_bytes > 0
+            ? (size_t)config.max_source_bytes
+            : (size_t)NIPPY_DEFAULT_MAX_SOURCE_BYTES,
+        &errors);
     if (source == NULL) {
         print_errors(&errors);
         return 1;

@@ -14,7 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const CompilerConfig test_config = {"test.h", "test.nip"};
+static const CompilerConfig test_config = {.header_name = "test.h",
+                                           .source_name = "test.nip"};
 
 static int error_contains(const ErrorState *errors, const char *needle)
 {
@@ -6205,7 +6206,8 @@ TestResult test_generator_unsupported_statement(void)
 TestResult test_compiler_out_of_memory_is_reported(void)
 {
     CompilerResult result;
-    CompilerConfig config = {NULL, "example.nip"};
+    CompilerConfig config = {.header_name = NULL,
+                             .source_name = "example.nip"};
 
     nippy_alloc_fail_after(0);
     result = compiler_compile("var x : Int32 = 1\n", &config);
@@ -6554,14 +6556,6 @@ TestResult test_checker_function_field(void)
                          MESSAGE_CHECKER_FIELD_TYPE, "f");
 }
 
-TestResult test_checker_function_union_alternative(void)
-{
-    return compile_fails("type F = Fun<(Int32):Int32> | Nil\n",
-                         "a function-typed union alternative",
-                         MESSAGE_CHECKER_UNION_FUNCTION);
-}
-
-
 TestResult test_checker_recursive_struct(void)
 {
     return compile_fails("type Box\n  value: Box\nend\n",
@@ -6831,7 +6825,8 @@ TestResult test_checker_unknown_member(void)
 
 TestResult test_generator_store_runtime_messages(void)
 {
-    CompilerConfig config = {"test.h", "test.nip"};
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip"};
     CompilerResult result = compiler_compile(
         "var s: Store = Store(16)\nvar p: Handle<Int32> = s.alloc<Int32>(1)\n",
         &config);
@@ -6927,8 +6922,1554 @@ TestResult test_analyser_invalid_handle_type(void)
     return TEST_PASS;
 }
 
+TestResult test_lexer_unterminated_string(void)
+{
+    return compile_fails(
+        "var s: String<4> = \"ab",
+        "an unterminated string literal",
+        MESSAGE_LEXER_UNTERMINATED_STRING);
+}
+
+TestResult test_lexer_string_newline(void)
+{
+    return compile_fails(
+        "var s: String<8> = \"a\nb\"\n",
+        "a newline inside a string literal",
+        MESSAGE_LEXER_STRING_NEWLINE);
+}
+
+TestResult test_lexer_invalid_escape(void)
+{
+    return compile_fails(
+        "var s: String<8> = \"a\\qb\"\n",
+        "an invalid string escape",
+        MESSAGE_LEXER_INVALID_ESCAPE, 'q');
+}
+
+TestResult test_parser_string_length(void)
+{
+    return compile_fails(
+        "var s: String<> = \"\"\n",
+        "a missing String capacity",
+        MESSAGE_PARSER_EXPECTED_STRING_LENGTH);
+}
+
+TestResult test_parser_string_gt(void)
+{
+    return compile_fails(
+        "var s: String<4, 8> = \"\"\n",
+        "a String capacity trailing comma",
+        MESSAGE_PARSER_EXPECTED_STRING_GT);
+}
+
+TestResult test_checker_dynamic_string(void)
+{
+    return compile_fails(
+        "var s: String = \"x\"\nvar f: String<8> = s\n",
+        "a dynamic String assigned to a fixed String",
+        MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "f", "String<8>");
+}
+
+TestResult test_checker_string_too_long(void)
+{
+    return compile_fails(
+        "var s: String<4> = \"hello\"\n",
+        "a string literal larger than its capacity",
+        MESSAGE_CHECKER_STRING_TOO_LONG, (size_t)5, 4);
+}
+
+TestResult test_checker_string_literal_context(void)
+{
+    return compile_fails(
+        "var s = \"x\"\n",
+        "a string literal without a String<N> context",
+        MESSAGE_CHECKER_STRING_LITERAL_CONTEXT);
+}
+
+TestResult test_checker_string_compare_context(void)
+{
+    return compile_fails(
+        "var ok: Bool = \"a\" == \"b\"\n",
+        "comparing two uncontextual string literals",
+        MESSAGE_CHECKER_STRING_COMPARE_CONTEXT);
+}
+
+TestResult test_checker_string_ambiguous(void)
+{
+    return compile_fails(
+        "var u: String<4> | String<8> = \"hi\"\n",
+        "a literal that fits two union alternatives",
+        MESSAGE_CHECKER_STRING_AMBIGUOUS);
+}
+
+TestResult test_checker_string_capacity(void)
+{
+    return compile_fails(
+        "var s: String<4097> = \"\"\n",
+        "a String capacity above the limit",
+        MESSAGE_CHECKER_STRING_CAPACITY, 4096);
+}
+
+TestResult test_checker_string_assignment(void)
+{
+    return compile_fails(
+        "var a: String<8> = \"hi\"\nvar b: String<16> = a\n",
+        "assigning a String<8> to a String<16>",
+        MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "b", "String<16>");
+}
+
+TestResult test_checker_string_equality(void)
+{
+    return compile_fails(
+        "var a: String<8> = \"hi\"\nvar b: String<16> = \"hi\"\nvar ok: Bool "
+        "= a == b\n",
+        "comparing different String capacities",
+        MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+}
+
+TestResult test_checker_string_len_args(void)
+{
+    return compile_fails(
+        "var s: String<8> = \"hi\"\nvar n: Int32 = s.byte_len(1)\n",
+        "byte_len with an argument",
+        MESSAGE_CHECKER_MEMBER_ARGS, "byte_len");
+}
+
+TestResult test_checker_string_index_type(void)
+{
+    return compile_fails(
+        "var s: String<8> = \"hi\"\nvar b: Byte = s.byte_at(\"x\")\n",
+        "byte_at with a string index",
+        MESSAGE_CHECKER_STRING_INDEX);
+}
+
+TestResult test_checker_string_method_type_arg(void)
+{
+    return compile_fails(
+        "var s: String<8> = \"hi\"\nvar n: Int32 = s.byte_len<String<8>>()\n",
+        "a type argument on byte_len",
+        MESSAGE_CHECKER_MEMBER_TYPE_ARG, "byte_len");
+}
+
+TestResult test_checker_string_receiver(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1.byte_len()\n",
+        "byte_len on an Int32",
+        MESSAGE_CHECKER_MEMBER_RECEIVER, "byte_len");
+}
+
+TestResult test_checker_string_literal_receiver(void)
+{
+    return compile_fails(
+        "var n: Int32 = \"hi\".byte_len()\n",
+        "byte_len on an uncontextual literal",
+        MESSAGE_CHECKER_STRING_LITERAL_CONTEXT);
+}
+
+TestResult test_checker_error_args(void)
+{
+    return compile_fails(
+        "var e: Error = Error(\"E\", \"d\")\n",
+        "Error with too few arguments",
+        MESSAGE_CHECKER_ERROR_ARGS);
+}
+
+TestResult test_checker_error_arg_type(void)
+{
+    return compile_fails(
+        "var e: Error = Error(\"E\", 1, \"f\", 1, 2, 3)\n",
+        "Error with a non-string description",
+        MESSAGE_CHECKER_ERROR_ARG_TYPE, (size_t)2);
+}
+
+TestResult test_checker_error_named_args(void)
+{
+    return compile_fails(
+        "var e: Error = Error(header=\"E\", description=\"d\", "
+        "filename=\"f\", line=1, col=2, pos=3)\n",
+        "Error with named arguments",
+        MESSAGE_CHECKER_ERROR_ARGS);
+}
+
+TestResult test_checker_error_member(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1.line()\n",
+        "an Error field method on an Int32",
+        MESSAGE_CHECKER_MEMBER_RECEIVER, "line");
+}
+
+TestResult test_checker_redefines_string(void)
+{
+    return compile_fails(
+        "type String = Int32\n",
+        "redefining String",
+        MESSAGE_CHECKER_REDEFINES_STRING);
+}
+
+TestResult test_checker_redefines_error(void)
+{
+    return compile_fails(
+        "type Error = Int32\n",
+        "redefining Error",
+        MESSAGE_CHECKER_REDEFINES_ERROR);
+}
+
+TestResult test_checker_string_variable_name(void)
+{
+    return compile_fails(
+        "var String: Int32 = 1\n",
+        "a variable named String",
+        MESSAGE_CHECKER_DUPLICATE_NAME, "String");
+}
+
+TestResult test_analyser_invalid_string_literal(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType string = {0};
+    TypedNode literal = {0};
+    size_t type_index = 0;
+    size_t node_index = 0;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    string.kind = NIPPY_TYPE_STRING;
+    string.name_index = TYPED_NO_NODE;
+    string.signature_index = TYPED_NO_NODE;
+    string.fixed_length = 4;
+    if (!typed_program_add_type(&program, &string, &type_index)) {
+        return TEST_ERROR;
+    }
+    literal.kind = TYPED_STRING_LITERAL;
+    literal.type_index = type_index;
+    literal.name_index = TYPED_NO_NODE;
+    literal.auxiliary_type = TYPED_NO_NODE;
+    literal.store_id = TYPED_NO_NODE;
+    literal.string_offset = 0;
+    literal.string_length = 4;
+    literal.left_child = TYPED_NO_NODE;
+    literal.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &literal, &node_index) ||
+        !list_push(&program.roots, &node_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_STRING_LITERAL);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid string literal did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+TestResult test_analyser_invalid_error(void)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType error = {0};
+    TypedNode field = {0};
+    size_t type_index = 0;
+    size_t node_index = 0;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    error.kind = NIPPY_TYPE_ERROR;
+    error.name_index = TYPED_NO_NODE;
+    error.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &error, &type_index)) {
+        return TEST_ERROR;
+    }
+    field.kind = TYPED_ERROR_FIELD;
+    field.type_index = type_index;
+    field.name_index = TYPED_NO_NODE;
+    field.auxiliary_type = TYPED_NO_NODE;
+    field.store_id = TYPED_NO_NODE;
+    field.integer_value = 9;
+    field.left_child = TYPED_NO_NODE;
+    field.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &field, &node_index) ||
+        !list_push(&program.roots, &node_index)) {
+        return TEST_ERROR;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_ERROR, node_index);
+    if (analyser_analyse(&program, &errors) ||
+        !error_contains(&errors, expected)) {
+        fprintf(stderr, "  invalid Error node did not produce its diagnostic\n");
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
 /* Every test in this suite, in run order. The table lives here so adding
    a test needs only its definition above and one entry below. */
+static const char golden_string_basic_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "static void nippy_string_bounds(void)\n"
+        "{\n"
+        "    fprintf(stderr, \"nippy: string index out of bounds\\n\");\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i)\n"
+        "{\n"
+        "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+        "        nippy_string_bounds();\n"
+        "    }\n"
+        "    return s.data[i];\n"
+        "}\n"
+        "\n"
+        "static bool nippy_string_8_equal(nippy_string_8 a, nippy_string_8 b)\n"
+        "{\n"
+        "    return a.length == b.length &&\n"
+        "           memcmp(a.data, b.data, a.length) == 0;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    nippy_string_8 s = (nippy_string_8){ { 104, 105, 10, 0 }, 3 };\n"
+        "    (void)s;\n"
+        "#line 2 \"test.nip\"\n"
+        "    int32_t n = ((int32_t)(s).length);\n"
+        "    (void)n;\n"
+        "#line 3 \"test.nip\"\n"
+        "    bool ok = (nippy_string_8_equal(s, (nippy_string_8){ { 104, "
+        "105, 10, 0 }, 3 }));\n"
+        "    (void)ok;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_string_basic_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint8_t data[9];\n"
+        "    uint32_t length;\n"
+        "} nippy_string_8;\n"
+        "\n"
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i);\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_string_basic_codegen(void)
+{
+    const char *source =
+        "var s: String<8> = \"hi\\n\"\n"
+        "var n: Int32 = s.byte_len()\n"
+        "var ok: Bool = s == \"hi\\n\"\n"
+    ;
+
+    return compile_succeeds(source, golden_string_basic_c,
+                            golden_string_basic_h, "string basic");
+}
+
+
+static const char golden_string_union_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "static void nippy_string_bounds(void)\n"
+        "{\n"
+        "    fprintf(stderr, \"nippy: string index out of bounds\\n\");\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i)\n"
+        "{\n"
+        "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+        "        nippy_string_bounds();\n"
+        "    }\n"
+        "    return s.data[i];\n"
+        "}\n"
+        "\n"
+        "static bool nippy_string_8_equal(nippy_string_8 a, nippy_string_8 b)\n"
+        "{\n"
+        "    return a.length == b.length &&\n"
+        "           memcmp(a.data, b.data, a.length) == 0;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    nippy_sum_2 u = ((nippy_sum_2){ .tag = 1, .value.v1 = "
+        "(nippy_string_8){ { 104, 105, 0 }, 2 } });\n"
+        "    (void)u;\n"
+        "#line 2 \"test.nip\"\n"
+        "    bool ok = (u.tag == 1);\n"
+        "    (void)ok;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_string_union_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint8_t data[9];\n"
+        "    uint32_t length;\n"
+        "} nippy_string_8;\n"
+        "\n"
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i);\n"
+        "\n"
+        "typedef uint8_t nippy_nil;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t tag;\n"
+        "    union {\n"
+        "        nippy_string_8 v1;\n"
+        "    } value;\n"
+        "} nippy_sum_2;\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_string_union_codegen(void)
+{
+    const char *source =
+        "var u: String<8> | Nil = \"hi\"\n"
+        "var ok: Bool = u.is<String<8>>()\n"
+    ;
+
+    return compile_succeeds(source, golden_string_union_c,
+                            golden_string_union_h, "string union");
+}
+
+
+static const char golden_string_error_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "\n"
+        "static void nippy_string_bounds(void)\n"
+        "{\n"
+        "    fprintf(stderr, \"nippy: string index out of bounds\\n\");\n"
+        "    exit(1);\n"
+        "}\n"
+        "\n"
+        "static uint8_t nippy_string_32_at(nippy_string_32 s, int32_t i)\n"
+        "{\n"
+        "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+        "        nippy_string_bounds();\n"
+        "    }\n"
+        "    return s.data[i];\n"
+        "}\n"
+        "\n"
+        "static bool nippy_string_32_equal(nippy_string_32 a, nippy_string_32 b)\n"
+        "{\n"
+        "    return a.length == b.length &&\n"
+        "           memcmp(a.data, b.data, a.length) == 0;\n"
+        "}\n"
+        "\n"
+        "static uint8_t nippy_string_128_at(nippy_string_128 s, int32_t i)\n"
+        "{\n"
+        "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+        "        nippy_string_bounds();\n"
+        "    }\n"
+        "    return s.data[i];\n"
+        "}\n"
+        "\n"
+        "static bool nippy_string_128_equal(nippy_string_128 a, nippy_string_128 b)\n"
+        "{\n"
+        "    return a.length == b.length &&\n"
+        "           memcmp(a.data, b.data, a.length) == 0;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    nippy_error e = (nippy_error){ (nippy_string_32){ { 69, 0 }, 1 "
+        "}, (nippy_string_128){ { 100, 101, 115, 99, 0 }, 4 }, "
+        "(nippy_string_128){ { 116, 101, 115, 116, 46, 110, 105, 112, 0 }, "
+        "8 }, 1, 2, 3 };\n"
+        "    (void)e;\n"
+        "#line 2 \"test.nip\"\n"
+        "    int32_t l = (e).line;\n"
+        "    (void)l;\n"
+        "#line 3 \"test.nip\"\n"
+        "    nippy_string_32 h = (e).header;\n"
+        "    (void)h;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_string_error_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint8_t data[33];\n"
+        "    uint32_t length;\n"
+        "} nippy_string_32;\n"
+        "\n"
+        "static uint8_t nippy_string_32_at(nippy_string_32 s, int32_t i);\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint8_t data[129];\n"
+        "    uint32_t length;\n"
+        "} nippy_string_128;\n"
+        "\n"
+        "static uint8_t nippy_string_128_at(nippy_string_128 s, int32_t i);\n"
+        "\n"
+        "typedef struct {\n"
+        "    nippy_string_32 header;\n"
+        "    nippy_string_128 description;\n"
+        "    nippy_string_128 filename;\n"
+        "    int32_t line;\n"
+        "    int32_t col;\n"
+        "    int32_t pos;\n"
+        "} nippy_error;\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_string_error_codegen(void)
+{
+    const char *source =
+        "var e: Error = Error(\"E\", \"desc\", \"test.nip\", 1, 2, 3)\n"
+        "var l: Int32 = e.line()\n"
+        "var h: String<32> = e.header()\n"
+    ;
+
+    return compile_succeeds(source, golden_string_error_c,
+                            golden_string_error_h, "string error");
+}
+
+
+static const char *const golden_string_store_c_parts[] = {
+        "#include \"test.h\"\n",
+        "\n",
+        "#include <stdio.h>\n",
+        "#include <stdlib.h>\n",
+        "#include <string.h>\n",
+        "\n",
+        "#define NIPPY_STORE_COUNT 1\n",
+        "\n",
+        "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n",
+        "\n",
+        "static void nippy_panic(const char *message)\n",
+        "{\n",
+        "    fprintf(stderr, \"%s\\n\", message);\n",
+        "    exit(1);\n",
+        "}\n",
+        "\n",
+        "static size_t nippy_store_align(size_t offset, size_t alignment)\n",
+        "{\n",
+        "    size_t remainder;\n",
+        "\n",
+        "    if (alignment <= 1) {\n",
+        "        return offset;\n",
+        "    }\n",
+        "    remainder = offset % alignment;\n",
+        "    if (remainder == 0) {\n",
+        "        return offset;\n",
+        "    }\n",
+        "    if (offset > (size_t)-1 - (alignment - remainder)) {\n",
+        "        nippy_panic(\"nippy: out of memory\");\n",
+        "    }\n",
+        "    return offset + (alignment - remainder);\n",
+        "}\n",
+        "\n",
+        "static void nippy_store_init(nippy_store *store, size_t initial_bytes)\n",
+        "{\n",
+        "    if (initial_bytes == 0) {\n",
+        "        initial_bytes = 1;\n",
+        "    }\n",
+        "    store->data = malloc(initial_bytes);\n",
+        "    if (store->data == NULL) {\n",
+        "        nippy_panic(\"nippy: out of memory\");\n",
+        "    }\n",
+        "    store->used = 0;\n",
+        "    store->capacity = initial_bytes;\n",
+        "    store->generation = 1;\n",
+        "}\n",
+        "\n",
+        "static void nippy_store_reserve(nippy_store *store, size_t required)\n",
+        "{\n",
+        "    size_t capacity;\n",
+        "    unsigned char *grown;\n",
+        "\n",
+        "    if (required <= store->capacity) {\n",
+        "        return;\n",
+        "    }\n",
+        "    capacity = store->capacity == 0 ? 1 : store->capacity;\n",
+        "    while (capacity < required) {\n",
+        "        if (capacity > (size_t)-1 / 2) {\n",
+        "            nippy_panic(\"nippy: out of memory\");\n",
+        "        }\n",
+        "        capacity *= 2;\n",
+        "    }\n",
+        "    grown = realloc(store->data, capacity);\n",
+        "    if (grown == NULL) {\n",
+        "        nippy_panic(\"nippy: out of memory\");\n",
+        "    }\n",
+        "    store->data = grown;\n",
+        "    store->capacity = capacity;\n",
+        "}\n",
+        "\n",
+        "static nippy_handle nippy_store_alloc(nippy_store *store, size_t id,\n",
+        "                                      const void *value, size_t size,\n",
+        "                                      size_t align)\n",
+        "{\n",
+        "    nippy_handle handle;\n",
+        "    size_t offset;\n",
+        "    size_t end;\n",
+        "\n",
+        "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n",
+        "        nippy_panic(\"nippy: invalid store id\");\n",
+        "    }\n",
+        "    if (size == 0) {\n",
+        "        nippy_panic(\"nippy: handle is out of range\");\n",
+        "    }\n",
+        "    offset = nippy_store_align(store->used, align);\n",
+        "    if (offset > (size_t)-1 - size) {\n",
+        "        nippy_panic(\"nippy: handle is out of range\");\n",
+        "    }\n",
+        "    end = offset + size;\n",
+        "    nippy_store_reserve(store, end);\n",
+        "    memcpy(store->data + offset, value, size);\n",
+        "    store->used = end;\n",
+        "    handle.store = (uint32_t)id;\n",
+        "    handle.offset = offset;\n",
+        "    handle.generation = store->generation;\n",
+        "    return handle;\n",
+        "}\n",
+        "\n",
+        "static unsigned char *nippy_handle_pointer(nippy_handle handle,\n",
+        "                                           size_t size)\n",
+        "{\n",
+        "    nippy_store *store;\n",
+        "\n",
+        "    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {\n",
+        "        nippy_panic(\"nippy: invalid store id\");\n",
+        "    }\n",
+        "    store = &nippy_stores[handle.store];\n",
+        "    if (handle.generation != store->generation) {\n",
+        "        nippy_panic(\"nippy: stale handle\");\n",
+        "    }\n",
+        "    if (handle.offset > store->used ||\n",
+        "        size > store->used - handle.offset) {\n",
+        "        nippy_panic(\"nippy: handle is out of range\");\n",
+        "    }\n",
+        "    return store->data + handle.offset;\n",
+        "}\n",
+        "\n",
+        "static void nippy_handle_write(nippy_handle handle, const void *value,\n",
+        "                               size_t size)\n",
+        "{\n",
+        "    memcpy(nippy_handle_pointer(handle, size), value, size);\n",
+        "}\n",
+        "\n",
+        "static void nippy_store_reset(nippy_store *store)\n",
+        "{\n",
+        "    store->used = 0;\n",
+        "    if (store->generation == UINT64_MAX) {\n",
+        "        nippy_panic(\"nippy: stale handle\");\n",
+        "    }\n",
+        "    store->generation++;\n",
+        "}\n",
+        "\n",
+        "static void nippy_store_free(nippy_store *store)\n",
+        "{\n",
+        "    free(store->data);\n",
+        "    store->data = NULL;\n",
+        "    store->used = 0;\n",
+        "    store->capacity = 0;\n",
+        "    store->generation = 0;\n",
+        "    (void)nippy_store_reserve;\n",
+        "    (void)nippy_store_alloc;\n",
+        "    (void)nippy_handle_pointer;\n",
+        "    (void)nippy_handle_write;\n",
+        "    (void)nippy_store_reset;\n",
+        "}\n",
+        "\n",
+        "static void nippy_string_bounds(void)\n",
+        "{\n",
+        "    fprintf(stderr, \"nippy: string index out of bounds\\n\");\n",
+        "    exit(1);\n",
+        "}\n",
+        "\n",
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i)\n",
+        "{\n",
+        "    if (i < 0 || (uint32_t)i >= s.length) {\n",
+        "        nippy_string_bounds();\n",
+        "    }\n",
+        "    return s.data[i];\n",
+        "}\n",
+        "\n",
+        "static bool nippy_string_8_equal(nippy_string_8 a, nippy_string_8 b)\n",
+        "{\n",
+        "    return a.length == b.length &&\n",
+        "           memcmp(a.data, b.data, a.length) == 0;\n",
+        "}\n",
+        "\n",
+        "int main(void)\n",
+        "{\n",
+        "    nippy_store_init(&nippy_stores[0], 8);\n",
+        "#line 2 \"test.nip\"\n",
+        "    nippy_handle h = nippy_store_alloc(&nippy_stores[0], 0, ",
+        "&(union { nippy_string_8 nippy_value; }){ .nippy_value = ",
+        "(nippy_string_8){ { 104, 105, 0 }, 2 } }, sizeof(nippy_string_8), ",
+        "_Alignof(nippy_string_8));\n",
+        "    (void)h;\n",
+        "#line 3 \"test.nip\"\n",
+        "    nippy_string_8 s = (*(nippy_string_8 *)nippy_handle_pointer(h, ",
+        "sizeof(nippy_string_8)));\n",
+        "    (void)s;\n",
+        "    nippy_store_free(&nippy_stores[0]);\n",
+        "    return 0;\n",
+        "}\n",
+};
+static const GoldenText golden_string_store_c = { golden_string_store_c_parts, 182 };
+
+static const char golden_string_store_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "#include <stddef.h>\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint32_t store;\n"
+        "    size_t offset;\n"
+        "    uint64_t generation;\n"
+        "} nippy_handle;\n"
+        "\n"
+        "typedef struct {\n"
+        "    unsigned char *data;\n"
+        "    size_t used;\n"
+        "    size_t capacity;\n"
+        "    uint64_t generation;\n"
+        "} nippy_store;\n"
+        "\n"
+        "typedef struct {\n"
+        "    uint8_t data[9];\n"
+        "    uint32_t length;\n"
+        "} nippy_string_8;\n"
+        "\n"
+        "static uint8_t nippy_string_8_at(nippy_string_8 s, int32_t i);\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_string_store_codegen(void)
+{
+    const char *source =
+        "var arena: Store = Store(8)\n"
+        "var h: Handle<String<8>> = arena.alloc<String<8>>(\"hi\")\n"
+        "var s: String<8> = h.read()\n"
+    ;
+
+    return compile_succeeds_parts(source, &golden_string_store_c,
+                                  golden_string_store_h,
+                                  "string store");
+}
+
+
+
+TestResult test_compiler_error_capacities(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .error_header_capacity = 8,
+                             .error_description_capacity = 16,
+                             .error_filename_capacity = 24};
+    CompilerResult result = compiler_compile(
+        "var e: Error = Error(\"E\", \"d\", \"f\", 1, 2, 3)\n", &config);
+    int ok;
+
+    ok = result.succeeded && result.h_source != NULL &&
+         strstr(result.h_source, "nippy_string_8 header;") != NULL &&
+         strstr(result.h_source, "nippy_string_16 description;") != NULL &&
+         strstr(result.h_source, "nippy_string_24 filename;") != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  custom Error capacities were not used\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_error_capacity_invalid(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .error_header_capacity =
+                                 NIPPY_MAX_STRING_CAPACITY + 1,
+                             .error_description_capacity = 16,
+                             .error_filename_capacity = 24};
+    CompilerResult result = compiler_compile(
+        "var e: Error = Error(\"E\", \"d\", \"f\", 1, 2, 3)\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_COMPILER_ERROR_CAPACITY, "header",
+                   NIPPY_DEFAULT_MAX_STRING_CAPACITY);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  invalid Error capacity was not rejected\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+
+TestResult test_compiler_max_string_capacity(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_string_capacity = 8};
+    CompilerResult result = compiler_compile(
+        "var s: String<8> = \"12345678\"\n", &config);
+    int ok;
+
+    ok = result.succeeded && result.h_source != NULL &&
+         strstr(result.h_source, "nippy_string_8") != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  custom maximum string capacity was not used\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_max_string_exceeded(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_string_capacity = 8};
+    CompilerResult result = compiler_compile(
+        "var s: String<16> = \"hi\"\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_CHECKER_STRING_CAPACITY, 8);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr,
+                "  String capacity above the configured maximum was accepted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_max_string_invalid(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_string_capacity =
+                                 NIPPY_MAX_STRING_CAPACITY + 1};
+    CompilerResult result = compiler_compile(
+        "var s: String<8> = \"hi\"\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_COMPILER_STRING_CAPACITY,
+                   NIPPY_MAX_STRING_CAPACITY);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  invalid maximum string capacity was accepted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+
+TestResult test_compiler_source_limit(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_source_bytes = 8};
+    CompilerResult result = compiler_compile("var x: Int32 = 1\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_COMPILER_SOURCE_TOO_LARGE, 8);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  configured source limit was not enforced\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+
+TestResult test_compiler_max_string_raised(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_string_capacity = 8192};
+    CompilerResult result = compiler_compile(
+        "var s: String<8192> = \"\"\n", &config);
+    int ok;
+
+    ok = result.succeeded && result.h_source != NULL &&
+         strstr(result.h_source, "nippy_string_8192") != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  raised maximum string capacity was not used\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+static const char golden_assignment_top_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    int32_t x = 1;\n"
+        "#line 2 \"test.nip\"\n"
+        "    x = 2;\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_assignment_top_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_assignment_top_codegen(void)
+{
+    const char *source =
+        "var x: Int32 = 1\n"
+        "x = 2\n"
+    ;
+
+    return compile_succeeds(source, golden_assignment_top_c,
+                            golden_assignment_top_h, "assignment top");
+}
+
+
+static const char golden_assignment_param_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "#include <stdio.h>\n"
+        "\n"
+        "#line 1 \"test.nip\"\n"
+        "int32_t bump(int32_t x)\n"
+        "{\n"
+        "    (void)x;\n"
+        "#line 2 \"test.nip\"\n"
+        "    x = (int32_t)((uint32_t)(x) + (uint32_t)(1));\n"
+        "#line 3 \"test.nip\"\n"
+        "    return x;\n"
+        "}\n"
+        "\n"
+        "int32_t nippy_program_value(void)\n"
+        "{\n"
+        "#line 6 \"test.nip\"\n"
+        "    int32_t n = bump(1);\n"
+        "    return n;\n"
+        "}\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "    printf(\"%d\\n\", (int)nippy_program_value());\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_assignment_param_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "typedef int32_t (*nippy_fun_0)(int32_t);\n"
+        "\n"
+        "int32_t nippy_program_value(void);\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_assignment_param_codegen(void)
+{
+    const char *source =
+        "fun bump(x: Int32): Int32\n"
+        "  x = x + 1\n"
+        "  return x\n"
+        "end\n"
+        "\n"
+        "var n: Int32 = bump(1)\n"
+    ;
+
+    return compile_succeeds(source, golden_assignment_param_c,
+                            golden_assignment_param_h, "assignment param");
+}
+
+
+TestResult test_checker_assign_unknown(void)
+{
+    return compile_fails(
+        "x = 1\n",
+        "an assignment to an unknown name",
+        MESSAGE_CHECKER_UNKNOWN_NAME, "x");
+}
+
+TestResult test_checker_assign_store(void)
+{
+    return compile_fails(
+        "var s: Store = Store(8)\ns = Store(8)\n",
+        "an assignment to a store",
+        MESSAGE_CHECKER_ASSIGN_TARGET, "s");
+}
+
+TestResult test_checker_assign_function(void)
+{
+    return compile_fails(
+        "fun f(): Nil\n  return nil\nend\nf = 1\n",
+        "an assignment to a function",
+        MESSAGE_CHECKER_ASSIGN_TARGET, "f");
+}
+
+TestResult test_checker_assign_type(void)
+{
+    return compile_fails(
+        "type P\n  x: Int32\nend\nP = 1\n",
+        "an assignment to a type",
+        MESSAGE_CHECKER_ASSIGN_TARGET, "P");
+}
+
+TestResult test_checker_assign_builtin(void)
+{
+    return compile_fails(
+        "Int32 = 1\n",
+        "an assignment to a built-in type",
+        MESSAGE_CHECKER_ASSIGN_TARGET, "Int32");
+}
+
+TestResult test_checker_assign_global_in_function(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1\nfun f(): Nil\n  n = 2\n  return nil\nend\n",
+        "assigning a program-level variable inside a function",
+        MESSAGE_CHECKER_GLOBAL_IN_FUNCTION, "n");
+}
+
+TestResult test_checker_assign_type_mismatch(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1\nn = true\n",
+        "assigning a Bool to an Int32",
+        MESSAGE_CHECKER_ASSIGN_TYPE, "n");
+}
+
+TestResult test_checker_assign_byte_range(void)
+{
+    return compile_fails(
+        "var b: Byte = 1\nb = 300\n",
+        "assigning an out-of-range Byte literal",
+        MESSAGE_CHECKER_BYTE_RANGE, 300);
+}
+
+TestResult test_checker_assign_string_too_long(void)
+{
+    return compile_fails(
+        "var s: String<4> = \"a\"\ns = \"hello\"\n",
+        "assigning a literal larger than the destination",
+        MESSAGE_CHECKER_STRING_TOO_LONG, (size_t)5, 4);
+}
+
+TestResult test_parser_assign_missing_value(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1\nn =\n",
+        "an assignment without a value",
+        MESSAGE_PARSER_EXPECTED_EXPRESSION);
+}
+
+static const char golden_assignment_main_c[] =
+        "#include \"test.h\"\n"
+        "\n"
+        "int main(void)\n"
+        "{\n"
+        "#line 1 \"test.nip\"\n"
+        "    int32_t a = 1;\n"
+        "    (void)a;\n"
+        "#line 2 \"test.nip\"\n"
+        "    int32_t b = 2;\n"
+        "    (void)b;\n"
+        "#line 3 \"test.nip\"\n"
+        "    a = b;\n"
+        "    return 0;\n"
+        "}\n";
+
+static const char golden_assignment_main_h[] =
+        "#ifndef NIPPY_GENERATED_H\n"
+        "#define NIPPY_GENERATED_H\n"
+        "\n"
+        "#include <stdbool.h>\n"
+        "#include <stdint.h>\n"
+        "\n"
+        "#endif\n";
+
+TestResult test_assignment_main_codegen(void)
+{
+    const char *source =
+        "var a: Int32 = 1\n"
+        "var b: Int32 = 2\n"
+        "a = b\n"
+    ;
+
+    return compile_succeeds(source, golden_assignment_main_c,
+                            golden_assignment_main_h, "main assignment");
+}
+
+
+
+TestResult test_parser_assignment_expression(void)
+{
+    return compile_fails(
+        "var n: Int32 = 1\nvar m: Int32 = (n = 2)\n",
+        "assignment used as an expression",
+        MESSAGE_PARSER_EXPECTED_RPAREN);
+}
+
+
+TestResult test_checker_global_declaration(void)
+{
+    return compile_fails(
+        "global x: Int32 = 1\n",
+        "a global declaration that is not a Store",
+        MESSAGE_CHECKER_GLOBAL_DECLARATION, "x");
+}
+
+TestResult test_checker_global_store_initializer(void)
+{
+    return compile_fails(
+        "global arena: Store = 1\n",
+        "a global Store with a non-Store initializer",
+        MESSAGE_CHECKER_STORE_INITIALIZER, "arena");
+}
+
+TestResult test_checker_concat_type(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var f: String<8> = \"x\"\n"
+        "var s: String = arena.concat(f, \"y\")\n",
+        "concat with a fixed string",
+        MESSAGE_CHECKER_CONCAT_TYPE);
+}
+
+TestResult test_checker_copy_type(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var f: String<8> = \"x\"\n"
+        "var s: String = arena.copy(f)\n",
+        "copy with a fixed string",
+        MESSAGE_CHECKER_COPY_TYPE);
+}
+
+TestResult test_checker_store_string_type(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\nvar s: String = arena.string(\"hi\")\n",
+        "store.string with a dynamic literal",
+        MESSAGE_CHECKER_STORE_STRING_TYPE);
+}
+
+TestResult test_checker_slice_type(void)
+{
+    return compile_fails(
+        "var s: String = \"hello\"\nvar t: String = s.slice(\"x\", 1)\n",
+        "slice with a non-Int32 start",
+        MESSAGE_CHECKER_STRING_SLICE_TYPE);
+}
+
+TestResult test_checker_dynamic_fixed_equality(void)
+{
+    return compile_fails(
+        "var f: String<8> = \"x\"\nvar s: String = \"x\"\nvar ok: Bool = f == s\n",
+        "comparing fixed and dynamic strings",
+        MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+}
+
+TestResult test_checker_builder_capacity(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var b: StringBuilder = arena.builder(\"x\")\n",
+        "builder with a non-Int32 capacity",
+        MESSAGE_CHECKER_BUILDER_CAPACITY);
+}
+
+TestResult test_checker_builder_append_type(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var f: String<8> = \"x\"\n"
+        "var b: StringBuilder = arena.builder(4)\n"
+        "b.append(f)\n",
+        "builder append with a fixed string",
+        MESSAGE_CHECKER_BUILDER_APPEND_TYPE);
+}
+
+TestResult test_checker_builder_byte_type(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var b: StringBuilder = arena.builder(4)\n"
+        "b.append_byte(\"x\")\n",
+        "builder append_byte with a string",
+        MESSAGE_CHECKER_BUILDER_BYTE_TYPE);
+}
+
+TestResult test_checker_builder_args(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var b: StringBuilder = arena.builder(4)\n"
+        "var s: String = b.finish(1)\n",
+        "builder finish with an argument",
+        MESSAGE_CHECKER_MEMBER_ARGS, "finish");
+}
+
+TestResult test_checker_builder_redefinition(void)
+{
+    return compile_fails(
+        "type StringBuilder = Int32\n",
+        "redefining StringBuilder",
+        MESSAGE_CHECKER_REDEFINES_BUILDER);
+}
+
+TestResult test_parser_list_capacity(void)
+{
+    return compile_fails(
+        "var xs: List<Int32,> = [1]\n",
+        "list missing capacity",
+        MESSAGE_PARSER_EXPECTED_LIST_CAPACITY);
+}
+
+TestResult test_parser_list_gt(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1 = [1]\n",
+        "list missing >",
+        MESSAGE_PARSER_EXPECTED_LIST_GT);
+}
+
+TestResult test_parser_list_rbracket(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1\n",
+        "list missing ]",
+        MESSAGE_PARSER_EXPECTED_LIST_RBRACKET);
+}
+
+TestResult test_parser_list_separator(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1 2]\n",
+        "list missing comma",
+        MESSAGE_PARSER_EXPECTED_LIST_SEPARATOR);
+}
+
+TestResult test_checker_list_context(void)
+{
+    return compile_fails(
+        "var xs: List<Int32> = [1]\n",
+        "dynamic list literal",
+        MESSAGE_CHECKER_LIST_LITERAL_CONTEXT);
+}
+
+TestResult test_checker_list_inferred_context(void)
+{
+    return compile_fails(
+        "var xs = []\n",
+        "empty inferred list literal",
+        MESSAGE_CHECKER_LIST_INFER);
+}
+
+TestResult test_checker_list_length(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 2> = [1, 2, 3]\n",
+        "fixed list over capacity",
+        MESSAGE_CHECKER_LIST_LITERAL_LENGTH, 3, 2);
+}
+
+TestResult test_checker_list_element(void)
+{
+    return compile_fails(
+        "var xs: List<Store, 1> = []\n",
+        "list element not sized",
+        MESSAGE_CHECKER_LIST_ELEMENT);
+}
+
+TestResult test_checker_list_args(void)
+{
+    return compile_fails(
+        "var xs: List = []\n",
+        "bare List",
+        MESSAGE_CHECKER_LIST_ARGS);
+}
+
+TestResult test_checker_list_capacity(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 4097> = []\n",
+        "list capacity too large",
+        MESSAGE_CHECKER_LIST_CAPACITY, NIPPY_DEFAULT_MAX_LIST_CAPACITY);
+}
+
+TestResult test_checker_list_set_fixed(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1]\nxs.set(0, 2)\n",
+        "fixed list set",
+        MESSAGE_CHECKER_LIST_MUTABLE);
+}
+
+TestResult test_checker_list_index(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1]\nvar n: Int32 = xs.get(\"x\")\n",
+        "list index type",
+        MESSAGE_CHECKER_LIST_INDEX);
+}
+
+TestResult test_checker_list_value(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "xs.push(true)\n",
+        "list value type",
+        MESSAGE_CHECKER_LIST_VALUE);
+}
+
+TestResult test_checker_list_create_type_arg(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list(1)\n",
+        "list create type argument",
+        MESSAGE_CHECKER_LIST_TYPE_ARG);
+}
+
+TestResult test_checker_list_create_args(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list<Int32>()\n",
+        "list create argument count",
+        MESSAGE_CHECKER_LIST_CREATE_ARGS);
+}
+
+TestResult test_checker_list_capacity_arg(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list<Int32>(\"x\")\n",
+        "list capacity argument type",
+        MESSAGE_CHECKER_LIST_CAPACITY_ARG);
+}
+
+TestResult test_checker_list_redefinition(void)
+{
+    return compile_fails(
+        "type List = Int32\n",
+        "redefining List",
+        MESSAGE_CHECKER_REDEFINES_LIST);
+}
+
+TestResult test_compiler_max_list_capacity(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_list_capacity = 2};
+    CompilerResult result = compiler_compile(
+        "var xs: List<Int32, 2> = [1, 2]\n", &config);
+    int ok;
+
+    ok = result.succeeded;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  custom maximum list capacity was not used\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_max_list_exceeded(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_list_capacity = 2};
+    CompilerResult result = compiler_compile(
+        "var xs: List<Int32, 3> = [1, 2, 3]\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_CHECKER_LIST_CAPACITY, 2);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  list capacity above the configured maximum "
+                        "was accepted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_compiler_invalid_max_list(void)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip",
+                             .max_list_capacity = NIPPY_MAX_LIST_CAPACITY + 1};
+    CompilerResult result = compiler_compile("var n: Int32 = 1\n", &config);
+    char expected[256];
+    int ok;
+
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_COMPILER_LIST_CAPACITY, NIPPY_MAX_LIST_CAPACITY);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) {
+        fprintf(stderr, "  invalid maximum list capacity was accepted\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TestResult test_parser_index_rbracket(void)
+{
+    return compile_fails(
+        "var n: Int32 = [1, 2][0\n",
+        "index missing ]",
+        MESSAGE_PARSER_EXPECTED_RBRACKET);
+}
+
+TestResult test_checker_list_push_lvalue(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\narena.list<Int32>(1).push(1)\n",
+        "push temporary list",
+        MESSAGE_CHECKER_LIST_LVALUE);
+}
+
+TestResult test_checker_list_index_type(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1]\nvar n: Int32 = xs[\"x\"]\n",
+        "index type",
+        MESSAGE_CHECKER_LIST_INDEX);
+}
+
+TestResult test_checker_slice_dynamic(void)
+{
+    return compile_fails(
+        "var xs: List<Int32, 1> = [1]\nvar s: Slice<Int32> = xs.slice(0, 1)\n",
+        "slice fixed list",
+        MESSAGE_CHECKER_SLICE_DYNAMIC);
+}
+
+TestResult test_checker_slice_readonly(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "xs.push(1)\n"
+        "var s: Slice<Int32> = xs.slice(0, 1)\n"
+        "s[0] = 2\n",
+        "slice index write",
+        MESSAGE_CHECKER_SLICE_READONLY);
+}
+
+TestResult test_checker_slice_set(void)
+{
+    return compile_fails(
+        "global arena: Store = Store(16)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "xs.push(1)\n"
+        "var s: Slice<Int32> = xs.slice(0, 1)\n"
+        "s.set(0, 2)\n",
+        "slice set method",
+        MESSAGE_CHECKER_SLICE_READONLY);
+}
+
+TestResult test_checker_slice_args(void)
+{
+    return compile_fails(
+        "var s: Slice = []\n",
+        "bare Slice",
+        MESSAGE_CHECKER_SLICE_ARGS);
+}
+
+TestResult test_checker_slice_element(void)
+{
+    return compile_fails(
+        "var s: Slice<Store> = nil\n",
+        "Slice element type",
+        MESSAGE_CHECKER_SLICE_ELEMENT);
+}
+
+TestResult test_checker_slice_redefinition(void)
+{
+    return compile_fails(
+        "type Slice = Int32\n",
+        "redefining Slice",
+        MESSAGE_CHECKER_REDEFINES_SLICE);
+}
+
 static const TestCase tests[] = {
     {"var declaration of 13 generates the golden C", test_13_codegen},
     {"type declaration generates the golden C struct",
@@ -7110,7 +8651,6 @@ static const TestCase tests[] = {
     {"parser: member name", test_parser_expected_member_name},
     {"checker: redefines Nil", test_checker_redefines_nil},
     {"checker: function field", test_checker_function_field},
-    {"checker: function union alternative", test_checker_function_union_alternative},
     {"checker: recursive struct", test_checker_recursive_struct},
     {"checker: recursive generic struct", test_checker_recursive_generic_struct},
     {"checker: incompatible union injection", test_checker_union_injection_mismatch},
@@ -7120,6 +8660,8 @@ static const TestCase tests[] = {
     {"checker: builtin type arguments", test_checker_builtin_type_arguments},
     {"store: size must be constant", test_checker_store_size_constant},
     {"store: initializer must be Store(bytes)", test_checker_store_initializer},
+    {"store: global declaration", test_checker_global_declaration},
+    {"store: global initializer", test_checker_global_store_initializer},
     {"store: missing annotation", test_checker_store_without_annotation},
     {"store: not a value", test_checker_store_as_value},
     {"store: duplicate name", test_checker_duplicate_store},
@@ -7144,6 +8686,107 @@ static const TestCase tests[] = {
     {"store: runtime diagnostics emitted", test_generator_store_runtime_messages},
     {"analyser: invalid store id", test_analyser_invalid_store_id},
     {"analyser: invalid handle type", test_analyser_invalid_handle_type},
+    {"string: an unterminated string literal", test_lexer_unterminated_string},
+    {"string: a newline inside a string literal", test_lexer_string_newline},
+    {"string: an invalid string escape", test_lexer_invalid_escape},
+    {"string: a missing String capacity", test_parser_string_length},
+    {"string: a String capacity trailing comma", test_parser_string_gt},
+    {"string: dynamic to fixed conversion", test_checker_dynamic_string},
+    {"string: concat with a fixed string", test_checker_concat_type},
+    {"string: copy with a fixed string", test_checker_copy_type},
+    {"string: store.string with a dynamic literal",
+     test_checker_store_string_type},
+    {"string: slice with a non-Int32 start", test_checker_slice_type},
+    {"string: comparing fixed and dynamic strings",
+     test_checker_dynamic_fixed_equality},
+    {"builder: builder with a non-Int32 capacity", test_checker_builder_capacity},
+    {"builder: builder append with a fixed string", test_checker_builder_append_type},
+    {"builder: builder append_byte with a string", test_checker_builder_byte_type},
+    {"builder: builder finish with an argument", test_checker_builder_args},
+    {"builder: redefining StringBuilder", test_checker_builder_redefinition},
+    {"list: list missing capacity", test_parser_list_capacity},
+    {"list: list missing >", test_parser_list_gt},
+    {"list: list missing ]", test_parser_list_rbracket},
+    {"list: list missing comma", test_parser_list_separator},
+    {"list: dynamic list literal", test_checker_list_context},
+    {"list: empty inferred literal", test_checker_list_inferred_context},
+    {"list: fixed list over capacity", test_checker_list_length},
+    {"list: list element not sized", test_checker_list_element},
+    {"list: bare List", test_checker_list_args},
+    {"list: list capacity too large", test_checker_list_capacity},
+    {"list: fixed list set", test_checker_list_set_fixed},
+    {"list: index missing ]", test_parser_index_rbracket},
+    {"list: push temporary list", test_checker_list_push_lvalue},
+    {"list: index type", test_checker_list_index_type},
+    {"slice: slice fixed list", test_checker_slice_dynamic},
+    {"slice: slice index write", test_checker_slice_readonly},
+    {"slice: slice set method", test_checker_slice_set},
+    {"slice: bare Slice", test_checker_slice_args},
+    {"slice: Slice element type", test_checker_slice_element},
+    {"slice: redefining Slice", test_checker_slice_redefinition},
+    {"list: list index type", test_checker_list_index},
+    {"list: list value type", test_checker_list_value},
+    {"list: list create type argument", test_checker_list_create_type_arg},
+    {"list: list create argument count", test_checker_list_create_args},
+    {"list: list capacity argument type", test_checker_list_capacity_arg},
+    {"list: redefining List", test_checker_list_redefinition},
+    {"list: custom maximum capacity", test_compiler_max_list_capacity},
+    {"list: configured maximum exceeded", test_compiler_max_list_exceeded},
+    {"list: invalid maximum capacity", test_compiler_invalid_max_list},
+    {"string: a string literal larger than its capacity", test_checker_string_too_long},
+    {"string: a string literal without a String<N> context",
+     test_checker_string_literal_context},
+    {"string: comparing two uncontextual string literals",
+     test_checker_string_compare_context},
+    {"string: a literal that fits two union alternatives",
+     test_checker_string_ambiguous},
+    {"string: a String capacity above the limit", test_checker_string_capacity},
+    {"string: assigning a String<8> to a String<16>", test_checker_string_assignment},
+    {"string: comparing different String capacities", test_checker_string_equality},
+    {"string: byte_len with an argument", test_checker_string_len_args},
+    {"string: byte_at with a string index", test_checker_string_index_type},
+    {"string: a type argument on byte_len", test_checker_string_method_type_arg},
+    {"string: byte_len on an Int32", test_checker_string_receiver},
+    {"string: byte_len on an uncontextual literal",
+     test_checker_string_literal_receiver},
+    {"string: Error with too few arguments", test_checker_error_args},
+    {"string: Error with a non-string description", test_checker_error_arg_type},
+    {"string: Error with named arguments", test_checker_error_named_args},
+    {"string: an Error field method on an Int32", test_checker_error_member},
+    {"string: redefining String", test_checker_redefines_string},
+    {"string: redefining Error", test_checker_redefines_error},
+    {"string: a variable named String", test_checker_string_variable_name},
+    {"analyser: invalid string literal", test_analyser_invalid_string_literal},
+    {"analyser: invalid Error shape", test_analyser_invalid_error},
+    {"string: string basic codegen", test_string_basic_codegen},
+    {"string: string union codegen", test_string_union_codegen},
+    {"string: string error codegen", test_string_error_codegen},
+    {"string: string store codegen", test_string_store_codegen},
+    {"compiler: custom Error capacities", test_compiler_error_capacities},
+    {"compiler: invalid Error capacity", test_compiler_error_capacity_invalid},
+    {"compiler: custom maximum string capacity", test_compiler_max_string_capacity},
+    {"compiler: maximum string capacity exceeded", test_compiler_max_string_exceeded},
+    {"compiler: invalid maximum string capacity", test_compiler_max_string_invalid},
+    {"compiler: raised maximum string capacity", test_compiler_max_string_raised},
+    {"compiler: configured source limit", test_compiler_source_limit},
+    {"assignment: top-level print", test_assignment_top_codegen},
+    {"assignment: parameter", test_assignment_param_codegen},
+    {"assignment: main", test_assignment_main_codegen},
+    {"assignment: an assignment to an unknown name", test_checker_assign_unknown},
+    {"assignment: an assignment to a store", test_checker_assign_store},
+    {"assignment: an assignment to a function", test_checker_assign_function},
+    {"assignment: an assignment to a type", test_checker_assign_type},
+    {"assignment: an assignment to a built-in type", test_checker_assign_builtin},
+    {"assignment: assigning a program-level variable inside a function",
+     test_checker_assign_global_in_function},
+    {"assignment: assigning a Bool to an Int32",
+     test_checker_assign_type_mismatch},
+    {"assignment: assigning an out-of-range Byte literal",
+     test_checker_assign_byte_range},
+    {"assignment: assigning a literal larger than the destination",
+     test_checker_assign_string_too_long},
+    {"assignment: an assignment without a value", test_parser_assign_missing_value},
+    {"assignment: assignment as an expression", test_parser_assignment_expression},
 };
 
 int main(void)

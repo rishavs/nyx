@@ -184,6 +184,34 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
         snprintf(out, out_size, "nippy_handle");
         return true;
     }
+    if (type->kind == NIPPY_TYPE_STRING) {
+        snprintf(out, out_size, "nippy_string_%zu", type->fixed_length);
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+        snprintf(out, out_size, "nippy_string");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_STRING_BUILDER) {
+        snprintf(out, out_size, "nippy_builder");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_LIST) {
+        snprintf(out, out_size, "nippy_list");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_FIXED_LIST) {
+        snprintf(out, out_size, "nippy_list_%zu", type_index);
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_SLICE) {
+        snprintf(out, out_size, "nippy_slice");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_ERROR) {
+        snprintf(out, out_size, "nippy_error");
+        return true;
+    }
     if (type->kind == NIPPY_TYPE_STRUCT) {
         const char *name = typed_program_symbol_text(program, type->name_index);
 
@@ -204,6 +232,98 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
     }
     error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
     return false;
+}
+
+/* Inline function-pointer spelling for contexts that cannot wait for the
+   nippy_fun_N typedefs (fixed-list elements and union payloads). Nested function
+   parameter/return types are rejected in this context. */
+static bool format_function_pointer(const TypedProgram *program,
+                                    size_t type_index, const char *name,
+                                    char *out, size_t out_size,
+                                    ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    const TypedFunctionSignature *signature;
+    char return_name[NIPPY_IDENTIFIER_MAX + 32];
+    char params[512];
+    size_t used = 0;
+    size_t i;
+
+    if (type == NULL || type->kind != NIPPY_TYPE_FUNCTION ||
+        type->signature_index == TYPED_NO_NODE) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    signature = typed_program_signature(program, type->signature_index);
+    if (signature == NULL ||
+        !format_c_type(program, signature->return_type, return_name,
+                       sizeof(return_name), errors)) {
+        return false;
+    }
+    {
+        const TypedType *return_type = typed_program_type(
+            program, signature->return_type);
+
+        if (return_type != NULL && return_type->kind == NIPPY_TYPE_FUNCTION) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+    }
+    params[0] = '\0';
+    if (signature->parameter_count == 0) {
+        snprintf(params, sizeof(params), "void");
+    } else {
+        for (i = 0; i < signature->parameter_count; i++) {
+            size_t parameter = *(const size_t *)list_get(
+                &program->signature_parameters,
+                signature->first_parameter + i);
+            const TypedType *parameter_type = typed_program_type(program,
+                                                                 parameter);
+            char parameter_name[NIPPY_IDENTIFIER_MAX + 32];
+            int written;
+
+            if (parameter_type == NULL ||
+                parameter_type->kind == NIPPY_TYPE_FUNCTION ||
+                !format_c_type(program, parameter, parameter_name,
+                               sizeof(parameter_name), errors)) {
+                return false;
+            }
+            written = snprintf(params + used, sizeof(params) - used, "%s%s",
+                               i == 0 ? "" : ", ", parameter_name);
+            if (written < 0 ||
+                (size_t)written >= sizeof(params) - used) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            used += (size_t)written;
+        }
+    }
+    if (snprintf(out, out_size, "%s (*%s)(%s)", return_name, name, params) <
+            0 ||
+        strlen(out) >= out_size - 1) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    return true;
+}
+
+static bool fixed_list_element_name(const TypedProgram *program,
+                                    size_t list_type_index, size_t element,
+                                    char *out, size_t out_size,
+                                    ErrorState *errors)
+{
+    const TypedType *element_type = typed_program_type(program, element);
+
+    if (element_type != NULL && element_type->kind == NIPPY_TYPE_FUNCTION) {
+        if (snprintf(out, out_size, "nippy_list_%zu_elem",
+                     list_type_index) < 0 ||
+            strlen(out) >= out_size - 1) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+        return true;
+    }
+    return format_c_type(program, element, out, out_size, errors);
 }
 
 /* Handle<T> records its element as the single entry in the handle type's
@@ -386,7 +506,14 @@ static bool type_is_c_aggregate(const TypedProgram *program, size_t type_index)
     const TypedType *type = typed_program_type(program, type_index);
 
     return type != NULL && (type->kind == NIPPY_TYPE_STRUCT ||
-                            type->kind == NIPPY_TYPE_HANDLE);
+                            type->kind == NIPPY_TYPE_HANDLE ||
+                            type->kind == NIPPY_TYPE_STRING ||
+                            type->kind == NIPPY_TYPE_DYNAMIC_STRING ||
+                            type->kind == NIPPY_TYPE_STRING_BUILDER ||
+                            type->kind == NIPPY_TYPE_LIST ||
+                            type->kind == NIPPY_TYPE_FIXED_LIST ||
+                            type->kind == NIPPY_TYPE_SLICE ||
+                            type->kind == NIPPY_TYPE_ERROR);
 }
 
 static bool emit_expression(const TypedProgram *program, size_t node_index,
@@ -601,7 +728,701 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return true;
         }
     }
+    if (node->kind == TYPED_STRING_LITERAL) {
+        const TypedType *type = typed_program_type(program, node->type_index);
+        char type_name[NIPPY_IDENTIFIER_MAX + 32];
+        size_t i;
+
+        if (type == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_appendf(buffer,
+                                "(nippy_string){ nippy_dyn_str_%zu, 0, 0, "
+                                "%zu, 0 }",
+                                node_index, node->string_length)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            return true;
+        }
+        if (type->kind != NIPPY_TYPE_STRING ||
+            !format_c_type(program, node->type_index, type_name,
+                           sizeof(type_name), errors)) {
+            if (!errors->reported) {
+                error_report(errors,
+                             MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            }
+            return false;
+        }
+        if (!buffer_appendf(buffer, "(%s){ { ", type_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (i = 0; i < node->string_length; i++) {
+            const unsigned char *byte = list_get(
+                &program->bytes, node->string_offset + i);
+
+            if (byte == NULL ||
+                !buffer_appendf(buffer, "%u, ", (unsigned)*byte)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_appendf(buffer, "0 }, %zu }", node->string_length)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_STRING_LEN) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+
+        if (receiver_type != NULL &&
+            receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_append(buffer, "nippy_string_len(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+        } else if (!buffer_append(buffer, "((int32_t)(") ||
+                   !emit_expression(program, node->left_child, buffer,
+                                    errors) ||
+                   !buffer_append(buffer, ").length)")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_STRING_AT) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type = receiver == NULL
+                                             ? NULL
+                                             : typed_program_type(
+                                                   program,
+                                                   receiver->type_index);
+
+        if (receiver_type == NULL ||
+            (receiver_type->kind != NIPPY_TYPE_STRING &&
+             receiver_type->kind != NIPPY_TYPE_DYNAMIC_STRING)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_append(buffer, "nippy_string_byte_at(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, node->right_child, buffer,
+                                 errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer, "nippy_string_%zu_at(",
+                            receiver_type->fixed_length) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_STRING_SLICE) {
+        if (node->left_child == TYPED_NO_NODE ||
+            node->children_count != 2) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        {
+            size_t start = *(const size_t *)list_get(
+                &program->children, node->children_start);
+            size_t length = *(const size_t *)list_get(
+                &program->children, node->children_start + 1);
+
+            if (!buffer_append(buffer, "nippy_string_slice(") ||
+                !emit_expression(program, node->left_child, buffer,
+                                 errors) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, start, buffer, errors) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, length, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+    if (node->kind == TYPED_STRING_CONCAT ||
+        node->kind == TYPED_STRING_COPY) {
+        if (node->left_child == TYPED_NO_NODE ||
+            !store_id_is_valid(program, node->store_id)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer, "nippy_string_%s(&nippy_stores[%zu], "
+                                    "%zu, ",
+                            node->kind == TYPED_STRING_CONCAT ? "concat"
+                                                              : "copy",
+                            node->store_id, node->store_id) ||
+            !emit_expression(program, node->left_child, buffer, errors)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        if (node->kind == TYPED_STRING_CONCAT) {
+            if (node->right_child == TYPED_NO_NODE ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, node->right_child, buffer,
+                                 errors)) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+        }
+        if (!buffer_append(buffer, ")")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_STRING_FROM_FIXED) {
+        const TypedNode *source = typed_program_node(program,
+                                                     node->left_child);
+        const TypedType *source_type =
+            source == NULL
+                ? NULL
+                : typed_program_type(program, source->type_index);
+
+        if (source_type == NULL || source_type->kind != NIPPY_TYPE_STRING ||
+            !store_id_is_valid(program, node->store_id)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer,
+                            "nippy_string_from_fixed_%zu(&nippy_stores[%zu], "
+                            "%zu, ",
+                            source_type->fixed_length, node->store_id,
+                            node->store_id) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_BUILDER_CREATE) {
+        if (node->left_child == TYPED_NO_NODE ||
+            !store_id_is_valid(program, node->store_id)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer,
+                            "nippy_builder_create(&nippy_stores[%zu], %zu, ",
+                            node->store_id, node->store_id) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_BUILDER_APPEND ||
+        node->kind == TYPED_BUILDER_APPEND_BYTE) {
+        if (node->left_child == TYPED_NO_NODE ||
+            node->right_child == TYPED_NO_NODE) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_append(buffer,
+                           node->kind == TYPED_BUILDER_APPEND
+                               ? "nippy_builder_append("
+                               : "nippy_builder_append_byte(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_BUILDER_LEN) {
+        if (node->left_child == TYPED_NO_NODE ||
+            !buffer_append(buffer, "nippy_builder_len(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_BUILDER_FINISH) {
+        if (node->left_child == TYPED_NO_NODE ||
+            !buffer_append(buffer, "nippy_builder_finish(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_LITERAL) {
+        char type_name[NIPPY_IDENTIFIER_MAX + 32];
+        const TypedType *type = typed_program_type(program, node->type_index);
+
+        if (type == NULL || type->kind != NIPPY_TYPE_FIXED_LIST ||
+            !format_c_type(program, node->type_index, type_name,
+                           sizeof(type_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (node->children_count == 0) {
+            if (!buffer_appendf(buffer, "(%s){ { 0 }, 0 }", type_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer, "(%s){ { ", type_name) ||
+            !emit_children_expressions(program, node, buffer, errors) ||
+            !buffer_appendf(buffer, " }, %zu }", node->children_count)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_LEN) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+
+        if (receiver_type == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_append(buffer, "((int32_t)(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ").length)")) {
+                if (!errors->reported) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_append(buffer, "nippy_list_len(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_GET) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+        const TypedType *element_type =
+            typed_program_type(program, node->type_index);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (receiver_type == NULL || element_type == NULL ||
+            !format_c_type(program, node->type_index, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_appendf(buffer, "nippy_list_%zu_get(",
+                                receiver->type_index) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer, "(*(%s *)nippy_list_data(",
+                            element_name) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_appendf(buffer, ", sizeof(%s)))", element_name)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_SET) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+        const TypedType *element_type =
+            typed_program_type(program, node->auxiliary_type);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        size_t index;
+        size_t value;
+
+        if (receiver_type == NULL || element_type == NULL ||
+            node->children_count != 2 ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        index = *(const size_t *)list_get(&program->children,
+                                          node->children_start);
+        value = *(const size_t *)list_get(&program->children,
+                                          node->children_start + 1);
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            const char *name = typed_program_symbol_text(
+                program, node->name_index);
+
+            if (!valid_identifier(name) ||
+                !buffer_appendf(buffer, "(*nippy_list_%zu_at(&%s, ",
+                                receiver->type_index, name) ||
+                !emit_expression(program, index, buffer, errors) ||
+                !buffer_append(buffer, ") = ") ||
+                !emit_expression(program, value, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer, "(*(%s *)nippy_list_data(",
+                            element_name) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, index, buffer, errors) ||
+            !buffer_appendf(buffer, ", sizeof(%s)) = ", element_name) ||
+            !emit_expression(program, value, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_PUSH) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+        const TypedType *element_type =
+            typed_program_type(program, node->auxiliary_type);
+        const char *name = typed_program_symbol_text(program,
+                                                      node->name_index);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (receiver_type == NULL || element_type == NULL ||
+            !valid_identifier(name) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_appendf(buffer, "nippy_list_%zu_push(&%s, ",
+                                receiver->type_index, name) ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (!buffer_appendf(buffer, "nippy_list_push(%s, (%s[]){ ", name,
+                            element_name) ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s))",
+                            element_name, element_name)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_POP) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+        const char *name = typed_program_symbol_text(program,
+                                                      node->name_index);
+
+        if (receiver_type == NULL || !valid_identifier(name)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer, "nippy_list_pop_%zu(", node_index)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_appendf(buffer, "&%s", name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (!buffer_append(buffer, name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!buffer_append(buffer, ")")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_LIST_CREATE) {
+        const TypedType *element_type =
+            typed_program_type(program, node->auxiliary_type);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (element_type == NULL ||
+            !store_id_is_valid(program, node->store_id) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer,
+                            "nippy_list_create(&nippy_stores[%zu], %zu, ",
+                            node->store_id, node->store_id) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_appendf(buffer, ", sizeof(%s), _Alignof(%s))",
+                            element_name, element_name)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_SLICE_CREATE) {
+        const TypedNode *receiver =
+            typed_program_node(program, node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        size_t start;
+        size_t length;
+
+        if (receiver_type == NULL || node->children_count != 2 ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        start = *(const size_t *)list_get(&program->children,
+                                          node->children_start);
+        length = *(const size_t *)list_get(&program->children,
+                                           node->children_start + 1);
+        if (!buffer_appendf(buffer, "nippy_slice_%s(",
+                            receiver_type->kind == NIPPY_TYPE_SLICE
+                                ? "sub"
+                                : "from_list") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, start, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, length, buffer, errors) ||
+            !buffer_appendf(buffer, ", sizeof(%s))", element_name)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_SLICE_LEN) {
+        if (!buffer_append(buffer, "nippy_slice_len(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_SLICE_GET) {
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+
+        if (!format_c_type(program, node->type_index, element_name,
+                           sizeof(element_name), errors)) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer, "(*(%s *)nippy_slice_data(",
+                            element_name) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_appendf(buffer, ", sizeof(%s)))", element_name)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_ERROR_CONSTRUCT) {
+        if (!buffer_append(buffer, "(nippy_error){ ") ||
+            !emit_children_expressions(program, node, buffer, errors) ||
+            !buffer_append(buffer, " }")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_ERROR_FIELD) {
+        static const char *const fields[] = {
+            "header", "description", "filename", "line", "col", "pos"
+        };
+
+        if (node->integer_value < 0 || node->integer_value > 5) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_append(buffer, "(") ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_appendf(buffer, ").%s",
+                            fields[node->integer_value])) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
     if (node->kind == TYPED_BINARY) {
+        if (node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE) {
+            const TypedNode *left = typed_program_node(program,
+                                                       node->left_child);
+            const TypedType *left_type =
+                left == NULL
+                    ? NULL
+                    : typed_program_type(program, left->type_index);
+
+            if (left_type != NULL &&
+                left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+                if (!buffer_append(buffer,
+                                   node->op == NIPPY_OPERATOR_NE ? "(!"
+                                                                 : "(") ||
+                    !buffer_append(buffer, "nippy_string_equal(") ||
+                    !emit_expression(program, node->left_child, buffer,
+                                     errors) ||
+                    !buffer_append(buffer, ", ") ||
+                    !emit_expression(program, node->right_child, buffer,
+                                     errors) ||
+                    !buffer_append(buffer, "))")) {
+                    if (!errors->reported) {
+                        error_report(errors,
+                                     MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    }
+                    return false;
+                }
+                return true;
+            }
+            if (left_type != NULL &&
+                left_type->kind == NIPPY_TYPE_STRING) {
+                if (!buffer_append(buffer,
+                                   node->op == NIPPY_OPERATOR_NE ? "(!"
+                                                                 : "(") ||
+                    !buffer_appendf(buffer, "nippy_string_%zu_equal(",
+                                    left_type->fixed_length) ||
+                    !emit_expression(program, node->left_child, buffer,
+                                     errors) ||
+                    !buffer_append(buffer, ", ") ||
+                    !emit_expression(program, node->right_child, buffer,
+                                     errors) ||
+                    !buffer_append(buffer, "))")) {
+                    if (!errors->reported) {
+                        error_report(errors,
+                                     MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    }
+                    return false;
+                }
+                return true;
+            }
+        }
         if (node->op == NIPPY_OPERATOR_ADD) {
             if (!buffer_append(buffer, "(int32_t)((uint32_t)(") ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
@@ -969,18 +1790,29 @@ static bool emit_union_type(const TypedProgram *program, const TypedType *type,
             if (alternative->kind == NIPPY_TYPE_NIL) {
                 continue;
             }
-            if (!format_c_type(program,
-                               *(const size_t *)list_get(
-                                   &program->type_children,
-                                   type->first_child + i),
-                               alternative_name, sizeof(alternative_name),
-                               errors)) {
-                return false;
-            }
-            if (!buffer_appendf(header, "        %s v%zu;\n",
-                                alternative_name, i)) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
+            {
+                size_t alternative_index = *(const size_t *)list_get(
+                    &program->type_children, type->first_child + i);
+
+                if (alternative->kind == NIPPY_TYPE_FUNCTION) {
+                    char pointer_name[256];
+                    char field_name[32];
+
+                    snprintf(field_name, sizeof(field_name), "v%zu", i);
+                    if (!format_function_pointer(
+                            program, alternative_index, field_name,
+                            pointer_name, sizeof(pointer_name), errors) ||
+                        !buffer_appendf(header, "        %s;\n",
+                                        pointer_name)) {
+                        return false;
+                    }
+                } else if (!format_c_type(program, alternative_index,
+                                          alternative_name,
+                                          sizeof(alternative_name), errors) ||
+                           !buffer_appendf(header, "        %s v%zu;\n",
+                                           alternative_name, i)) {
+                    return false;
+                }
             }
         }
         if (!buffer_append(header, "    } value;\n")) {
@@ -1037,6 +1869,197 @@ static bool emit_type_definitions(const TypedProgram *program,
             }
         } else if (type->kind == NIPPY_TYPE_UNION) {
             if (!emit_union_type(program, type, i, header, errors)) {
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            if (!buffer_append(
+                    header,
+                    "typedef struct {\n"
+                    "    const uint8_t *static_data;\n"
+                    "    uint32_t store;\n"
+                    "    size_t offset;\n"
+                    "    size_t length;\n"
+                    "    uint64_t generation;\n"
+                    "} nippy_string;\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_STRING_BUILDER) {
+            if (!buffer_append(
+                    header,
+                    "typedef struct {\n"
+                    "    uint32_t store;\n"
+                    "    size_t offset;\n"
+                    "    uint64_t generation;\n"
+                    "} nippy_builder;\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_LIST) {
+            bool emitted = false;
+            size_t j;
+
+            for (j = 0; j < i; j++) {
+                const TypedType *earlier = typed_program_type(program, j);
+
+                if (earlier != NULL && earlier->kind == NIPPY_TYPE_LIST) {
+                    emitted = true;
+                    break;
+                }
+            }
+            if (!emitted &&
+                !buffer_append(
+                    header,
+                    "typedef struct {\n"
+                    "    uint32_t store;\n"
+                    "    size_t offset;\n"
+                    "    uint64_t generation;\n"
+                    "} nippy_list;\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_SLICE) {
+            bool emitted = false;
+            size_t j;
+
+            for (j = 0; j < i; j++) {
+                const TypedType *earlier = typed_program_type(program, j);
+
+                if (earlier != NULL && earlier->kind == NIPPY_TYPE_SLICE) {
+                    emitted = true;
+                    break;
+                }
+            }
+            if (!emitted &&
+                !buffer_append(
+                    header,
+                    "typedef struct {\n"
+                    "    uint32_t store;\n"
+                    "    size_t offset;\n"
+                    "    size_t length;\n"
+                    "    uint64_t generation;\n"
+                    "} nippy_slice;\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_FIXED_LIST) {
+            char element_name[NIPPY_IDENTIFIER_MAX + 32];
+            char list_name[NIPPY_IDENTIFIER_MAX + 32];
+            size_t element;
+            size_t capacity = type->fixed_length;
+
+            if (type->child_count != 1) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            element = *(const size_t *)list_get(&program->type_children,
+                                                type->first_child);
+            snprintf(list_name, sizeof(list_name), "nippy_list_%zu", i);
+            if (!fixed_list_element_name(program, i, element, element_name,
+                                         sizeof(element_name), errors)) {
+                return false;
+            }
+            {
+                const TypedType *element_type = typed_program_type(program,
+                                                                   element);
+
+                if (element_type != NULL &&
+                    element_type->kind == NIPPY_TYPE_FUNCTION) {
+                    char pointer_name[256];
+
+                    if (!format_function_pointer(program, element,
+                                                 element_name, pointer_name,
+                                                 sizeof(pointer_name),
+                                                 errors) ||
+                        !buffer_appendf(header, "typedef %s;\n\n",
+                                        pointer_name)) {
+                        return false;
+                    }
+                }
+            }
+            if (!buffer_appendf(
+                    header,
+                    "typedef struct {\n"
+                    "    %s data[%zu];\n"
+                    "    uint32_t length;\n"
+                    "} %s;\n\n",
+                    element_name, capacity == 0 ? (size_t)1 : capacity,
+                    list_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_STRING) {
+            bool already = false;
+            size_t j;
+
+            for (j = 0; j < i; j++) {
+                const TypedType *earlier = typed_program_type(program, j);
+
+                if (earlier != NULL && earlier->kind == NIPPY_TYPE_STRING &&
+                    earlier->fixed_length == type->fixed_length) {
+                    already = true;
+                    break;
+                }
+            }
+            if (!already &&
+                (!buffer_appendf(
+                     header,
+                     "typedef struct {\n"
+                     "    uint8_t data[%zu];\n"
+                     "    uint32_t length;\n"
+                     "} nippy_string_%zu;\n\n",
+                     type->fixed_length + 1, type->fixed_length) ||
+                 !buffer_appendf(
+                     header,
+                     "static uint8_t nippy_string_%zu_at(nippy_string_%zu s, "
+                     "int32_t i);\n\n",
+                     type->fixed_length, type->fixed_length))) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        } else if (type->kind == NIPPY_TYPE_ERROR) {
+            const size_t *header_type;
+            const size_t *description_type;
+            const size_t *filename_type;
+            char header_name[NIPPY_IDENTIFIER_MAX + 32];
+            char description_name[NIPPY_IDENTIFIER_MAX + 32];
+            char filename_name[NIPPY_IDENTIFIER_MAX + 32];
+
+            if (type->child_count != 3) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            header_type = list_get(&program->type_children,
+                                   type->first_child);
+            description_type = list_get(&program->type_children,
+                                        type->first_child + 1);
+            filename_type = list_get(&program->type_children,
+                                     type->first_child + 2);
+            if (header_type == NULL || description_type == NULL ||
+                filename_type == NULL ||
+                !format_c_type(program, *header_type, header_name,
+                               sizeof(header_name), errors) ||
+                !format_c_type(program, *description_type, description_name,
+                               sizeof(description_name), errors) ||
+                !format_c_type(program, *filename_type, filename_name,
+                               sizeof(filename_name), errors)) {
+                if (!errors->reported) {
+                    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                }
+                return false;
+            }
+            if (!buffer_appendf(
+                    header,
+                    "typedef struct {\n"
+                    "    %s header;\n"
+                    "    %s description;\n"
+                    "    %s filename;\n"
+                    "    int32_t line;\n"
+                    "    int32_t col;\n"
+                    "    int32_t pos;\n"
+                    "} nippy_error;\n\n",
+                    header_name, description_name, filename_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         }
@@ -1252,6 +2275,39 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         return true;
     }
 
+    if (node->kind == TYPED_ASSIGNMENT) {
+        const char *name = typed_program_symbol_text(program,
+                                                     node->name_index);
+
+        if (!valid_identifier(name)) {
+            error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
+            return false;
+        }
+        if (!append_indent(source, depth) ||
+            !buffer_appendf(source, "%s = ", name) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_LIST_SET) {
+        if (!append_indent(source, depth) ||
+            !buffer_append(source, "(void)(") ||
+            !emit_expression(program, node_index, source, errors) ||
+            !buffer_append(source, ");\n")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+
     if (node->kind == TYPED_EXPRESSION_STATEMENT) {
         /* The outer cast discards the expression's value so a store reset or
            write statement is warning-free under -Wall. */
@@ -1379,11 +2435,441 @@ static bool emit_function(const TypedProgram *program, const TypedNode *node,
     return true;
 }
 
+
+static bool program_uses_string_builder(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL && type->kind == NIPPY_TYPE_STRING_BUILDER) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool program_uses_list(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL &&
+            (type->kind == NIPPY_TYPE_LIST ||
+             type->kind == NIPPY_TYPE_FIXED_LIST)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool program_uses_dynamic_list(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL && type->kind == NIPPY_TYPE_LIST) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool program_uses_slice(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL && type->kind == NIPPY_TYPE_SLICE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool program_uses_dynamic_string(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL && type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool program_uses_string(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+
+        if (type != NULL &&
+            (type->kind == NIPPY_TYPE_STRING ||
+             type->kind == NIPPY_TYPE_ERROR)) {
+            return true;
+        }
+    }
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node != NULL && node->kind == TYPED_STRING_LITERAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
+                                ErrorState *errors)
+{
+    bool emitted_bounds = false;
+    size_t i;
+
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+        bool already = false;
+        size_t j;
+
+        if (type == NULL || type->kind != NIPPY_TYPE_STRING) {
+            continue;
+        }
+        for (j = 0; j < i; j++) {
+            const TypedType *earlier = typed_program_type(program, j);
+
+            if (earlier != NULL && earlier->kind == NIPPY_TYPE_STRING &&
+                earlier->fixed_length == type->fixed_length) {
+                already = true;
+                break;
+            }
+        }
+        if (already) {
+            continue;
+        }
+        if (!emitted_bounds) {
+            if (!buffer_append(
+                    source,
+                    "static void nippy_string_bounds(void)\n"
+                    "{\n"
+                    "    fprintf(stderr, \"" MESSAGE_RUNTIME_STRING_BOUNDS
+                    "\\n\");\n"
+                    "    exit(1);\n"
+                    "}\n\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            emitted_bounds = true;
+        }
+        if (!buffer_appendf(
+                source,
+                "static uint8_t nippy_string_%zu_at(nippy_string_%zu s, "
+                "int32_t i)\n"
+                "{\n"
+                "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+                "        nippy_string_bounds();\n"
+                "    }\n"
+                "    return s.data[i];\n"
+                "}\n\n"
+                "static bool nippy_string_%zu_equal(nippy_string_%zu a, "
+                "nippy_string_%zu b)\n"
+                "{\n"
+                "    return a.length == b.length &&\n"
+                "           memcmp(a.data, b.data, a.length) == 0;\n"
+                "}\n\n",
+                type->fixed_length, type->fixed_length, type->fixed_length,
+                type->fixed_length, type->fixed_length)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool emit_dynamic_string_runtime(const TypedProgram *program,
+                                         size_t store_count,
+                                         TextBuffer *source,
+                                         ErrorState *errors)
+{
+    bool ok = true;
+
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED void nippy_string_fail(const char *message)\n"
+                   "{\n"
+                   "    fprintf(stderr, \"%s\\n\", message);\n"
+                   "    exit(1);\n"
+                   "}\n\n");
+    if (store_count > 0) {
+        ok = ok && buffer_append(
+                       source,
+                       "static NIPPY_UNUSED const uint8_t *"
+                       "nippy_string_data(nippy_string s)\n"
+                       "{\n"
+                       "    nippy_store *store;\n\n"
+                       "    if (s.static_data != NULL) {\n"
+                       "        return s.static_data;\n"
+                       "    }\n"
+                       "    if (s.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "\");\n"
+                       "    }\n"
+                       "    store = &nippy_stores[s.store];\n"
+                       "    if (store->generation != s.generation) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                       "\");\n"
+                       "    }\n"
+                       "    if (s.offset > store->used ||\n"
+                       "        s.length > store->used - s.offset ||\n"
+                       "        s.length > (size_t)-1 - s.offset - 1 ||\n"
+                       "        s.offset + s.length + 1 > store->used) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    return store->data + s.offset;\n"
+                       "}\n\n");
+    } else {
+        ok = ok && buffer_append(
+                       source,
+                       "static NIPPY_UNUSED const uint8_t *"
+                       "nippy_string_data(nippy_string s)\n"
+                       "{\n"
+                       "    if (s.static_data != NULL) {\n"
+                       "        return s.static_data;\n"
+                       "    }\n"
+                       "    nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "\");\n"
+                       "    return NULL;\n"
+                       "}\n\n");
+    }
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED int32_t nippy_string_len(nippy_string s)\n"
+                   "{\n"
+                   "    (void)nippy_string_data(s);\n"
+                   "    return (int32_t)s.length;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED uint8_t nippy_string_byte_at(nippy_string s, "
+                   "int32_t i)\n"
+                   "{\n"
+                   "    if (i < 0 || (size_t)i >= s.length) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    return nippy_string_data(s)[i];\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED nippy_string "
+                   "nippy_string_slice(nippy_string s, "
+                   "int32_t start, int32_t length)\n"
+                   "{\n"
+                   "    nippy_string result;\n\n"
+                   "    if (start < 0 || length < 0 ||\n"
+                   "        (size_t)start > s.length ||\n"
+                   "        (size_t)length > s.length - (size_t)start) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    (void)nippy_string_data(s);\n"
+                   "    result = s;\n"
+                   "    if (result.static_data != NULL) {\n"
+                   "        result.static_data += start;\n"
+                   "    } else {\n"
+                   "        result.offset += (size_t)start;\n"
+                   "    }\n"
+                   "    result.length = (size_t)length;\n"
+                   "    return result;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED bool nippy_string_equal(nippy_string a, "
+                   "nippy_string b)\n"
+                   "{\n"
+                   "    return a.length == b.length &&\n"
+                   "           memcmp(nippy_string_data(a), nippy_string_data(b), "
+                   "a.length) == 0;\n"
+                   "}\n\n");
+    if (store_count > 0) {
+        ok = ok && buffer_append(
+                       source,
+                       "static NIPPY_UNUSED nippy_string nippy_string_from_bytes("
+                       "nippy_store *store, uint32_t id,\n"
+                       "                                             "
+                       "const uint8_t *bytes, size_t length)\n"
+                       "{\n"
+                       "    size_t offset;\n"
+                       "    nippy_string result;\n\n"
+                       "    if (length > (size_t)-1 - 1) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "\");\n"
+                       "    }\n"
+                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "length + 1);\n"
+                       "    memcpy(store->data + offset, bytes, length);\n"
+                       "    store->data[offset + length] = 0;\n"
+                       "    result.static_data = NULL;\n"
+                       "    result.store = id;\n"
+                       "    result.offset = offset;\n"
+                       "    result.length = length;\n"
+                       "    result.generation = store->generation;\n"
+                       "    return result;\n"
+                       "}\n\n"
+                       "static NIPPY_UNUSED nippy_string nippy_string_concat("
+                       "nippy_store *store, uint32_t id,\n"
+                       "                                        "
+                       "nippy_string a, nippy_string b)\n"
+                       "{\n"
+                       "    size_t total;\n"
+                       "    size_t offset;\n"
+                       "    nippy_string result;\n"
+                       "    const uint8_t *a_data;\n"
+                       "    const uint8_t *b_data;\n\n"
+                       "    if (a.length > (size_t)-1 - 1 ||\n"
+                       "        b.length > (size_t)-1 - 1 - a.length) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "\");\n"
+                       "    }\n"
+                       "    total = a.length + b.length;\n"
+                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "total + 1);\n"
+                       "    a_data = nippy_string_data(a);\n"
+                       "    b_data = nippy_string_data(b);\n"
+                       "    memcpy(store->data + offset, a_data, a.length);\n"
+                       "    memcpy(store->data + offset + a.length, b_data, "
+                       "b.length);\n"
+                       "    store->data[offset + total] = 0;\n"
+                       "    result.static_data = NULL;\n"
+                       "    result.store = id;\n"
+                       "    result.offset = offset;\n"
+                       "    result.length = total;\n"
+                       "    result.generation = store->generation;\n"
+                       "    return result;\n"
+                       "}\n\n"
+                       "static NIPPY_UNUSED nippy_string nippy_string_copy("
+                       "nippy_store *store, uint32_t id,\n"
+                       "                                      nippy_string s)\n"
+                       "{\n"
+                       "    size_t offset;\n"
+                       "    nippy_string result;\n"
+                       "    const uint8_t *data;\n\n"
+                       "    if (s.length > (size_t)-1 - 1) {\n"
+                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "\");\n"
+                       "    }\n"
+                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "s.length + 1);\n"
+                       "    data = nippy_string_data(s);\n"
+                       "    memcpy(store->data + offset, data, s.length);\n"
+                       "    store->data[offset + s.length] = 0;\n"
+                       "    result.static_data = NULL;\n"
+                       "    result.store = id;\n"
+                       "    result.offset = offset;\n"
+                       "    result.length = s.length;\n"
+                       "    result.generation = store->generation;\n"
+                       "    return result;\n"
+                       "}\n\n");
+        {
+            size_t i;
+
+            for (i = 0; i < program->types.length; i++) {
+                const TypedType *type = typed_program_type(program, i);
+                bool already = false;
+                size_t j;
+
+                if (type == NULL || type->kind != NIPPY_TYPE_STRING) {
+                    continue;
+                }
+                for (j = 0; j < i; j++) {
+                    const TypedType *earlier = typed_program_type(program, j);
+
+                    if (earlier != NULL &&
+                        earlier->kind == NIPPY_TYPE_STRING &&
+                        earlier->fixed_length == type->fixed_length) {
+                        already = true;
+                        break;
+                    }
+                }
+                if (already) {
+                    continue;
+                }
+                ok = ok && buffer_appendf(
+                               source,
+                               "static NIPPY_UNUSED nippy_string "
+                               "nippy_string_from_fixed_%zu("
+                               "nippy_store *store, uint32_t id,\n"
+                               "                                             "
+                               "nippy_string_%zu s)\n"
+                               "{\n"
+                               "    return nippy_string_from_bytes(store, id, "
+                               "s.data, s.length);\n"
+                               "}\n\n",
+                               type->fixed_length, type->fixed_length);
+            }
+        }
+    }
+    if (!ok) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_dynamic_string_literals(const TypedProgram *program,
+                                         TextBuffer *source,
+                                         ErrorState *errors)
+{
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+        const TypedType *type;
+        size_t j;
+
+        if (node == NULL || node->kind != TYPED_STRING_LITERAL) {
+            continue;
+        }
+        type = typed_program_type(program, node->type_index);
+        if (type == NULL || type->kind != NIPPY_TYPE_DYNAMIC_STRING) {
+            continue;
+        }
+        if (!buffer_appendf(source,
+                            "static const uint8_t nippy_dyn_str_%zu[] = { ",
+                            i)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        for (j = 0; j < node->string_length; j++) {
+            const unsigned char *byte = list_get(&program->bytes,
+                                                 node->string_offset + j);
+
+            if (byte == NULL ||
+                !buffer_appendf(source, "%u, ", (unsigned)*byte)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+        }
+        if (!buffer_append(source, "0 };\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+    }
+    return true;
+}
+
 /* The store runtime is emitted once, ahead of every function, so helpers and
    the table are visible to all generated code. Only programs with a store
    declaration get it; a program that merely mentions Handle<T> needs only the
    header typedef. */
 static bool emit_store_runtime(TextBuffer *source, size_t store_count,
+                               bool needs_bytes_alloc,
+                               bool needs_aligned_alloc,
                                ErrorState *errors)
 {
     bool ok = true;
@@ -1528,6 +3014,58 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "    memcpy(nippy_handle_pointer(handle, size), value, "
                    "size);\n"
                    "}\n\n");
+    if (needs_bytes_alloc) {
+        ok = ok && buffer_append(
+                       source,
+                       "static size_t nippy_store_alloc_bytes("
+                       "nippy_store *store, uint32_t id, size_t size)\n"
+                       "{\n"
+                       "    size_t offset;\n\n"
+                       "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "\");\n"
+                       "    }\n"
+                       "    if (size == 0) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    offset = store->used;\n"
+                       "    if (offset > (size_t)-1 - size) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "\");\n"
+                       "    }\n"
+                       "    nippy_store_reserve(store, offset + size);\n"
+                       "    store->used = offset + size;\n"
+                       "    return offset;\n"
+                       "}\n\n");
+    }
+    if (needs_aligned_alloc) {
+        ok = ok && buffer_append(
+                       source,
+                       "static size_t nippy_store_alloc_bytes_aligned("
+                       "nippy_store *store, uint32_t id, size_t size,\n"
+                       "                                              "
+                       "size_t alignment)\n"
+                       "{\n"
+                       "    size_t offset;\n\n"
+                       "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "\");\n"
+                       "    }\n"
+                       "    if (size == 0) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    offset = nippy_store_align(store->used, alignment);\n"
+                       "    if (offset > (size_t)-1 - size) {\n"
+                       "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "\");\n"
+                       "    }\n"
+                       "    nippy_store_reserve(store, offset + size);\n"
+                       "    store->used = offset + size;\n"
+                       "    return offset;\n"
+                       "}\n\n");
+    }
     ok = ok && buffer_append(
                    source,
                    "static void nippy_store_reset(nippy_store *store)\n"
@@ -1650,8 +3188,27 @@ static bool append_print_program(const TypedProgram *program,
                         effective_source) ||
         !buffer_appendf(source, "    int32_t %s = ", name) ||
         !emit_expression(program, var->left_child, source, errors) ||
-        !buffer_append(source, ";\n") ||
-        !buffer_appendf(source, "    return %s;\n", name) ||
+        !buffer_append(source, ";\n")) {
+        if (!errors->reported) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        }
+        return false;
+    }
+    {
+        size_t i;
+
+        for (i = 0; i < program->roots.length; i++) {
+            size_t root = *(const size_t *)list_get(&program->roots, i);
+            const TypedNode *node = typed_program_node(program, root);
+
+            if (node != NULL && node->kind == TYPED_ASSIGNMENT &&
+                !emit_statement(program, root, 1, effective_source, source,
+                                errors)) {
+                return false;
+            }
+        }
+    }
+    if (!buffer_appendf(source, "    return %s;\n", name) ||
         !buffer_append(source, "}\n\nint main(void)\n{\n") ||
         !emit_store_inits(program, store_count, source, errors) ||
         !buffer_append(source,
@@ -1700,6 +3257,750 @@ static bool program_uses_handle_or_store_type(const TypedProgram *program)
     return false;
 }
 
+static bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
+{
+    bool ok = true;
+
+    ok = ok && buffer_append(
+                   source,
+                   "typedef struct {\n"
+                   "    size_t offset;\n"
+                   "    size_t length;\n"
+                   "    size_t capacity;\n"
+                   "} nippy_builder_state;\n\n"
+                   "static NIPPY_UNUSED nippy_store *nippy_builder_store("
+                   "nippy_builder b)\n"
+                   "{\n"
+                   "    if (b.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                   "\");\n"
+                   "    }\n"
+                   "    if (nippy_stores[b.store].generation != b.generation) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                   "\");\n"
+                   "    }\n"
+                   "    return &nippy_stores[b.store];\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED nippy_builder_state *nippy_builder_get_state("
+                   "nippy_builder b)\n"
+                   "{\n"
+                   "    nippy_store *store = nippy_builder_store(b);\n\n"
+                   "    if (b.offset > store->used ||\n"
+                   "        sizeof(nippy_builder_state) > store->used - b.offset) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    return (nippy_builder_state *)(void *)(store->data + "
+                   "b.offset);\n"
+                   "}\n\n");
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED nippy_builder nippy_builder_create("
+                   "nippy_store *store, uint32_t id, int32_t capacity)\n"
+                   "{\n"
+                   "    nippy_builder_state state;\n"
+                   "    nippy_handle handle;\n"
+                   "    nippy_builder builder;\n"
+                   "    size_t cap;\n"
+                   "    size_t buffer;\n\n"
+                   "    if (capacity < 0) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    cap = (size_t)capacity;\n"
+                   "    if (cap > (size_t)-1 - 1) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "\");\n"
+                   "    }\n"
+                   "    buffer = nippy_store_alloc_bytes(store, id, cap + 1);\n"
+                   "    store->data[buffer] = 0;\n"
+                   "    state.offset = buffer;\n"
+                   "    state.length = 0;\n"
+                   "    state.capacity = cap;\n"
+                   "    handle = nippy_store_alloc(store, id, &state, sizeof(state),\n"
+                   "                               _Alignof(nippy_builder_state));\n"
+                   "    builder.store = id;\n"
+                   "    builder.offset = handle.offset;\n"
+                   "    builder.generation = handle.generation;\n"
+                   "    return builder;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED void nippy_builder_reserve("
+                   "nippy_builder b, size_t needed)\n"
+                   "{\n"
+                   "    nippy_store *store = nippy_builder_store(b);\n"
+                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    size_t capacity;\n"
+                   "    size_t old_offset;\n"
+                   "    size_t old_length;\n"
+                   "    size_t offset;\n\n"
+                   "    if (needed <= state->capacity) {\n"
+                   "        return;\n"
+                   "    }\n"
+                   "    capacity = state->capacity == 0 ? 1 : state->capacity;\n"
+                   "    while (capacity < needed) {\n"
+                   "        if (capacity > (size_t)-1 / 2) {\n"
+                   "            nippy_string_fail(\""
+                   MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                   "        }\n"
+                   "        capacity *= 2;\n"
+                   "    }\n"
+                   "    old_offset = state->offset;\n"
+                   "    old_length = state->length;\n"
+                   "    offset = nippy_store_alloc_bytes(store, b.store, "
+                   "capacity + 1);\n"
+                   "    state = nippy_builder_get_state(b);\n"
+                   "    memcpy(store->data + offset, store->data + old_offset,\n"
+                   "           old_length);\n"
+                   "    state->offset = offset;\n"
+                   "    state->capacity = capacity;\n"
+                   "    state->length = old_length;\n"
+                   "    store->data[offset + old_length] = 0;\n"
+                   "}\n\n");
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED void nippy_builder_append("
+                   "nippy_builder b, nippy_string s)\n"
+                   "{\n"
+                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    size_t needed;\n"
+                   "    const uint8_t *data;\n"
+                   "    nippy_store *store;\n\n"
+                   "    if (s.length > (size_t)-1 - state->length) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "\");\n"
+                   "    }\n"
+                   "    needed = state->length + s.length;\n"
+                   "    nippy_builder_reserve(b, needed);\n"
+                   "    state = nippy_builder_get_state(b);\n"
+                   "    store = nippy_builder_store(b);\n"
+                   "    data = nippy_string_data(s);\n"
+                   "    memcpy(store->data + state->offset + state->length, data,\n"
+                   "           s.length);\n"
+                   "    state->length = needed;\n"
+                   "    store->data[state->offset + needed] = 0;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED void nippy_builder_append_byte("
+                   "nippy_builder b, uint8_t byte)\n"
+                   "{\n"
+                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    nippy_store *store;\n"
+                   "    size_t needed;\n\n"
+                   "    if (state->length == (size_t)-1) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "\");\n"
+                   "    }\n"
+                   "    needed = state->length + 1;\n"
+                   "    nippy_builder_reserve(b, needed);\n"
+                   "    state = nippy_builder_get_state(b);\n"
+                   "    store = nippy_builder_store(b);\n"
+                   "    store->data[state->offset + state->length] = byte;\n"
+                   "    state->length = needed;\n"
+                   "    store->data[state->offset + needed] = 0;\n"
+                   "}\n\n");
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED int32_t nippy_builder_len("
+                   "nippy_builder b)\n"
+                   "{\n"
+                   "    return (int32_t)nippy_builder_get_state(b)->length;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED nippy_string nippy_builder_finish("
+                   "nippy_builder b)\n"
+                   "{\n"
+                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    nippy_store *store = nippy_builder_store(b);\n"
+                   "    nippy_string result;\n"
+                   "    size_t length = state->length;\n"
+                   "    size_t source = state->offset;\n"
+                   "    size_t offset;\n\n"
+                   "    if (length > (size_t)-1 - 1) {\n"
+                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "\");\n"
+                   "    }\n"
+                   "    offset = nippy_store_alloc_bytes(store, b.store, "
+                   "length + 1);\n"
+                   "    memcpy(store->data + offset, store->data + source, "
+                   "length);\n"
+                   "    store->data[offset + length] = 0;\n"
+                   "    result.static_data = NULL;\n"
+                   "    result.store = b.store;\n"
+                   "    result.offset = offset;\n"
+                   "    result.length = length;\n"
+                   "    result.generation = store->generation;\n"
+                   "    return result;\n"
+                   "}\n\n");
+    if (!ok) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
+                              TextBuffer *source, ErrorState *errors)
+{
+    bool ok = true;
+    size_t i;
+
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED void nippy_list_fail("
+                   "const char *message)\n"
+                   "{\n"
+                   "    fprintf(stderr, \"%s\\n\", message);\n"
+                   "    exit(1);\n"
+                   "}\n\n");
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *type = typed_program_type(program, i);
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        char list_name[NIPPY_IDENTIFIER_MAX + 32];
+        size_t element;
+
+        if (type == NULL || type->kind != NIPPY_TYPE_FIXED_LIST ||
+            type->child_count != 1) {
+            continue;
+        }
+        element = *(const size_t *)list_get(&program->type_children,
+                                            type->first_child);
+        if (!fixed_list_element_name(program, i, element, element_name,
+                                     sizeof(element_name), errors)) {
+            return false;
+        }
+        snprintf(list_name, sizeof(list_name), "nippy_list_%zu", i);
+        ok = ok && buffer_appendf(
+                       source,
+                       "static NIPPY_UNUSED %s nippy_list_%zu_get("
+                       "%s list, int32_t i)\n"
+                       "{\n"
+                       "    if (i < 0 || (size_t)i >= list.length) {\n"
+                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    return list.data[i];\n"
+                       "}\n\n"
+                       "static NIPPY_UNUSED void nippy_list_%zu_push("
+                       "%s *list, %s value)\n"
+                       "{\n"
+                       "    if (list->length >= %zu) {\n"
+                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    list->data[list->length] = value;\n"
+                       "    list->length++;\n"
+                       "}\n\n"
+                       "static NIPPY_UNUSED %s *nippy_list_%zu_at("
+                       "%s *list, int32_t i)\n"
+                       "{\n"
+                       "    if (i < 0 || (size_t)i >= list->length) {\n"
+                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "\");\n"
+                       "    }\n"
+                       "    return &list->data[i];\n"
+                       "}\n\n",
+                       element_name, i, list_name,
+                       i, list_name, element_name, type->fixed_length,
+                       element_name, i, list_name);
+    }
+    if (store_count > 0) {
+        bool dynamic_list = false;
+
+        for (i = 0; i < program->types.length; i++) {
+            const TypedType *type = typed_program_type(program, i);
+
+            if (type != NULL && type->kind == NIPPY_TYPE_LIST) {
+                dynamic_list = true;
+                break;
+            }
+        }
+        if (dynamic_list) {
+            ok = ok && buffer_append(
+                           source,
+                           "typedef struct {\n"
+                           "    size_t offset;\n"
+                           "    size_t length;\n"
+                           "    size_t capacity;\n"
+                           "} nippy_list_state;\n\n"
+                           "static NIPPY_UNUSED nippy_store *nippy_list_store("
+                           "nippy_list list)\n"
+                           "{\n"
+                           "    if (list.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_STORE_RANGE "\");\n"
+                           "    }\n"
+                           "    if (nippy_stores[list.store].generation != "
+                           "list.generation) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_STALE_HANDLE "\");\n"
+                           "    }\n"
+                           "    return &nippy_stores[list.store];\n"
+                           "}\n\n"
+                           "static NIPPY_UNUSED nippy_list_state *"
+                           "nippy_list_get_state(nippy_list list)\n"
+                           "{\n"
+                           "    nippy_store *store = nippy_list_store(list);\n\n"
+                           "    if (list.offset > store->used ||\n"
+                           "        sizeof(nippy_list_state) > "
+                           "store->used - list.offset) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
+                           "    }\n"
+                           "    return (nippy_list_state *)(void *)"
+                           "(store->data + list.offset);\n"
+                           "}\n\n"
+                           "static NIPPY_UNUSED void *nippy_list_data("
+                           "nippy_list list, int32_t index,\n"
+                           "                                      "
+                           "size_t element_size)\n"
+                           "{\n"
+                           "    nippy_list_state *state = nippy_list_get_state(list);\n"
+                           "    nippy_store *store = nippy_list_store(list);\n"
+                           "    size_t offset;\n\n"
+                           "    if (index < 0 || (size_t)index >= state->length ||\n"
+                           "        element_size == 0) {\n"
+                           "        nippy_list_fail(\"");
+            ok = ok && buffer_append(
+                           source,
+                           MESSAGE_RUNTIME_LIST_BOUNDS "\");\n"
+                           "    }\n"
+                           "    if ((size_t)index > (size_t)-1 / "
+                           "element_size) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                           "    }\n"
+                           "    offset = state->offset + (size_t)index * "
+                           "element_size;\n"
+                           "    if (offset > store->used ||\n"
+                           "        element_size > store->used - offset) {\n"
+                           "        nippy_list_fail(\"");
+            ok = ok && buffer_append(
+                           source,
+                           MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
+                           "    }\n"
+                           "    return (void *)(store->data + offset);\n"
+                           "}\n\n");
+            ok = ok && buffer_append(
+                           source,
+                           "static NIPPY_UNUSED nippy_list nippy_list_create("
+                           "nippy_store *store, uint32_t id, int32_t capacity,\n"
+                           "                                              "
+                           "size_t element_size, size_t alignment)\n"
+                           "{\n"
+                           "    nippy_list_state state;\n"
+                           "    nippy_handle handle;\n"
+                           "    nippy_list list;\n"
+                           "    size_t cap;\n"
+                           "    size_t bytes;\n"
+                           "    size_t buffer;\n\n"
+                           "    if (capacity < 0 || element_size == 0) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_LIST_BOUNDS "\");\n"
+                           "    }\n"
+                           "    cap = (size_t)capacity;\n"
+                           "    if (cap > (size_t)-1 / element_size) {\n"
+                           "        nippy_list_fail(\""
+                           MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                           "    }\n"
+                           "    bytes = cap * element_size;\n"
+                           "    buffer = nippy_store_alloc_bytes_aligned(store, id,\n"
+                           "        bytes == 0 ? 1 : bytes, alignment);\n"
+                           "    state.offset = buffer;\n"
+                           "    state.length = 0;\n"
+                           "    state.capacity = cap;\n"
+                           "    handle = nippy_store_alloc(store, id, &state, "
+                           "sizeof(state),\n"
+                           "                               "
+                           "_Alignof(nippy_list_state));\n"
+                           "    list.store = id;\n"
+                           "    list.offset = handle.offset;\n"
+                           "    list.generation = handle.generation;\n"
+                           "    return list;\n"
+                           "}\n\n");
+            ok = ok && buffer_append(
+                           source,
+                           "static NIPPY_UNUSED void nippy_list_push("
+                           "nippy_list list, const void *value,\n"
+                           "                                      "
+                           "size_t element_size, size_t alignment)\n"
+                           "{\n"
+                           "    nippy_list_state *state = nippy_list_get_state(list);\n"
+                           "    nippy_store *store;\n"
+                           "    size_t needed;\n"
+                           "    size_t capacity;\n\n"
+                           "    if (state->length == (size_t)-1) {\n"
+                           "        nippy_list_fail(\"");
+            ok = ok && buffer_append(
+                           source,
+                           MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                           "    }\n"
+                           "    needed = state->length + 1;\n"
+                           "    if (needed > state->capacity) {\n"
+                           "        size_t old_offset = state->offset;\n"
+                           "        size_t old_length = state->length;\n"
+                           "        size_t old_bytes = old_length * element_size;\n"
+                           "        size_t new_bytes;\n"
+                           "        size_t new_offset;\n\n"
+                           "        capacity = state->capacity == 0 ? 1 : "
+                           "state->capacity;\n"
+                           "        while (capacity < needed) {\n"
+                           "            if (capacity > (size_t)-1 / 2) {\n"
+                           "                nippy_list_fail(\"");
+            ok = ok && buffer_append(
+                           source,
+                           MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                           "            }\n"
+                           "            capacity *= 2;\n"
+                           "        }\n"
+                           "        if (capacity > (size_t)-1 / element_size) {\n"
+                           "            nippy_list_fail(\"");
+            ok = ok && buffer_append(
+                           source,
+                           MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                           "        }\n"
+                           "        new_bytes = capacity * element_size;\n"
+                           "        new_offset = nippy_store_alloc_bytes_aligned(\n"
+                           "            nippy_list_store(list), list.store, "
+                           "new_bytes,\n"
+                           "            alignment);\n"
+                           "        store = nippy_list_store(list);\n"
+                           "        memcpy(store->data + new_offset, "
+                           "store->data + old_offset,\n"
+                           "               old_bytes);\n"
+                           "        state = nippy_list_get_state(list);\n"
+                           "        state->offset = new_offset;\n"
+                           "        state->capacity = capacity;\n"
+                           "    }\n"
+                           "    state = nippy_list_get_state(list);\n"
+                           "    store = nippy_list_store(list);\n"
+                           "    memcpy(store->data + state->offset + "
+                           "state->length * element_size,\n"
+                           "           value, element_size);\n"
+                           "    state->length = needed;\n"
+                           "}\n\n"
+                           "static NIPPY_UNUSED int32_t nippy_list_len("
+                           "nippy_list list)\n"
+                           "{\n"
+                           "    return (int32_t)nippy_list_get_state(list)->length;\n"
+                           "}\n\n");
+        }
+    }
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+        const TypedNode *receiver;
+        const TypedType *receiver_type;
+        const TypedType *union_type;
+        const TypedType *element_type;
+        size_t nil_type = TYPED_NO_NODE;
+        size_t element_tag = TYPED_NO_NODE;
+        size_t nil_tag;
+        bool element_is_union;
+        bool same_result;
+        char union_name[NIPPY_IDENTIFIER_MAX + 32];
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        char list_name[NIPPY_IDENTIFIER_MAX + 32];
+        TextBuffer body;
+        size_t j;
+
+        if (node == NULL || node->kind != TYPED_LIST_POP) {
+            continue;
+        }
+        receiver = typed_program_node(program, node->left_child);
+        receiver_type = receiver == NULL
+                            ? NULL
+                            : typed_program_type(program, receiver->type_index);
+        union_type = typed_program_type(program, node->type_index);
+        element_type = typed_program_type(program, node->auxiliary_type);
+        if (receiver_type != NULL && union_type != NULL &&
+            union_type->kind == NIPPY_TYPE_NIL) {
+            if (!format_c_type(program, receiver->type_index, list_name,
+                               sizeof(list_name), errors)) {
+                return false;
+            }
+            if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+                ok = ok && buffer_appendf(
+                               source,
+                               "static NIPPY_UNUSED nippy_nil "
+                               "nippy_list_pop_%zu(%s *list)\n"
+                               "{\n"
+                               "    if (list->length != 0) {\n"
+                               "        list->length--;\n"
+                               "    }\n"
+                               "    return (nippy_nil)0;\n"
+                               "}\n\n",
+                               i, list_name);
+            } else {
+                ok = ok && buffer_appendf(
+                               source,
+                               "static NIPPY_UNUSED nippy_nil "
+                               "nippy_list_pop_%zu(nippy_list list)\n"
+                               "{\n"
+                               "    nippy_list_state *state = "
+                               "nippy_list_get_state(list);\n"
+                               "    if (state->length != 0) {\n"
+                               "        state->length--;\n"
+                               "    }\n"
+                               "    return (nippy_nil)0;\n"
+                               "}\n\n",
+                               i);
+            }
+            continue;
+        }
+        if (receiver_type == NULL || union_type == NULL ||
+            element_type == NULL || union_type->kind != NIPPY_TYPE_UNION ||
+            !format_c_type(program, node->type_index, union_name,
+                           sizeof(union_name), errors) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors) ||
+            !format_c_type(program, receiver->type_index, list_name,
+                           sizeof(list_name), errors)) {
+            return false;
+        }
+        element_is_union = element_type->kind == NIPPY_TYPE_UNION;
+        same_result = types_equivalent(program, node->auxiliary_type,
+                                       node->type_index, 16);
+        for (j = 0; j < program->types.length; j++) {
+            const TypedType *candidate = typed_program_type(program, j);
+
+            if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
+                nil_type = j;
+                break;
+            }
+        }
+        if (nil_type == TYPED_NO_NODE ||
+            !find_union_alternative(program, union_type, nil_type, &nil_tag)) {
+            return false;
+        }
+        if (!element_is_union &&
+            !find_union_alternative(program, union_type,
+                                    node->auxiliary_type, &element_tag)) {
+            return false;
+        }
+        buffer_init(&body);
+        if (!buffer_appendf(
+                &body,
+                "static NIPPY_UNUSED %s nippy_list_pop_%zu(",
+                union_name, i) ||
+            !buffer_append(&body,
+                           receiver_type->kind == NIPPY_TYPE_FIXED_LIST
+                               ? ""
+                               : "nippy_list list)\n{\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_appendf(&body, "%s *list)\n{\n", list_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        }
+        if (!buffer_appendf(&body, "    %s result;\n    %s value;\n\n",
+                            union_name, element_name) ||
+            !buffer_appendf(&body,
+                            "    if (%s == 0) {\n"
+                            "        result = (%s){ .tag = %zu };\n"
+                            "        return result;\n"
+                            "    }\n",
+                            receiver_type->kind == NIPPY_TYPE_FIXED_LIST
+                                ? "list->length"
+                                : "nippy_list_get_state(list)->length",
+                            union_name, nil_tag)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!buffer_append(
+                    &body,
+                    "    value = list->data[list->length - 1];\n"
+                    "    list->length--;\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        } else {
+            if (!buffer_appendf(
+                    &body,
+                    "    {\n"
+                    "        nippy_list_state *state = "
+                    "nippy_list_get_state(list);\n"
+                    "        nippy_store *store = nippy_list_store(list);\n"
+                    "        size_t offset = state->offset + "
+                    "(state->length - 1) * sizeof(%s);\n\n"
+                    "        value = *(%s *)(void *)(store->data + offset);\n"
+                    "        state->length--;\n"
+                    "    }\n",
+                    element_name, element_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        }
+        if (element_is_union && !same_result) {
+            if (!buffer_append(&body, "    switch (value.tag) {\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+            for (j = 0; j < element_type->child_count; j++) {
+                const TypedType *alternative =
+                    union_alternative_type(program, element_type, j);
+                size_t result_tag;
+
+                if (alternative == NULL ||
+                    alternative->kind == NIPPY_TYPE_NIL ||
+                    !find_union_alternative(
+                        program, union_type,
+                        *(const size_t *)list_get(
+                            &program->type_children,
+                            element_type->first_child + j),
+                        &result_tag)) {
+                    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                    buffer_free(&body);
+                    return false;
+                }
+                if (!buffer_appendf(
+                        &body,
+                        "    case %zu:\n"
+                        "        result = (%s){ .tag = %zu, "
+                        ".value.v%zu = value.value.v%zu };\n"
+                        "        break;\n",
+                        j, union_name, result_tag, result_tag, j)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    buffer_free(&body);
+                    return false;
+                }
+            }
+            if (!buffer_append(&body, "    }\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        } else if (element_is_union) {
+            if (!buffer_append(&body, "    result = value;\n")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        } else if (!buffer_appendf(
+                       &body,
+                       "    result = (%s){ .tag = %zu, "
+                       ".value.v%zu = value };\n",
+                       union_name, element_tag, element_tag)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        if (!buffer_append(&body, "    return result;\n}\n\n") ||
+            !buffer_append(source, body.text)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        buffer_free(&body);
+    }
+    if (!ok) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_slice_runtime(TextBuffer *source, ErrorState *errors)
+{
+    bool ok = true;
+
+    ok = ok && buffer_append(
+                   source,
+                   "static NIPPY_UNUSED nippy_store *nippy_slice_store("
+                   "nippy_slice slice)\n"
+                   "{\n"
+                   "    if (slice.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                   "        nippy_list_fail(\""
+                   MESSAGE_RUNTIME_STORE_RANGE "\");\n"
+                   "    }\n"
+                   "    if (nippy_stores[slice.store].generation != "
+                   "slice.generation) {\n"
+                   "        nippy_list_fail(\""
+                   MESSAGE_RUNTIME_STALE_HANDLE "\");\n"
+                   "    }\n"
+                   "    return &nippy_stores[slice.store];\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED nippy_slice nippy_slice_from_list("
+                   "nippy_list list, int32_t start, int32_t length,\n"
+                   "                                              "
+                   "size_t element_size)\n"
+                   "{\n"
+                   "    nippy_list_state *state = nippy_list_get_state(list);\n"
+                   "    nippy_store *store = nippy_list_store(list);\n"
+                   "    nippy_slice result;\n"
+                   "    size_t offset;\n\n"
+                   "    if (start < 0 || length < 0 ||\n"
+                   "        (size_t)start > state->length ||\n"
+                   "        (size_t)length > state->length - (size_t)start ||\n"
+                   "        element_size == 0 ||\n"
+                   "        (size_t)start > (size_t)-1 / element_size) {\n"
+                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    offset = state->offset + (size_t)start * element_size;\n"
+                   "    result.store = list.store;\n"
+                   "    result.offset = offset;\n"
+                   "    result.length = (size_t)length;\n"
+                   "    result.generation = store->generation;\n"
+                   "    return result;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED nippy_slice nippy_slice_sub("
+                   "nippy_slice slice, int32_t start, int32_t length,\n"
+                   "                                        size_t element_size)\n"
+                   "{\n"
+                   "    nippy_slice result;\n\n"
+                   "    if (start < 0 || length < 0 ||\n"
+                   "        (size_t)start > slice.length ||\n"
+                   "        (size_t)length > slice.length - (size_t)start ||\n"
+                   "        element_size == 0 ||\n"
+                   "        (size_t)start > (size_t)-1 / element_size) {\n"
+                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    (void)nippy_slice_store(slice);\n"
+                   "    result = slice;\n"
+                   "    result.offset += (size_t)start * element_size;\n"
+                   "    result.length = (size_t)length;\n"
+                   "    return result;\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED const void *nippy_slice_data("
+                   "nippy_slice slice, int32_t index, size_t element_size)\n"
+                   "{\n"
+                   "    nippy_store *store = nippy_slice_store(slice);\n"
+                   "    size_t offset;\n\n"
+                   "    if (index < 0 || (size_t)index >= slice.length ||\n"
+                   "        element_size == 0 ||\n"
+                   "        (size_t)index > (size_t)-1 / element_size) {\n"
+                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "\");\n"
+                   "    }\n"
+                   "    offset = slice.offset + (size_t)index * element_size;\n"
+                   "    if (offset > store->used ||\n"
+                   "        element_size > store->used - offset) {\n"
+                   "        nippy_list_fail(\""
+                   MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
+                   "    }\n"
+                   "    return (const void *)(store->data + offset);\n"
+                   "}\n\n"
+                   "static NIPPY_UNUSED int32_t nippy_slice_len("
+                   "nippy_slice slice)\n"
+                   "{\n"
+                   "    (void)nippy_slice_store(slice);\n"
+                   "    return (int32_t)slice.length;\n"
+                   "}\n\n");
+    if (!ok) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
 static bool validate_store_declarations(const TypedProgram *program,
                                         size_t store_count,
                                         ErrorState *errors)
@@ -1738,6 +4039,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool print_program = false;
     bool has_expression_statement = false;
     bool uses_store_or_handle;
+    bool uses_dynamic_string;
+    bool uses_string_builder;
+    bool uses_list;
+    bool uses_dynamic_list;
+    bool uses_slice;
     size_t store_count;
     size_t i;
     bool ok = false;
@@ -1763,6 +4069,12 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     uses_store_or_handle =
         store_count > 0 || program_uses_handle_or_store_type(program);
+    uses_string_builder = program_uses_string_builder(program);
+    uses_dynamic_string =
+        program_uses_dynamic_string(program) || uses_string_builder;
+    uses_list = program_uses_list(program);
+    uses_dynamic_list = program_uses_dynamic_list(program);
+    uses_slice = program_uses_slice(program);
 
     if (!buffer_append(&header,
                        "#ifndef NIPPY_GENERATED_H\n"
@@ -1772,7 +4084,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (uses_store_or_handle) {
+    if (uses_store_or_handle || uses_dynamic_string || uses_list ||
+        uses_slice) {
         if (!buffer_append(&header, "#include <stddef.h>\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
@@ -1827,6 +4140,9 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             single_var = node;
         } else if (node->kind == TYPED_EXPRESSION_STATEMENT) {
             has_expression_statement = true;
+        } else if (node->kind == TYPED_ASSIGNMENT) {
+            /* An assignment changes the printed value instead of replacing the
+               program-value entry point. */
         } else if (node->kind != TYPED_FUNCTION_DECLARATION) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
             goto done;
@@ -1858,7 +4174,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (store_count > 0) {
+    if (store_count > 0 || program_uses_string(program) ||
+        uses_dynamic_string || uses_list || uses_slice) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
@@ -1866,12 +4183,49 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
-        if (!emit_store_runtime(&source, store_count, errors)) {
-            goto done;
-        }
     } else if (print_program &&
                !buffer_append(&source, "#include <stdio.h>\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        goto done;
+    }
+    if (uses_dynamic_string || uses_list || uses_slice) {
+        if (!buffer_append(&source,
+                           "#if defined(__GNUC__) || defined(__clang__)\n"
+                           "#define NIPPY_UNUSED __attribute__((unused))\n"
+                           "#else\n"
+                           "#define NIPPY_UNUSED\n"
+                           "#endif\n\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            goto done;
+        }
+    }
+    if (store_count > 0 &&
+        !emit_store_runtime(&source, store_count, uses_dynamic_string,
+                            uses_dynamic_list, errors)) {
+        goto done;
+    }
+    if (program_uses_string(program) &&
+        !emit_string_runtime(program, &source, errors)) {
+        goto done;
+    }
+    if (uses_dynamic_string &&
+        !emit_dynamic_string_runtime(program, store_count, &source, errors)) {
+        goto done;
+    }
+    if (uses_dynamic_string &&
+        !emit_dynamic_string_literals(program, &source, errors)) {
+        goto done;
+    }
+    if (uses_string_builder && store_count > 0 &&
+        !emit_builder_runtime(&source, errors)) {
+        goto done;
+    }
+    if (uses_list && !emit_list_runtime(program, store_count, &source,
+                                        errors)) {
+        goto done;
+    }
+    if (uses_slice && uses_dynamic_list && store_count > 0 &&
+        !emit_slice_runtime(&source, errors)) {
         goto done;
     }
 
@@ -1907,7 +4261,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                                   errors)) {
                 goto done;
             }
-            if (node->kind == TYPED_EXPRESSION_STATEMENT &&
+            if ((node->kind == TYPED_EXPRESSION_STATEMENT ||
+                 node->kind == TYPED_ASSIGNMENT) &&
                 !emit_statement(program, root, 1, effective_source, &source,
                                 errors)) {
                 goto done;

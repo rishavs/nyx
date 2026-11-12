@@ -12,6 +12,13 @@ void typed_program_init(TypedProgram *program)
     list_init(&program->signatures, sizeof(TypedFunctionSignature));
     list_init(&program->signature_parameters, sizeof(size_t));
     list_init(&program->type_children, sizeof(size_t));
+    list_init(&program->bytes, sizeof(unsigned char));
+    program->error_header_capacity = NIPPY_DEFAULT_ERROR_HEADER_CAPACITY;
+    program->error_description_capacity =
+        NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY;
+    program->error_filename_capacity = NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY;
+    program->max_string_capacity = NIPPY_DEFAULT_MAX_STRING_CAPACITY;
+    program->max_list_capacity = NIPPY_DEFAULT_MAX_LIST_CAPACITY;
 }
 
 void typed_program_free(TypedProgram *program)
@@ -27,6 +34,7 @@ void typed_program_free(TypedProgram *program)
     list_free(&program->signatures);
     list_free(&program->signature_parameters);
     list_free(&program->type_children);
+    list_free(&program->bytes);
 }
 
 const TypedNode *typed_program_node(const TypedProgram *program, size_t index)
@@ -120,6 +128,11 @@ bool typed_program_add_signature_parameter(TypedProgram *program,
 bool typed_program_add_type_child(TypedProgram *program, size_t type_index)
 {
     return list_push(&program->type_children, &type_index);
+}
+
+bool typed_program_push_byte(TypedProgram *program, unsigned char byte)
+{
+    return list_push(&program->bytes, &byte);
 }
 
 bool typed_program_push_child(TypedProgram *program, size_t index)

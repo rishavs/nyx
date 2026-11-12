@@ -6,6 +6,7 @@
 #include "operator.h"
 #include "source_pos.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #define AST_NO_NODE ((size_t)-1)
@@ -38,7 +39,16 @@ typedef enum {
     AST_IS,
     AST_MEMBER_CALL,
     AST_EXPRESSION_STATEMENT,
-    AST_NIL_LITERAL
+    AST_ASSIGNMENT,
+    AST_NIL_LITERAL,
+    AST_STRING_LITERAL,
+    AST_TYPE_FIXED_STRING,
+    AST_TYPE_LIST,
+    AST_TYPE_FIXED_LIST,
+    AST_TYPE_SLICE,
+    AST_LIST_LITERAL,
+    AST_INDEX,
+    AST_INDEX_ASSIGNMENT
 } AstNodeKind;
 
 /* Names live inline: a List element may not hold a pointer, so a symbol is a
@@ -64,6 +74,11 @@ typedef struct {
     size_t children_count;
     size_t type_parameters_start;
     size_t type_parameters_count;
+    /* AST_DECLARATION: declared with `global` rather than `var`. */
+    bool is_global;
+    /* AST_STRING_LITERAL points into Ast.bytes. */
+    size_t string_offset;
+    size_t string_length;
 } AstNode;
 
 typedef struct {
@@ -79,6 +94,8 @@ typedef struct {
        from `children` so a generic declaration's value children and type
        parameters never share a run. */
     List type_parameters;
+    /* Decoded bytes for string literals; nodes store offsets into this. */
+    List bytes;
 } Ast;
 
 void ast_init(Ast *ast);
@@ -88,5 +105,6 @@ size_t ast_intern_symbol(Ast *ast, const char *text, size_t length);
 const char *ast_symbol_text(const Ast *ast, size_t index);
 bool ast_push_child(Ast *ast, size_t index);
 bool ast_push_type_parameter(Ast *ast, size_t index);
+bool ast_push_byte(Ast *ast, unsigned char byte);
 
 #endif

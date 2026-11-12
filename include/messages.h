@@ -19,13 +19,27 @@
 #define MESSAGE_LEXER_UNEXPECTED_BYTE \
     "lexer: unexpected byte 0x%02x"
 #define MESSAGE_LEXER_OUT_OF_MEMORY "lexer: out of memory"
+#define MESSAGE_LEXER_UNTERMINATED_STRING \
+    "lexer: unterminated string literal"
+#define MESSAGE_LEXER_STRING_NEWLINE \
+    "lexer: newline in string literal"
+#define MESSAGE_LEXER_INVALID_ESCAPE \
+    "lexer: invalid escape sequence '\\%c'"
 
 /* Compiler */
 #define MESSAGE_COMPILER_SOURCE_IS_NULL "compiler: source string is null"
+#define MESSAGE_COMPILER_ERROR_CAPACITY \
+    "compiler: Error %s capacity must be between 1 and %d"
+#define MESSAGE_COMPILER_STRING_CAPACITY \
+    "compiler: maximum string capacity must be between 1 and %d"
+#define MESSAGE_COMPILER_LIST_CAPACITY \
+    "compiler: max_list_capacity must be between 1 and %d"
+#define MESSAGE_COMPILER_SOURCE_TOO_LARGE \
+    "compiler: source exceeds the configured limit of %d bytes"
 
 /* Parser */
 #define MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN \
-    "parser: expected 'var', 'type', or 'fun' to start a declaration"
+    "parser: expected 'global', 'var', 'type', or 'fun' to start a declaration"
 #define MESSAGE_PARSER_EXPECTED_VARIABLE_NAME \
     "parser: expected a variable name after 'var'"
 #define MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME \
@@ -107,6 +121,20 @@
     "parser: expected ')' after 'is<T>'"
 #define MESSAGE_PARSER_EXPECTED_MEMBER_NAME \
     "parser: expected a member name after '.'"
+#define MESSAGE_PARSER_EXPECTED_STRING_LENGTH \
+    "parser: expected an integer length in String<N>"
+#define MESSAGE_PARSER_EXPECTED_STRING_GT \
+    "parser: expected '>' after String<N>"
+#define MESSAGE_PARSER_EXPECTED_LIST_CAPACITY \
+    "parser: expected an integer list capacity"
+#define MESSAGE_PARSER_EXPECTED_LIST_GT \
+    "parser: expected '>' after a list capacity"
+#define MESSAGE_PARSER_EXPECTED_LIST_RBRACKET \
+    "parser: expected ']' after a list literal"
+#define MESSAGE_PARSER_EXPECTED_RBRACKET \
+    "parser: expected ']' after an index"
+#define MESSAGE_PARSER_EXPECTED_LIST_SEPARATOR \
+    "parser: expected ',' or ']' in a list literal"
 
 /* Checker */
 #define MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM \
@@ -159,8 +187,14 @@
     "checker: unknown function or type '%s'"
 #define MESSAGE_CHECKER_GLOBAL_IN_FUNCTION \
     "checker: cannot use program-level variable '%s' inside a function"
+#define MESSAGE_CHECKER_GLOBAL_DECLARATION \
+    "checker: global '%s' must be declared with type Store"
 #define MESSAGE_CHECKER_TYPE_AS_VALUE \
     "checker: type '%s' cannot be used as a value"
+#define MESSAGE_CHECKER_ASSIGN_TARGET \
+    "checker: '%s' is not an assignable variable"
+#define MESSAGE_CHECKER_ASSIGN_TYPE \
+    "checker: cannot assign a value of the wrong type to '%s'"
 #define MESSAGE_CHECKER_NOT_CALLABLE \
     "checker: '%s' is not a function"
 #define MESSAGE_CHECKER_NAMED_FUNCTION_ARG \
@@ -189,6 +223,80 @@
     "checker: union alternative has an unsupported type"
 #define MESSAGE_CHECKER_BYTE_RANGE \
     "checker: byte literal %d is outside 0..255"
+#define MESSAGE_CHECKER_STRING_CAPACITY \
+    "checker: String capacity must be between 0 and %d"
+#define MESSAGE_CHECKER_STRING_LITERAL_CONTEXT \
+    "checker: string literal needs a String<N> context"
+#define MESSAGE_CHECKER_STRING_TOO_LONG \
+    "checker: string literal of %zu bytes does not fit String<%d>"
+#define MESSAGE_CHECKER_STRING_COMPARE_CONTEXT \
+    "checker: string comparison needs a fixed string type"
+#define MESSAGE_CHECKER_STRING_AMBIGUOUS \
+    "checker: string literal fits more than one String<N> alternative"
+#define MESSAGE_CHECKER_STRING_INDEX \
+    "checker: 'byte_at' expects an Int32 byte index"
+#define MESSAGE_CHECKER_STRING_SLICE_TYPE \
+    "checker: 'slice' expects Int32 start and length"
+#define MESSAGE_CHECKER_CONCAT_TYPE \
+    "checker: 'concat' expects dynamic String arguments"
+#define MESSAGE_CHECKER_COPY_TYPE \
+    "checker: 'copy' expects a dynamic String"
+#define MESSAGE_CHECKER_STORE_STRING_TYPE \
+    "checker: 'string' expects a fixed String<N>"
+#define MESSAGE_CHECKER_LIST_CAPACITY \
+    "checker: list capacity must be in 0..%d"
+#define MESSAGE_CHECKER_LIST_ELEMENT \
+    "checker: List element type must be a single sized type"
+#define MESSAGE_CHECKER_LIST_ARGS \
+    "checker: List needs one element type and an optional capacity"
+#define MESSAGE_CHECKER_LIST_LITERAL_CONTEXT \
+    "checker: a list literal needs a fixed List<T,N> context"
+#define MESSAGE_CHECKER_LIST_LITERAL_LENGTH \
+    "checker: list literal has %zu elements but the fixed list capacity is %d"
+#define MESSAGE_CHECKER_LIST_INDEX \
+    "checker: list index must be Int32"
+#define MESSAGE_CHECKER_LIST_VALUE \
+    "checker: list value has the wrong element type"
+#define MESSAGE_CHECKER_LIST_INFER \
+    "checker: cannot infer one element type for this list literal"
+#define MESSAGE_CHECKER_LIST_TYPE_ARG \
+    "checker: 'list' needs one element type"
+#define MESSAGE_CHECKER_LIST_CREATE_ARGS \
+    "checker: 'list' expects one Int32 capacity"
+#define MESSAGE_CHECKER_LIST_CAPACITY_ARG \
+    "checker: 'list' capacity must be Int32"
+#define MESSAGE_CHECKER_LIST_MUTABLE \
+    "checker: this operation requires a dynamic List<T>"
+#define MESSAGE_CHECKER_LIST_LVALUE \
+    "checker: list mutation requires a list variable"
+#define MESSAGE_CHECKER_SLICE_DYNAMIC \
+    "checker: slice requires a dynamic List<T>"
+#define MESSAGE_CHECKER_SLICE_ARGS \
+    "checker: Slice needs one element type"
+#define MESSAGE_CHECKER_SLICE_ELEMENT \
+    "checker: Slice element type must be a concrete-sized value"
+#define MESSAGE_CHECKER_SLICE_READONLY \
+    "checker: Slice<T> is read-only"
+#define MESSAGE_CHECKER_BUILDER_CAPACITY \
+    "checker: 'builder' expects an Int32 capacity"
+#define MESSAGE_CHECKER_BUILDER_APPEND_TYPE \
+    "checker: 'append' expects a dynamic String"
+#define MESSAGE_CHECKER_BUILDER_BYTE_TYPE \
+    "checker: 'append_byte' expects a Byte"
+#define MESSAGE_CHECKER_REDEFINES_STRING \
+    "checker: cannot redefine built-in type 'String'"
+#define MESSAGE_CHECKER_REDEFINES_BUILDER \
+    "checker: cannot redefine built-in type 'StringBuilder'"
+#define MESSAGE_CHECKER_REDEFINES_LIST \
+    "checker: cannot redefine built-in type 'List'"
+#define MESSAGE_CHECKER_REDEFINES_SLICE \
+    "checker: cannot redefine built-in type 'Slice'"
+#define MESSAGE_CHECKER_REDEFINES_ERROR \
+    "checker: cannot redefine built-in type 'Error'"
+#define MESSAGE_CHECKER_ERROR_ARGS \
+    "checker: Error takes header, description, filename, line, col, pos"
+#define MESSAGE_CHECKER_ERROR_ARG_TYPE \
+    "checker: Error argument %zu has the wrong type"
 #define MESSAGE_CHECKER_STORE_SIZE \
     "checker: store size must be a constant Int32 expression"
 #define MESSAGE_CHECKER_STORE_INITIALIZER \
@@ -263,6 +371,10 @@
     "analyser: handle type %zu has no element type"
 #define MESSAGE_ANALYSER_INVALID_STORE_ID \
     "analyser: node %zu has an invalid store id"
+#define MESSAGE_ANALYSER_INVALID_STRING_LITERAL \
+    "analyser: string literal bytes are out of range"
+#define MESSAGE_ANALYSER_INVALID_ERROR \
+    "analyser: node %zu has an invalid Error shape"
 
 /* Generator */
 #define MESSAGE_GENERATOR_UNSUPPORTED_ROOT \
@@ -291,6 +403,8 @@
 #define MESSAGE_RUNTIME_STALE_HANDLE "nippy: stale handle"
 #define MESSAGE_RUNTIME_HANDLE_BOUNDS "nippy: handle is out of range"
 #define MESSAGE_RUNTIME_STORE_RANGE "nippy: invalid store id"
+#define MESSAGE_RUNTIME_STRING_BOUNDS "nippy: string index out of bounds"
+#define MESSAGE_RUNTIME_LIST_BOUNDS "nippy: list index out of bounds"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \
