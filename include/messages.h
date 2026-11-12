@@ -196,6 +196,8 @@
     "checker: duplicate declaration of '%s'"
 #define MESSAGE_CHECKER_DUPLICATE_PARAMETER \
     "checker: duplicate parameter '%s'"
+#define MESSAGE_CHECKER_RESERVED_NAME \
+    "checker: '%s' is reserved for generated C"
 #define MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT \
     "checker: '%s' is not a struct type"
 #define MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT \

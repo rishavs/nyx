@@ -7,4 +7,9 @@
    program. Raise it in one place only. */
 #define NIPPY_IDENTIFIER_MAX 32
 
+/* Prefix reserved for identifiers the generator invents. Source names that
+   start with it are rejected by the checker, so generated and user names
+   cannot collide in emitted C. */
+#define NIPPY_GENERATED_PREFIX "nyx_"
+
 #endif

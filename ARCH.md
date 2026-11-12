@@ -234,6 +234,11 @@ Type identity is structural for unions and functions and nominal for structs.
 Union alternatives are stored in a canonical order, so structural equality is a
 linear walk.
 
+The checker also guards the C emission boundary: a source name that is a C11
+keyword, a C identifier the generated code uses, `main`, or begins with the
+reserved `nyx_` prefix is rejected there. Names are emitted unchanged, so this
+check is what keeps invalid or colliding C from reaching the system compiler.
+
 ### Analyser
 
 A read-only pass over the typed program that validates its internal links:
@@ -253,19 +258,24 @@ Consumes the typed program only. It emits:
 
 - **the header**, holding the generated include guard, `<stdbool.h>`,
   `<stdint.h>`, `<stddef.h>` when a store or handle is present, the
-  `nippy_nil` typedef when Nil is used, the opaque `nippy_handle` and
-  `nippy_store` records, one inline `nippy_string_N` struct per fixed-string
-  capacity, the `nippy_error` struct when Error is used, one `typedef struct`
+  `nyx_nil` typedef when Nil is used, the opaque `nyx_handle` and
+  `nyx_store` records, one inline `nyx_string_N` struct per fixed-string
+  capacity, the `nyx_error` struct when Error is used, one `typedef struct`
   per struct type and generic instantiation, one tagged `typedef struct` per union type, one
-  function-pointer `typedef` per function signature (`nippy_fun_N`), and — when
+  function-pointer `typedef` per function signature (`nyx_fun_N`), and — when
   the program is a single integer variable — the declaration of
-  `nippy_program_value`;
+  `nyx_program_value`;
 - **the source**, holding `#include "<generated header>"`, the arena runtime
   when a store is declared, the string bounds/equality helpers when a string or
   Error type is used, one function definition per non-generic function
   and per concrete generic instantiation, one `#line` directive per emitted
   declaration or statement, the variable initializers, store init/free calls,
   call statements, and `main`.
+
+Every generated type, helper, and instantiation name uses the `nyx_` prefix;
+that prefix is reserved and cannot appear in source names. The generator's
+output is internal IR, so these names are not a stable interface, but they must
+remain collision-free.
 
 Type definitions are emitted from `TypedProgram.types` in index order. The
 checker creates types bottom-up, so this order is topological and every type
@@ -280,7 +290,7 @@ declaration and statement emitted is preceded by `#line <line> "<source>"` so a
 C-compiler diagnostic points back at the Nippy source. Function types are
 emitted as typedefs so every generated declaration is a simple `type name` pair,
 including function-typed parameters and variables. `Bool` maps to `bool`;
-`Nil` maps to a one-byte `nippy_nil`; a union is a `uint32_t tag` plus a union
+`Nil` maps to a one-byte `nyx_nil`; a union is a `uint32_t tag` plus a union
 of payload members named by alternative position. `if`, `while`, `for`, `break`, and
 `continue` are emitted as the corresponding C statements. `print` emits a
 sequence of temporaries and generated per-type pretty-printer helpers; helpers
@@ -294,20 +304,20 @@ directly.
 
 A fixed `TYPED_STRING_LITERAL` becomes a compound literal with its byte values, a
 NUL, zero padding, and the literal length. A dynamic literal points at a
-generated `static const uint8_t` array and becomes a `nippy_string` descriptor.
+generated `static const uint8_t` array and becomes a `nyx_string` descriptor.
 `TYPED_STRING_LEN` reads the stored length (checking staleness for dynamic
 strings), `TYPED_STRING_AT` calls a bounds-checked accessor, and string equality
 calls a byte comparison. Dynamic `slice`, `concat`, `copy`, and fixed-to-dynamic
-conversion are emitted as `nippy_string_*` runtime helpers. `TextBuilder`
-becomes a `nippy_builder` descriptor pointing at store-backed state; append,
-growth, length, and finish use `nippy_builder_*` helpers. Arrays become
-`nippy_list_<index>` structs and fixed `get` helpers. Dynamic lists become a
-`nippy_list` descriptor pointing at store-backed state; create, push, pop,
-index, set, and length use `nippy_list_*` helpers. Arrays carry an inline
+conversion are emitted as `nyx_string_*` runtime helpers. `TextBuilder`
+becomes a `nyx_builder` descriptor pointing at store-backed state; append,
+growth, length, and finish use `nyx_builder_*` helpers. Arrays become
+`nyx_list_<index>` structs and fixed `get` helpers. Dynamic lists become a
+`nyx_list` descriptor pointing at store-backed state; create, push, pop,
+index, set, and length use `nyx_list_*` helpers. Arrays carry an inline
 length and have per-type push/at/pop helpers. Fixed function elements emit an
 inline element typedef; function union payloads are emitted inline. `Slice<T>`
-uses a `nippy_slice` descriptor and non-owning read helpers. `TYPED_ERROR_CONSTRUCT`
-becomes a `nippy_error` compound literal and `TYPED_ERROR_FIELD` reads one of its
+uses a `nyx_slice` descriptor and non-owning read helpers. `TYPED_ERROR_CONSTRUCT`
+becomes a `nyx_error` compound literal and `TYPED_ERROR_FIELD` reads one of its
 members.
 
 A `TYPED_ASSIGNMENT` emits a C assignment to the target variable; the value is
@@ -393,6 +403,13 @@ Two structures sit outside `List` by design:
   generated source, since the output is text rather than an array of elements.
 - `LexerResult`, `Ast`, `TypedProgram`, `CompilerResult`, and `ErrorState` are
   plain structs that aggregate lists, counts, and flags.
+
+A pointer returned by `list_get` borrows the list's current allocation. Any
+`list_push`, `list_pop`, or `list_free` may move that allocation and invalidate
+the pointer. The checker must therefore copy an index or a field before a
+recursive check that can append nodes, types, signatures, or children; re-fetch
+the record afterwards when it is still needed. This is why several checking
+paths capture scalar facts before descending.
 
 The checker's AST-to-typed index map, struct type table, function table,
 variable table, and the parser's scratch lists are all `List`s of fixed-size

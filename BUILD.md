@@ -140,7 +140,7 @@ summary per suite:
 compiler suite
 PASS: var declaration of 13 generates the golden C
 ...
-350 tests: 350 PASS, 0 FAIL, 0 TODO, 0 Error
+360 tests: 360 PASS, 0 FAIL, 0 TODO, 0 Error
 tool suite
 ...
 99 tests: 99 PASS, 0 FAIL, 0 TODO, 0 Error

@@ -32,6 +32,12 @@ is an error. `Int32`, `Bool`, and `Nil` are built in and cannot be redefined.
 Type names, variable names, and function names share one ordinary namespace
 because they become C identifiers.
 
+A declared name must also survive emission into C. The checker rejects a name
+that is a C11 keyword, a C identifier the generated code uses (such as `main`,
+`int32_t`, `bool`, `size_t`, `printf`, or `malloc`), or begins with `nyx_`.
+The `nyx_` prefix is reserved for the generator's own types, helpers, and
+instantiation names, so source names cannot collide with them.
+
 There is no requirement that a program contain a value declaration. A program of
 nothing but type declarations or function declarations is legal.
 
@@ -417,7 +423,7 @@ arguments. `Store` still uses `global`, not `const`. A program-level variable
 may refer to variables and functions declared before it.
 
 Program-level variables are local to the generated `main` (or to
-`nippy_program_value` when the program is a single `Int32` variable). They are
+`nyx_program_value` when the program is a single `Int32` variable). They are
 therefore not visible inside function bodies yet.
 
 
@@ -1112,9 +1118,9 @@ statements returns before control can fall out of the block. An `if` returns
 only when it has an `else` and both branches return. A `while` never guarantees
 a return. A function whose body may reach its end is rejected.
 
-A function body cannot declare local variables or contain bare nested blocks.
-It can assign its parameters, but it cannot refer to or assign program-level
-variables. It can
+A function body may declare local variables, but cannot contain a bare nested
+block. It can assign its parameters, but it cannot refer to or assign
+program-level variables. It can
 refer to its parameters, to functions declared before it, and to itself. Because a function is bound before
 its body is checked, direct recursion is accepted; mutual recursion is not,
 because the later function is not declared yet.
@@ -1194,33 +1200,34 @@ The generated C is internal IR, not a stable interface, but its behaviour is the
 language's behaviour:
 
 - `Int32` becomes `int32_t`, `Bool` becomes `bool`, `Byte` becomes `uint8_t`,
-  and `Nil` becomes a one-byte `nippy_nil` typedef.
-- `Text` becomes a `nippy_string` descriptor with a static-data pointer, store
+  and `Nil` becomes a one-byte `nyx_nil` typedef.
+- `Text` becomes a `nyx_string` descriptor with a static-data pointer, store
   id, byte offset, byte length, and generation. A static literal points at a
   generated read-only byte array. Arena-backed strings are allocated by the
   store runtime and checked for store id, generation, and bounds on access.
-- `TextBuilder` becomes a `nippy_builder` descriptor pointing at an aligned
+- `TextBuilder` becomes a `nyx_builder` descriptor pointing at an aligned
   builder-state record in the store. The state holds the buffer offset, current
   length, and capacity. Growth and finishing are runtime helpers.
-- `Array<T,N>` becomes a `nippy_list_<index>` struct with an inline
+- `Array<T,N>` becomes a `nyx_list_<index>` struct with an inline
   `T data[N]` array (`data[1]` for `N == 0`) and a `uint32_t length`.
-- `List<T>` becomes a `nippy_list` descriptor pointing at store-backed state.
+- `List<T>` becomes a `nyx_list` descriptor pointing at store-backed state.
   The state holds the element-buffer offset, length, and capacity; push, pop,
   grow, index, and set are runtime helpers.
-- `Slice<T>` becomes a `nippy_slice` descriptor with store id, offset, length,
+- `Slice<T>` becomes a `nyx_slice` descriptor with store id, offset, length,
   and generation. List/sub-slice creation and indexed reads are runtime
   helpers; no allocation occurs.
-- `String<N>` becomes a `nippy_string_N` struct with a `uint8_t data[N+1]` array
+- `String<N>` becomes a `nyx_string_N` struct with a `uint8_t data[N+1]` array
   and a `uint32_t length`. A literal becomes a compound literal with its byte
   values, a NUL, zero padding, and the literal length.
-- `Error` becomes a `nippy_error` struct containing the two fixed-string fields
+- `Error` becomes a `nyx_error` struct containing the two fixed-string fields
   and the three `Int32` fields, in declaration order.
 - Each struct type, and each concrete instantiation of a generic struct, becomes
   a `typedef struct` with one member per field, in declaration order.
 - Each distinct union type becomes a tagged struct: a `uint32_t tag` and a union
   of the alternatives that carry payloads. Nil alternatives carry only a tag.
 - Each function type used by the program becomes a function-pointer `typedef`
-  named `nippy_fun_N`.
+  named `nyx_fun_N`. The `nyx_` prefix is reserved for all generated names;
+  source names that use it are rejected.
 - Each non-generic function declaration becomes a C function with its source
   name. Each concrete instantiation of a generic function becomes a separate C
   function with a generated name.
@@ -1232,7 +1239,7 @@ language's behaviour:
 - `match` and `if` expressions lower to nested conditional expressions; match
   statements lower to nested `if` statements.
 - Each value declaration becomes a local initialised by its expression. A
-  single `Int32` variable declaration additionally emits `nippy_program_value()`,
+  single `Int32` variable declaration additionally emits `nyx_program_value()`,
   and `main` prints that value followed by a newline.
 - Every other program's `main` returns 0 after performing the initialisations.
 - Unused initialised variables get a `(void)name;` line so that the emitted C
@@ -1241,10 +1248,10 @@ language's behaviour:
 - Each declaration and statement is preceded by `#line <line> "<source>"`, so a
   C compiler diagnostic points at the Nippy source rather than the generated
   file.
-- A store becomes an entry in a global `nippy_store` table. The generated source
+- A store becomes an entry in a global `nyx_store` table. The generated source
   carries the arena helpers: initialize, grow, allocate, bounds/generation
   checks, write, reset, and free. `Handle<T>` becomes the opaque
-  `nippy_handle` struct. Call statements become `(void)(call);`.
+  `nyx_handle` struct. Call statements become `(void)(call);`.
 - Text helpers check `byte_at` bounds and compare bytes for equality. Error
   field methods become direct struct-member reads. The helper runtime is emitted
   only when the program uses a string or Error type.
@@ -1274,8 +1281,6 @@ If compilation fails with no diagnostic recorded, the message is exactly
 - Compound assignments (`+=`, `-=`, etc.), chained assignment, and assignment
   as an expression.
 - Loop labels.
-- Operators beyond the table above: subtraction, multiplication, division,
-  modulo, bitwise operators, and unary minus are not implemented.
 - Closures and capturing program-level variables.
 - Mutual recursion, because forward references are not accepted.
 - Explicit type arguments at generic call sites; generic calls infer them.
@@ -1305,9 +1310,5 @@ If compilation fails with no diagnostic recorded, the message is exactly
 - Modules and imports.
 - Whether a bare expression may be a whole program (today it is rejected: a
   program is a sequence of declarations).
-- How identifiers avoid colliding with C keywords and generated names in
-  emitted code. They are emitted unchanged, so a Nippy variable or function named
-  `int` would produce invalid C, and a top-level name such as `main`,
-  `nippy_program_value`, or `nippy_fun_0` is not rejected yet.
 - Whether type resolution stays string comparison or becomes a real type table.
 - Exact wording and formatting of diagnostics beyond the prefix described above.

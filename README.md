@@ -19,7 +19,10 @@ requested executable.
 
 A program is a sequence of top-level declarations and statements. Whitespace and newlines only
 separate tokens: indentation is not syntax, there are no semicolons, and the same
-program can be written on one line or many. A struct type declaration is:
+program can be written on one line or many. Names are emitted into C unchanged,
+so C11 keywords, names used by the generated code (`main`, `int32_t`, `printf`,
+and similar), and names beginning with `nyx_` are reserved and rejected. A
+struct type declaration is:
 
 ```
 type Point

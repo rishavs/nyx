@@ -1,6 +1,6 @@
 # Scoped Arenas
 
-**Status:** accepted direction, not implemented
+**Status:** accepted direction, not implemented; block-scoped locals are implemented
 **Goal:** maximize compile-time memory safety for arena-backed handles without a general ownership or borrow checker.
 
 ## Decision record
@@ -19,8 +19,8 @@ Accepted direction:
   part of the useful feature, not later polish.
 - There is no separate persistent store type, mode, or keyword.
 
-Current compiler status: it still has `reset()`, no block-scoped locals, no
-`scope`, no regions, no `borrow Store`, and no arena-backed dynamic strings.
+Current compiler status: it has block-scoped locals, but still has `reset()`,
+no `scope`, no regions, no `borrow Store`, and no arena-backed dynamic strings.
 This document is the target design, not a description of implemented behavior.
 
 ## Summary
@@ -272,10 +272,9 @@ after `end`.
 
 ## Prerequisites
 
-Nippy currently has program-level variables and function parameters, but no
-block-scoped variables. A `scope` block needs names for handles and values.
-
-This proposal assumes **block-scoped `var` bindings**:
+Nippy has program-level variables, function parameters, and block-scoped local
+variables. A `scope` block can therefore use the same **block-scoped `var`
+bindings** the grammar already provides:
 
 ```nippy
 scope frame = Store(4096) do
@@ -285,15 +284,9 @@ scope frame = Store(4096) do
 end
 ```
 
-A minimal first implementation could allow block-scoped bindings only inside a
-`scope`, and only after introducing them would the feature be generalized. The
-scope binding is the prerequisite, not `scope` itself.
-
-If block-scoped locals are out of scope for the next compiler step, scoped
-arenas cannot be used meaningfully yet.
-
-Three other pieces move from “later” to practical prerequisites after the
-worked examples below:
+The scope binding is the prerequisite, not `scope` itself, so implementation
+phase 1 is complete. Three other pieces move from “later” to practical
+prerequisites after the worked examples below:
 
 1. **`borrow Store` parameters.** Parsers, formatters, and allocator helpers must
    be able to allocate into a caller’s arena.
@@ -717,10 +710,10 @@ A scoped store can be emitted as a C local:
 
 ```c
 {
-    nippy_store frame;
-    nippy_store_init(&frame, 4096);
+    nyx_store frame;
+    nyx_store_init(&frame, 4096);
     ...
-    nippy_store_free(&frame);
+    nyx_store_free(&frame);
 }
 ```
 
@@ -728,7 +721,7 @@ The handle representation needs to identify the scoped store. Two options:
 
 ### Option A: handles carry a store reference internally
 
-A scoped handle carries an internal reference to the stack `nippy_store`. This is
+A scoped handle carries an internal reference to the stack `nyx_store`. This is
 safe because the escape checker guarantees the handle cannot outlive the block.
 Growth updates `frame.data`; the handle keeps the offset.
 
@@ -1140,7 +1133,7 @@ separate proposal.
 
 ## Implementation phases
 
-1. Add block-scoped `var` bindings (prerequisite).
+1. Add block-scoped `var` bindings (prerequisite). **Implemented.**
 2. Add `scope frame = Store(bytes) do ... end` parsing and AST/Typed nodes.
 3. Add a region field to handle types, inferred from the allocating scope.
 4. Add `borrow Store` capability parameters and region-polymorphic returns.

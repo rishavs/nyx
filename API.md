@@ -14,7 +14,7 @@ Everything here is C11 and depends only on libc.
 | `alloc.h` | Checked allocation wrappers and the test failure hook |
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
 | `source_pos.h` | `SourcePos`: byte offset plus 1-based line and column |
-| `identifier.h` | `NIPPY_IDENTIFIER_MAX`, the shared name limit |
+| `identifier.h` | `NIPPY_IDENTIFIER_MAX`, the shared name limit, and `NIPPY_GENERATED_PREFIX`, the reserved emitted-name prefix |
 | `operator.h` | `NippyOperator`, shared by syntax and typed nodes |
 | `list.h` | `List`, the owning dynamic array |
 
@@ -198,7 +198,10 @@ Contract:
 - `list_push` and `list_pop` return false on allocation failure or misuse
   (NULL list, zero `item_size`, empty pop). Every caller must check.
 - `list_get` returns NULL when `index` is out of range, so out-of-range reads
-  surface as NULL rather than as undefined behaviour.
+  surface as NULL rather than as undefined behaviour. The returned pointer is
+  borrowed from the list's current allocation and is invalidated by any
+  `list_push`, `list_pop`, or `list_free` on that list. Copy what is needed
+  before a call that can grow the list.
 - `list_free` releases the storage and zeroes the struct; it accepts NULL.
 - `list_pop` shrinks but does not free unless the list becomes empty.
 

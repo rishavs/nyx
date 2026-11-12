@@ -177,7 +177,7 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
         return true;
     }
     if (type->kind == NIPPY_TYPE_NIL) {
-        snprintf(out, out_size, "nippy_nil");
+        snprintf(out, out_size, "nyx_nil");
         return true;
     }
     if (type->kind == NIPPY_TYPE_BYTE) {
@@ -185,43 +185,43 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
         return true;
     }
     if (type->kind == NIPPY_TYPE_HANDLE) {
-        snprintf(out, out_size, "nippy_handle");
+        snprintf(out, out_size, "nyx_handle");
         return true;
     }
     if (type->kind == NIPPY_TYPE_STRING) {
-        snprintf(out, out_size, "nippy_string_%zu", type->fixed_length);
+        snprintf(out, out_size, "nyx_string_%zu", type->fixed_length);
         return true;
     }
     if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        snprintf(out, out_size, "nippy_string");
+        snprintf(out, out_size, "nyx_string");
         return true;
     }
     if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
-        snprintf(out, out_size, "nippy_builder");
+        snprintf(out, out_size, "nyx_builder");
         return true;
     }
     if (type->kind == NIPPY_TYPE_LIST) {
-        snprintf(out, out_size, "nippy_list");
+        snprintf(out, out_size, "nyx_list");
         return true;
     }
     if (type->kind == NIPPY_TYPE_FIXED_LIST) {
-        snprintf(out, out_size, "nippy_list_%zu", type_index);
+        snprintf(out, out_size, "nyx_list_%zu", type_index);
         return true;
     }
     if (type->kind == NIPPY_TYPE_SLICE) {
-        snprintf(out, out_size, "nippy_slice");
+        snprintf(out, out_size, "nyx_slice");
         return true;
     }
     if (type->kind == NIPPY_TYPE_RECORD) {
-        snprintf(out, out_size, "nippy_record_%zu", type_index);
+        snprintf(out, out_size, "nyx_record_%zu", type_index);
         return true;
     }
     if (type->kind == NIPPY_TYPE_TABLE) {
-        snprintf(out, out_size, "nippy_table");
+        snprintf(out, out_size, "nyx_table");
         return true;
     }
     if (type->kind == NIPPY_TYPE_ERROR) {
-        snprintf(out, out_size, "nippy_error");
+        snprintf(out, out_size, "nyx_error");
         return true;
     }
     if (type->kind == NIPPY_TYPE_STRUCT) {
@@ -235,11 +235,11 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
         return true;
     }
     if (type->kind == NIPPY_TYPE_FUNCTION) {
-        snprintf(out, out_size, "nippy_fun_%zu", type->signature_index);
+        snprintf(out, out_size, "nyx_fun_%zu", type->signature_index);
         return true;
     }
     if (type->kind == NIPPY_TYPE_UNION) {
-        snprintf(out, out_size, "nippy_sum_%zu", type_index);
+        snprintf(out, out_size, "nyx_sum_%zu", type_index);
         return true;
     }
     error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
@@ -247,7 +247,7 @@ static bool format_c_type(const TypedProgram *program, size_t type_index,
 }
 
 /* Inline function-pointer spelling for contexts that cannot wait for the
-   nippy_fun_N typedefs (fixed-list elements and union payloads). Nested function
+   nyx_fun_N typedefs (fixed-list elements and union payloads). Nested function
    parameter/return types are rejected in this context. */
 static bool format_function_pointer(const TypedProgram *program,
                                     size_t type_index, const char *name,
@@ -327,7 +327,7 @@ static bool fixed_list_element_name(const TypedProgram *program,
     const TypedType *element_type = typed_program_type(program, element);
 
     if (element_type != NULL && element_type->kind == NIPPY_TYPE_FUNCTION) {
-        if (snprintf(out, out_size, "nippy_list_%zu_elem",
+        if (snprintf(out, out_size, "nyx_list_%zu_elem",
                      list_type_index) < 0 ||
             strlen(out) >= out_size - 1) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
@@ -639,7 +639,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         return true;
     }
     if (node->kind == TYPED_NIL_LITERAL) {
-        if (!buffer_append(buffer, "((nippy_nil)0)")) {
+        if (!buffer_append(buffer, "((nyx_nil)0)")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -794,7 +794,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
             if (!buffer_appendf(buffer,
-                                "(nippy_string){ nippy_dyn_str_%zu, 0, 0, "
+                                "(nyx_string){ nyx_dyn_str_%zu, 0, 0, "
                                 "%zu, 0 }",
                                 node_index, node->string_length)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -841,7 +841,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
 
         if (receiver_type != NULL &&
             receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_append(buffer, "nippy_string_len(") ||
+            if (!buffer_append(buffer, "nyx_string_len(") ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
                 !buffer_append(buffer, ")")) {
                 if (!errors->reported) {
@@ -877,7 +877,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_append(buffer, "nippy_string_byte_at(") ||
+            if (!buffer_append(buffer, "nyx_string_byte_at(") ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
                 !buffer_append(buffer, ", ") ||
                 !emit_expression(program, node->right_child, buffer,
@@ -891,7 +891,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "nippy_string_%zu_at(",
+        if (!buffer_appendf(buffer, "nyx_string_%zu_at(",
                             receiver_type->fixed_length) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
@@ -916,7 +916,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             size_t length = *(const size_t *)list_get(
                 &program->children, node->children_start + 1);
 
-            if (!buffer_append(buffer, "nippy_string_slice(") ||
+            if (!buffer_append(buffer, "nyx_string_slice(") ||
                 !emit_expression(program, node->left_child, buffer,
                                  errors) ||
                 !buffer_append(buffer, ", ") ||
@@ -940,7 +940,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "nippy_string_%s(&nippy_stores[%zu], "
+        if (!buffer_appendf(buffer, "nyx_string_%s(&nyx_stores[%zu], "
                                     "%zu, ",
                             node->kind == TYPED_STRING_CONCAT ? "concat"
                                                               : "copy",
@@ -983,7 +983,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (!buffer_appendf(buffer,
-                            "nippy_string_from_fixed_%zu(&nippy_stores[%zu], "
+                            "nyx_string_from_fixed_%zu(&nyx_stores[%zu], "
                             "%zu, ",
                             source_type->fixed_length, node->store_id,
                             node->store_id) ||
@@ -1003,7 +1003,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (!buffer_appendf(buffer,
-                            "nippy_builder_create(&nippy_stores[%zu], %zu, ",
+                            "nyx_builder_create(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
@@ -1023,8 +1023,8 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         if (!buffer_append(buffer,
                            node->kind == TYPED_BUILDER_APPEND
-                               ? "nippy_builder_append("
-                               : "nippy_builder_append_byte(") ||
+                               ? "nyx_builder_append("
+                               : "nyx_builder_append_byte(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
@@ -1038,7 +1038,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
     }
     if (node->kind == TYPED_BUILDER_LEN) {
         if (node->left_child == TYPED_NO_NODE ||
-            !buffer_append(buffer, "nippy_builder_len(") ||
+            !buffer_append(buffer, "nyx_builder_len(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
@@ -1050,7 +1050,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
     }
     if (node->kind == TYPED_BUILDER_FINISH) {
         if (node->left_child == TYPED_NO_NODE ||
-            !buffer_append(buffer, "nippy_builder_finish(") ||
+            !buffer_append(buffer, "nyx_builder_finish(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
@@ -1110,7 +1110,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return true;
         }
-        if (!buffer_append(buffer, "nippy_list_len(") ||
+        if (!buffer_append(buffer, "nyx_list_len(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
@@ -1138,7 +1138,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-            if (!buffer_appendf(buffer, "nippy_list_%zu_get(",
+            if (!buffer_appendf(buffer, "nyx_list_%zu_get(",
                                 receiver->type_index) ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
                 !buffer_append(buffer, ", ") ||
@@ -1152,7 +1152,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nippy_list_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
@@ -1194,7 +1194,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                 program, node->name_index);
 
             if (!valid_identifier(name) ||
-                !buffer_appendf(buffer, "(*nippy_list_%zu_at(&%s, ",
+                !buffer_appendf(buffer, "(*nyx_list_%zu_at(&%s, ",
                                 receiver->type_index, name) ||
                 !emit_expression(program, index, buffer, errors) ||
                 !buffer_append(buffer, ") = ") ||
@@ -1208,7 +1208,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nippy_list_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
@@ -1244,7 +1244,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-            if (!buffer_appendf(buffer, "nippy_list_%zu_push(&%s, ",
+            if (!buffer_appendf(buffer, "nyx_list_%zu_push(&%s, ",
                                 receiver->type_index, name) ||
                 !emit_expression(program, node->right_child, buffer, errors) ||
                 !buffer_append(buffer, ")")) {
@@ -1256,7 +1256,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "nippy_list_push(%s, (%s[]){ ", name,
+        if (!buffer_appendf(buffer, "nyx_list_push(%s, (%s[]){ ", name,
                             element_name) ||
             !emit_expression(program, node->right_child, buffer, errors) ||
             !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s))",
@@ -1282,7 +1282,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "nippy_list_pop_%zu(", node_index)) {
+        if (!buffer_appendf(buffer, "nyx_list_pop_%zu(", node_index)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -1314,7 +1314,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (!buffer_appendf(buffer,
-                            "nippy_list_create(&nippy_stores[%zu], %zu, ",
+                            "nyx_list_create(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", sizeof(%s), _Alignof(%s))",
@@ -1347,7 +1347,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                                           node->children_start);
         length = *(const size_t *)list_get(&program->children,
                                            node->children_start + 1);
-        if (!buffer_appendf(buffer, "nippy_slice_%s(",
+        if (!buffer_appendf(buffer, "nyx_slice_%s(",
                             receiver_type->kind == NIPPY_TYPE_SLICE
                                 ? "sub"
                                 : "from_list") ||
@@ -1365,7 +1365,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         return true;
     }
     if (node->kind == TYPED_SLICE_LEN) {
-        if (!buffer_append(buffer, "nippy_slice_len(") ||
+        if (!buffer_append(buffer, "nyx_slice_len(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
@@ -1383,7 +1383,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nippy_slice_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_slice_data(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
@@ -1429,7 +1429,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return true;
         }
         if (!buffer_appendf(buffer,
-                            "nippy_record_%zu_literal((%s[]){ ",
+                            "nyx_record_%zu_literal((%s[]){ ",
                             node->type_index, key_name)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -1470,7 +1470,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
     }
     if (node->kind == TYPED_TABLE_CREATE) {
         if (!buffer_appendf(buffer,
-                            "nippy_table_%zu_create(&nippy_stores[%zu], %zu, ",
+                            "nyx_table_%zu_create(&nyx_stores[%zu], %zu, ",
                             node->type_index, node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
@@ -1486,7 +1486,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                                                        node->left_child);
 
         if (receiver == NULL ||
-            !buffer_appendf(buffer, "nippy_table_%zu_get_required(",
+            !buffer_appendf(buffer, "nyx_table_%zu_get_required(",
                             receiver->type_index) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
@@ -1515,7 +1515,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (node->kind == TYPED_TABLE_LEN) {
-            if (!buffer_appendf(buffer, "nippy_table_%zu_len(",
+            if (!buffer_appendf(buffer, "nyx_table_%zu_len(",
                                 receiver->type_index) ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
                 !buffer_append(buffer, ")")) {
@@ -1523,7 +1523,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                 return false;
             }
         } else {
-            if (!buffer_appendf(buffer, "nippy_table_%zu_%s(",
+            if (!buffer_appendf(buffer, "nyx_table_%zu_%s(",
                                 receiver->type_index, suffix) ||
                 (node->kind == TYPED_TABLE_REMOVE &&
                  !buffer_append(buffer, "&(")) ||
@@ -1553,7 +1553,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "nippy_record_%zu_get_required(&(",
+        if (!buffer_appendf(buffer, "nyx_record_%zu_get_required(&(",
                             receiver->type_index) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, "), ") ||
@@ -1577,8 +1577,8 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                                         ? "remove"
                                         : "len");
         const char *prefix = node->kind == TYPED_RECORD_LEN
-                                 ? "nippy_record_%zu_len(&("
-                                 : "nippy_record_%zu_%s(&(";
+                                 ? "nyx_record_%zu_len(&("
+                                 : "nyx_record_%zu_%s(&(";
 
         if (receiver == NULL) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
@@ -1629,7 +1629,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_append(buffer, "(nippy_error){ ") ||
+        if (!buffer_append(buffer, "(nyx_error){ ") ||
             !emit_expression(program, *(const size_t *)list_get(
                                          &program->children,
                                          node->children_start),
@@ -1671,7 +1671,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         return true;
     }
     if (node->kind == TYPED_ERROR_CONSTRUCT) {
-        if (!buffer_append(buffer, "(nippy_error){ ") ||
+        if (!buffer_append(buffer, "(nyx_error){ ") ||
             !emit_children_expressions(program, node, buffer, errors) ||
             !buffer_append(buffer, " }")) {
             if (!errors->reported) {
@@ -1715,7 +1715,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                 if (!buffer_append(buffer,
                                    node->op == NIPPY_OPERATOR_NE ? "(!"
                                                                  : "(") ||
-                    !buffer_append(buffer, "nippy_string_equal(") ||
+                    !buffer_append(buffer, "nyx_string_equal(") ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
                     !buffer_append(buffer, ", ") ||
@@ -1735,7 +1735,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                 if (!buffer_append(buffer,
                                    node->op == NIPPY_OPERATOR_NE ? "(!"
                                                                  : "(") ||
-                    !buffer_appendf(buffer, "nippy_string_%zu_equal(",
+                    !buffer_appendf(buffer, "nyx_string_%zu_equal(",
                                     left_type->fixed_length) ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
@@ -1774,12 +1774,12 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             node->op == NIPPY_OPERATOR_SHL ||
             node->op == NIPPY_OPERATOR_SHR) {
             const char *helper = node->op == NIPPY_OPERATOR_DIV
-                                     ? "nippy_div_i32"
+                                     ? "nyx_div_i32"
                                      : node->op == NIPPY_OPERATOR_MOD
-                                           ? "nippy_mod_i32"
+                                           ? "nyx_mod_i32"
                                            : node->op == NIPPY_OPERATOR_SHL
-                                                 ? "nippy_shl_i32"
-                                                 : "nippy_shr_i32";
+                                                 ? "nyx_shl_i32"
+                                                 : "nyx_shr_i32";
 
             if (!buffer_appendf(buffer, "%s(", helper) ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
@@ -1916,14 +1916,14 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         aggregate = type_is_c_aggregate(program, element);
         if (!buffer_appendf(buffer,
-                            "nippy_store_alloc(&nippy_stores[%zu], %zu, ",
+                            "nyx_store_alloc(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         if (aggregate) {
             if (!buffer_appendf(
-                    buffer, "&(union { %s nippy_value; }){ .nippy_value = ",
+                    buffer, "&(union { %s nyx_value; }){ .nyx_value = ",
                     element_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -1951,8 +1951,8 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (!buffer_appendf(buffer,
-                            "((void)nippy_store_reset(&nippy_stores[%zu]), "
-                            "(nippy_nil)0)",
+                            "((void)nyx_store_reset(&nyx_stores[%zu]), "
+                            "(nyx_nil)0)",
                             node->store_id)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -1969,7 +1969,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             }
             return false;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nippy_handle_pointer(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_handle_pointer(",
                             type_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", sizeof(%s)))", type_name)) {
@@ -2001,7 +2001,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         aggregate = type_is_c_aggregate(program, element);
-        if (!buffer_append(buffer, "((void)nippy_handle_write(") ||
+        if (!buffer_append(buffer, "((void)nyx_handle_write(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ")) {
             if (!errors->reported) {
@@ -2011,7 +2011,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
         if (aggregate) {
             if (!buffer_appendf(
-                    buffer, "&(union { %s nippy_value; }){ .nippy_value = ",
+                    buffer, "&(union { %s nyx_value; }){ .nyx_value = ",
                     element_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -2021,7 +2021,7 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (!emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_appendf(buffer, " }, sizeof(%s)), (nippy_nil)0)",
+            !buffer_appendf(buffer, " }, sizeof(%s)), (nyx_nil)0)",
                             element_name)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -2216,7 +2216,7 @@ static bool emit_union_type(const TypedProgram *program, const TypedType *type,
             return false;
         }
     }
-    if (!buffer_appendf(header, "} nippy_sum_%zu;\n\n", type_index)) {
+    if (!buffer_appendf(header, "} nyx_sum_%zu;\n\n", type_index)) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;
     }
@@ -2243,7 +2243,7 @@ static bool emit_type_definitions(const TypedProgram *program,
         if (type->kind == NIPPY_TYPE_NIL) {
             if (!emitted_nil) {
                 if (!buffer_append(header,
-                                   "typedef uint8_t nippy_nil;\n\n")) {
+                                   "typedef uint8_t nyx_nil;\n\n")) {
                     error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                     return false;
                 }
@@ -2277,7 +2277,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    size_t offset;\n"
                     "    size_t length;\n"
                     "    uint64_t generation;\n"
-                    "} nippy_string;\n\n")) {
+                    "} nyx_string;\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -2288,7 +2288,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    uint32_t store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
-                    "} nippy_builder;\n\n")) {
+                    "} nyx_builder;\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -2311,7 +2311,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    uint32_t store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
-                    "} nippy_list;\n\n")) {
+                    "} nyx_list;\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -2337,7 +2337,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    %s values[%zu];\n"
                     "    uint8_t states[%zu];\n"
                     "    size_t length;\n"
-                    "} nippy_record_%zu;\n\n",
+                    "} nyx_record_%zu;\n\n",
                     key_name, buckets, value_name, buckets, buckets, i)) {
                 if (!errors->reported) {
                     error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -2352,7 +2352,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    uint32_t store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
-                    "} nippy_table;\n\n")) {
+                    "} nyx_table;\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -2377,7 +2377,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    size_t offset;\n"
                     "    size_t length;\n"
                     "    uint64_t generation;\n"
-                    "} nippy_slice;\n\n")) {
+                    "} nyx_slice;\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -2393,7 +2393,7 @@ static bool emit_type_definitions(const TypedProgram *program,
             }
             element = *(const size_t *)list_get(&program->type_children,
                                                 type->first_child);
-            snprintf(list_name, sizeof(list_name), "nippy_list_%zu", i);
+            snprintf(list_name, sizeof(list_name), "nyx_list_%zu", i);
             if (!fixed_list_element_name(program, i, element, element_name,
                                          sizeof(element_name), errors)) {
                 return false;
@@ -2446,11 +2446,11 @@ static bool emit_type_definitions(const TypedProgram *program,
                      "typedef struct {\n"
                      "    uint8_t data[%zu];\n"
                      "    uint32_t length;\n"
-                     "} nippy_string_%zu;\n\n",
+                     "} nyx_string_%zu;\n\n",
                      type->fixed_length + 1, type->fixed_length) ||
                  !buffer_appendf(
                      header,
-                     "static uint8_t nippy_string_%zu_at(nippy_string_%zu s, "
+                     "static uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
                      "int32_t i);\n\n",
                      type->fixed_length, type->fixed_length))) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -2496,7 +2496,7 @@ static bool emit_type_definitions(const TypedProgram *program,
                     "    int32_t line;\n"
                     "    int32_t col;\n"
                     "    int32_t pos;\n"
-                    "} nippy_error;\n\n",
+                    "} nyx_error;\n\n",
                     header_name, description_name, filename_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -2528,7 +2528,7 @@ static bool emit_function_typedefs(const TypedProgram *program,
             }
             return false;
         }
-        if (!buffer_appendf(header, "typedef %s (*nippy_fun_%zu)(",
+        if (!buffer_appendf(header, "typedef %s (*nyx_fun_%zu)(",
                             return_name, i)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -2643,7 +2643,7 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
             if (iter == NULL ||
                 !format_c_type(program, iter->type_index, record_name,
                                sizeof(record_name), errors) ||
-                !buffer_appendf(source, "%s nippy_for_src_%zu = ",
+                !buffer_appendf(source, "%s nyx_for_src_%zu = ",
                                 record_name, offset) ||
                 !emit_expression(program, child, source, errors) ||
                 !buffer_append(source, ";\n")) {
@@ -2653,17 +2653,17 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
         }
         if (!append_indent(source, depth + 1) ||
             !buffer_appendf(source,
-                            "for (size_t nippy_for_i_%zu = 0; "
-                            "nippy_for_i_%zu < %zu; nippy_for_i_%zu++) {\n",
+                            "for (size_t nyx_for_i_%zu = 0; "
+                            "nyx_for_i_%zu < %zu; nyx_for_i_%zu++) {\n",
                             offset, offset, buckets, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "if (nippy_for_src_%zu.states[nippy_for_i_%zu] "
+                            "if (nyx_for_src_%zu.states[nyx_for_i_%zu] "
                             "!= 1) continue;\n",
                             offset, offset) ||
             !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "%s %s = nippy_for_src_%zu.keys["
-                                    "nippy_for_i_%zu];\n",
+            !buffer_appendf(source, "%s %s = nyx_for_src_%zu.keys["
+                                    "nyx_for_i_%zu];\n",
                             key_c, key_name, offset, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source, "(void)%s;\n", key_name)) {
@@ -2672,8 +2672,8 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
         }
         if (value_name != NULL) {
             if (!append_indent(source, depth + 2) ||
-                !buffer_appendf(source, "%s %s = nippy_for_src_%zu.values["
-                                        "nippy_for_i_%zu];\n",
+                !buffer_appendf(source, "%s %s = nyx_for_src_%zu.values["
+                                        "nyx_for_i_%zu];\n",
                                 value_c, value_name, offset, offset) ||
                 !append_indent(source, depth + 2) ||
                 !buffer_appendf(source, "(void)%s;\n", value_name)) {
@@ -2691,39 +2691,39 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
             !append_indent(source, depth) ||
             !buffer_append(source, "{\n") ||
             !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "nippy_table nippy_for_src_%zu = ",
+            !buffer_appendf(source, "nyx_table nyx_for_src_%zu = ",
                             offset) ||
             !emit_expression(program, node->left_child, source, errors) ||
             !buffer_append(source, ";\n") ||
             !append_indent(source, depth + 1) ||
             !buffer_appendf(source,
-                            "for (size_t nippy_for_i_%zu = 0;; "
-                            "nippy_for_i_%zu++) {\n",
+                            "for (size_t nyx_for_i_%zu = 0;; "
+                            "nyx_for_i_%zu++) {\n",
                             offset, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "nippy_table_state_%zu *nippy_for_state_%zu = "
-                            "nippy_table_%zu_state(nippy_for_src_%zu);\n",
+                            "nyx_table_state_%zu *nyx_for_state_%zu = "
+                            "nyx_table_%zu_state(nyx_for_src_%zu);\n",
                             table_type, offset, table_type, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "if (nippy_for_i_%zu >= "
-                            "nippy_for_state_%zu->buckets) break;\n",
+                            "if (nyx_for_i_%zu >= "
+                            "nyx_for_state_%zu->buckets) break;\n",
                             offset, offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         if (!append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "nippy_store *nippy_for_store_%zu = "
-                            "&nippy_stores[nippy_for_src_%zu.store];\n",
+                            "nyx_store *nyx_for_store_%zu = "
+                            "&nyx_stores[nyx_for_src_%zu.store];\n",
                             offset, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "uint8_t *nippy_for_states_%zu = (uint8_t *)"
-                            "(void *)(nippy_for_store_%zu->data + "
-                            "nippy_for_state_%zu->states_offset);\n"
-                            "        if (nippy_for_states_%zu[nippy_for_i_%zu]"
+                            "uint8_t *nyx_for_states_%zu = (uint8_t *)"
+                            "(void *)(nyx_for_store_%zu->data + "
+                            "nyx_for_state_%zu->states_offset);\n"
+                            "        if (nyx_for_states_%zu[nyx_for_i_%zu]"
                             " != 1) continue;\n",
                             offset, offset, offset, offset, offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -2731,13 +2731,13 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
         }
         if (!append_indent(source, depth + 2) ||
             !buffer_appendf(source,
-                            "%s *nippy_for_keys_%zu = (%s *)(void *)"
-                            "(nippy_for_store_%zu->data + "
-                            "nippy_for_state_%zu->keys_offset);\n",
+                            "%s *nyx_for_keys_%zu = (%s *)(void *)"
+                            "(nyx_for_store_%zu->data + "
+                            "nyx_for_state_%zu->keys_offset);\n",
                             key_c, offset, key_c, offset, offset) ||
             !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "%s %s = nippy_for_keys_%zu["
-                                    "nippy_for_i_%zu];\n",
+            !buffer_appendf(source, "%s %s = nyx_for_keys_%zu["
+                                    "nyx_for_i_%zu];\n",
                             key_c, key_name, offset, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source, "(void)%s;\n", key_name)) {
@@ -2747,13 +2747,13 @@ static bool emit_map_for(const TypedProgram *program, const TypedNode *node,
         if (value_name != NULL) {
             if (!append_indent(source, depth + 2) ||
                 !buffer_appendf(source,
-                                "%s *nippy_for_values_%zu = (%s *)(void *)"
-                                "(nippy_for_store_%zu->data + "
-                                "nippy_for_state_%zu->values_offset);\n",
+                                "%s *nyx_for_values_%zu = (%s *)(void *)"
+                                "(nyx_for_store_%zu->data + "
+                                "nyx_for_state_%zu->values_offset);\n",
                                 value_c, offset, value_c, offset, offset) ||
                 !append_indent(source, depth + 2) ||
-                !buffer_appendf(source, "%s %s = nippy_for_values_%zu["
-                                        "nippy_for_i_%zu];\n",
+                !buffer_appendf(source, "%s %s = nyx_for_values_%zu["
+                                        "nyx_for_i_%zu];\n",
                                 value_c, value_name, offset, offset) ||
                 !append_indent(source, depth + 2) ||
                 !buffer_appendf(source, "(void)%s;\n", value_name)) {
@@ -2941,12 +2941,12 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         if (!append_indent(source, depth) ||
             !buffer_append(source, "{\n") ||
             !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nippy_for_src_%zu = ",
+            !buffer_appendf(source, "%s nyx_for_src_%zu = ",
                             iterable_name, offset) ||
             !emit_expression(program, node->left_child, source, errors) ||
             !buffer_append(source, ";\n") ||
             !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "size_t nippy_for_len_%zu = (size_t)(",
+            !buffer_appendf(source, "size_t nyx_for_len_%zu = (size_t)(",
                             offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -2954,7 +2954,7 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (iterable_type->kind == NIPPY_TYPE_LIST) {
-            if (!buffer_appendf(source, "nippy_list_len(nippy_for_src_%zu)",
+            if (!buffer_appendf(source, "nyx_list_len(nyx_for_src_%zu)",
                                 offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -2962,19 +2962,19 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         } else if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST ||
                    iterable_type->kind == NIPPY_TYPE_STRING) {
             if (!buffer_appendf(source,
-                                "((int32_t)(nippy_for_src_%zu).length)",
+                                "((int32_t)(nyx_for_src_%zu).length)",
                                 offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
-            if (!buffer_appendf(source, "nippy_slice_len(nippy_for_src_%zu)",
+            if (!buffer_appendf(source, "nyx_slice_len(nyx_for_src_%zu)",
                                 offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_appendf(source, "nippy_string_len(nippy_for_src_%zu)",
+            if (!buffer_appendf(source, "nyx_string_len(nyx_for_src_%zu)",
                                 offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -2986,9 +2986,9 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         if (!buffer_append(source, ");\n") ||
             !append_indent(source, depth + 1) ||
             !buffer_appendf(source,
-                            "for (size_t nippy_for_i_%zu = 0; "
-                            "nippy_for_i_%zu < nippy_for_len_%zu; "
-                            "nippy_for_i_%zu++) {\n",
+                            "for (size_t nyx_for_i_%zu = 0; "
+                            "nyx_for_i_%zu < nyx_for_len_%zu; "
+                            "nyx_for_i_%zu++) {\n",
                             offset, offset, offset, offset) ||
             !append_indent(source, depth + 2)) {
             if (!errors->reported) {
@@ -2999,9 +2999,9 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         if (check_length) {
             if (iterable_type->kind == NIPPY_TYPE_LIST) {
                 if (!buffer_appendf(source,
-                                    "if ((size_t)nippy_list_len("
-                                    "nippy_for_src_%zu) != "
-                                    "nippy_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
+                                    "if ((size_t)nyx_list_len("
+                                    "nyx_for_src_%zu) != "
+                                    "nyx_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
                                     "exit(1); }\n",
                                     offset, offset,
                                     MESSAGE_RUNTIME_FOR_MUTATED)) {
@@ -3009,8 +3009,8 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
                     return false;
                 }
             } else if (!buffer_appendf(source,
-                                       "if ((size_t)(nippy_for_src_%zu).length "
-                                       "!= nippy_for_len_%zu) { "
+                                       "if ((size_t)(nyx_for_src_%zu).length "
+                                       "!= nyx_for_len_%zu) { "
                                        "fprintf(stderr, \"%s\\n\"); "
                                        "exit(1); }\n",
                                        offset, offset,
@@ -3028,38 +3028,38 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST) {
-            if (!buffer_appendf(source, "nippy_list_%zu_get(nippy_for_src_%zu, "
-                                        "nippy_for_i_%zu)",
+            if (!buffer_appendf(source, "nyx_list_%zu_get(nyx_for_src_%zu, "
+                                        "nyx_for_i_%zu)",
                                 iterable_node->type_index, offset, offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_LIST) {
             if (!buffer_appendf(source,
-                                "(*(%s *)nippy_list_data(nippy_for_src_%zu, "
-                                "nippy_for_i_%zu, sizeof(%s)))",
+                                "(*(%s *)nyx_list_data(nyx_for_src_%zu, "
+                                "nyx_for_i_%zu, sizeof(%s)))",
                                 element_name, offset, offset, element_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
             if (!buffer_appendf(source,
-                                "(*(%s *)nippy_slice_data(nippy_for_src_%zu, "
-                                "nippy_for_i_%zu, sizeof(%s)))",
+                                "(*(%s *)nyx_slice_data(nyx_for_src_%zu, "
+                                "nyx_for_i_%zu, sizeof(%s)))",
                                 element_name, offset, offset, element_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_STRING) {
-            if (!buffer_appendf(source, "nippy_string_%zu_at(nippy_for_src_%zu, "
-                                        "nippy_for_i_%zu)",
+            if (!buffer_appendf(source, "nyx_string_%zu_at(nyx_for_src_%zu, "
+                                        "nyx_for_i_%zu)",
                                 iterable_type->fixed_length, offset, offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_appendf(source, "nippy_string_byte_at(nippy_for_src_%zu, "
-                                        "nippy_for_i_%zu)",
+            if (!buffer_appendf(source, "nyx_string_byte_at(nyx_for_src_%zu, "
+                                        "nyx_for_i_%zu)",
                                 offset, offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -3074,7 +3074,7 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
         }
         if (index_c != NULL) {
             if (!append_indent(source, depth + 2) ||
-                !buffer_appendf(source, "int32_t %s = (int32_t)nippy_for_i_%zu;\n",
+                !buffer_appendf(source, "int32_t %s = (int32_t)nyx_for_i_%zu;\n",
                                 index_c, offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -3091,9 +3091,9 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
             }
             if (iterable_type->kind == NIPPY_TYPE_LIST) {
                 if (!buffer_appendf(source,
-                                    "if ((size_t)nippy_list_len("
-                                    "nippy_for_src_%zu) != "
-                                    "nippy_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
+                                    "if ((size_t)nyx_list_len("
+                                    "nyx_for_src_%zu) != "
+                                    "nyx_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
                                     "exit(1); }\n",
                                     offset, offset,
                                     MESSAGE_RUNTIME_FOR_MUTATED)) {
@@ -3101,8 +3101,8 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
                     return false;
                 }
             } else if (!buffer_appendf(source,
-                                       "if ((size_t)(nippy_for_src_%zu).length "
-                                       "!= nippy_for_len_%zu) { "
+                                       "if ((size_t)(nyx_for_src_%zu).length "
+                                       "!= nyx_for_len_%zu) { "
                                        "fprintf(stderr, \"%s\\n\"); "
                                        "exit(1); }\n",
                                        offset, offset,
@@ -3130,7 +3130,7 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
             program, node->left_child);
 
         if (receiver == NULL || !append_indent(source, depth) ||
-            !buffer_appendf(source, "nippy_table_%zu_set(&(",
+            !buffer_appendf(source, "nyx_table_%zu_set(&(",
                             receiver->type_index) ||
             !emit_expression(program, node->left_child, source, errors) ||
             !buffer_append(source, "), ") ||
@@ -3155,7 +3155,7 @@ static bool emit_statement(const TypedProgram *program, size_t node_index,
             program, node->left_child);
 
         if (receiver == NULL || !append_indent(source, depth) ||
-            !buffer_append(source, "nippy_record_") ||
+            !buffer_append(source, "nyx_record_") ||
             !buffer_appendf(source, "%zu", receiver->type_index) ||
             !buffer_append(source, "_set(&(") ||
             !emit_expression(program, node->left_child, source, errors) ||
@@ -3507,7 +3507,7 @@ static bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
         if (!emitted_bounds) {
             if (!buffer_append(
                     source,
-                    "static void nippy_string_bounds(void)\n"
+                    "static void nyx_string_bounds(void)\n"
                     "{\n"
                     "    fprintf(stderr, \"" MESSAGE_RUNTIME_STRING_BOUNDS
                     "\\n\");\n"
@@ -3520,16 +3520,16 @@ static bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
         }
         if (!buffer_appendf(
                 source,
-                "static uint8_t nippy_string_%zu_at(nippy_string_%zu s, "
+                "static uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
                 "int32_t i)\n"
                 "{\n"
                 "    if (i < 0 || (uint32_t)i >= s.length) {\n"
-                "        nippy_string_bounds();\n"
+                "        nyx_string_bounds();\n"
                 "    }\n"
                 "    return s.data[i];\n"
                 "}\n\n"
-                "static bool nippy_string_%zu_equal(nippy_string_%zu a, "
-                "nippy_string_%zu b)\n"
+                "static bool nyx_string_%zu_equal(nyx_string_%zu a, "
+                "nyx_string_%zu b)\n"
                 "{\n"
                 "    return a.length == b.length &&\n"
                 "           memcmp(a.data, b.data, a.length) == 0;\n"
@@ -3552,7 +3552,7 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
 
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nippy_string_fail(const char *message)\n"
+                   "static NIPPY_UNUSED void nyx_string_fail(const char *message)\n"
                    "{\n"
                    "    fprintf(stderr, \"%s\\n\", message);\n"
                    "    exit(1);\n"
@@ -3561,26 +3561,26 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
         ok = ok && buffer_append(
                        source,
                        "static NIPPY_UNUSED const uint8_t *"
-                       "nippy_string_data(nippy_string s)\n"
+                       "nyx_string_data(nyx_string s)\n"
                        "{\n"
-                       "    nippy_store *store;\n\n"
+                       "    nyx_store *store;\n\n"
                        "    if (s.static_data != NULL) {\n"
                        "        return s.static_data;\n"
                        "    }\n"
                        "    if (s.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\");\n"
                        "    }\n"
-                       "    store = &nippy_stores[s.store];\n"
+                       "    store = &nyx_stores[s.store];\n"
                        "    if (store->generation != s.generation) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
                        "\");\n"
                        "    }\n"
                        "    if (s.offset > store->used ||\n"
                        "        s.length > store->used - s.offset ||\n"
                        "        s.length > (size_t)-1 - s.offset - 1 ||\n"
                        "        s.offset + s.length + 1 > store->used) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
                        "\");\n"
                        "    }\n"
                        "    return store->data + s.offset;\n"
@@ -3589,44 +3589,44 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
         ok = ok && buffer_append(
                        source,
                        "static NIPPY_UNUSED const uint8_t *"
-                       "nippy_string_data(nippy_string s)\n"
+                       "nyx_string_data(nyx_string s)\n"
                        "{\n"
                        "    if (s.static_data != NULL) {\n"
                        "        return s.static_data;\n"
                        "    }\n"
-                       "    nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "    nyx_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\");\n"
                        "    return NULL;\n"
                        "}\n\n");
     }
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED int32_t nippy_string_len(nippy_string s)\n"
+                   "static NIPPY_UNUSED int32_t nyx_string_len(nyx_string s)\n"
                    "{\n"
-                   "    (void)nippy_string_data(s);\n"
+                   "    (void)nyx_string_data(s);\n"
                    "    return (int32_t)s.length;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED uint8_t nippy_string_byte_at(nippy_string s, "
+                   "static NIPPY_UNUSED uint8_t nyx_string_byte_at(nyx_string s, "
                    "int32_t i)\n"
                    "{\n"
                    "    if (i < 0 || (size_t)i >= s.length) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
                    "\");\n"
                    "    }\n"
-                   "    return nippy_string_data(s)[i];\n"
+                   "    return nyx_string_data(s)[i];\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nippy_string "
-                   "nippy_string_slice(nippy_string s, "
+                   "static NIPPY_UNUSED nyx_string "
+                   "nyx_string_slice(nyx_string s, "
                    "int32_t start, int32_t length)\n"
                    "{\n"
-                   "    nippy_string result;\n\n"
+                   "    nyx_string result;\n\n"
                    "    if (start < 0 || length < 0 ||\n"
                    "        (size_t)start > s.length ||\n"
                    "        (size_t)length > s.length - (size_t)start) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
                    "\");\n"
                    "    }\n"
-                   "    (void)nippy_string_data(s);\n"
+                   "    (void)nyx_string_data(s);\n"
                    "    result = s;\n"
                    "    if (result.static_data != NULL) {\n"
                    "        result.static_data += start;\n"
@@ -3636,28 +3636,28 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "    result.length = (size_t)length;\n"
                    "    return result;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED bool nippy_string_equal(nippy_string a, "
-                   "nippy_string b)\n"
+                   "static NIPPY_UNUSED bool nyx_string_equal(nyx_string a, "
+                   "nyx_string b)\n"
                    "{\n"
                    "    return a.length == b.length &&\n"
-                   "           memcmp(nippy_string_data(a), nippy_string_data(b), "
+                   "           memcmp(nyx_string_data(a), nyx_string_data(b), "
                    "a.length) == 0;\n"
                    "}\n\n");
     if (store_count > 0) {
         ok = ok && buffer_append(
                        source,
-                       "static NIPPY_UNUSED nippy_string nippy_string_from_bytes("
-                       "nippy_store *store, uint32_t id,\n"
+                       "static NIPPY_UNUSED nyx_string nyx_string_from_bytes("
+                       "nyx_store *store, uint32_t id,\n"
                        "                                             "
                        "const uint8_t *bytes, size_t length)\n"
                        "{\n"
                        "    size_t offset;\n"
-                       "    nippy_string result;\n\n"
+                       "    nyx_string result;\n\n"
                        "    if (length > (size_t)-1 - 1) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\");\n"
                        "    }\n"
-                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "    offset = nyx_store_alloc_bytes(store, id, "
                        "length + 1);\n"
                        "    memcpy(store->data + offset, bytes, length);\n"
                        "    store->data[offset + length] = 0;\n"
@@ -3668,26 +3668,26 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED nippy_string nippy_string_concat("
-                       "nippy_store *store, uint32_t id,\n"
+                       "static NIPPY_UNUSED nyx_string nyx_string_concat("
+                       "nyx_store *store, uint32_t id,\n"
                        "                                        "
-                       "nippy_string a, nippy_string b)\n"
+                       "nyx_string a, nyx_string b)\n"
                        "{\n"
                        "    size_t total;\n"
                        "    size_t offset;\n"
-                       "    nippy_string result;\n"
+                       "    nyx_string result;\n"
                        "    const uint8_t *a_data;\n"
                        "    const uint8_t *b_data;\n\n"
                        "    if (a.length > (size_t)-1 - 1 ||\n"
                        "        b.length > (size_t)-1 - 1 - a.length) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\");\n"
                        "    }\n"
                        "    total = a.length + b.length;\n"
-                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "    offset = nyx_store_alloc_bytes(store, id, "
                        "total + 1);\n"
-                       "    a_data = nippy_string_data(a);\n"
-                       "    b_data = nippy_string_data(b);\n"
+                       "    a_data = nyx_string_data(a);\n"
+                       "    b_data = nyx_string_data(b);\n"
                        "    memcpy(store->data + offset, a_data, a.length);\n"
                        "    memcpy(store->data + offset + a.length, b_data, "
                        "b.length);\n"
@@ -3699,20 +3699,20 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED nippy_string nippy_string_copy("
-                       "nippy_store *store, uint32_t id,\n"
-                       "                                      nippy_string s)\n"
+                       "static NIPPY_UNUSED nyx_string nyx_string_copy("
+                       "nyx_store *store, uint32_t id,\n"
+                       "                                      nyx_string s)\n"
                        "{\n"
                        "    size_t offset;\n"
-                       "    nippy_string result;\n"
+                       "    nyx_string result;\n"
                        "    const uint8_t *data;\n\n"
                        "    if (s.length > (size_t)-1 - 1) {\n"
-                       "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\");\n"
                        "    }\n"
-                       "    offset = nippy_store_alloc_bytes(store, id, "
+                       "    offset = nyx_store_alloc_bytes(store, id, "
                        "s.length + 1);\n"
-                       "    data = nippy_string_data(s);\n"
+                       "    data = nyx_string_data(s);\n"
                        "    memcpy(store->data + offset, data, s.length);\n"
                        "    store->data[offset + s.length] = 0;\n"
                        "    result.static_data = NULL;\n"
@@ -3748,13 +3748,13 @@ static bool emit_dynamic_string_runtime(const TypedProgram *program,
                 }
                 ok = ok && buffer_appendf(
                                source,
-                               "static NIPPY_UNUSED nippy_string "
-                               "nippy_string_from_fixed_%zu("
-                               "nippy_store *store, uint32_t id,\n"
+                               "static NIPPY_UNUSED nyx_string "
+                               "nyx_string_from_fixed_%zu("
+                               "nyx_store *store, uint32_t id,\n"
                                "                                             "
-                               "nippy_string_%zu s)\n"
+                               "nyx_string_%zu s)\n"
                                "{\n"
-                               "    return nippy_string_from_bytes(store, id, "
+                               "    return nyx_string_from_bytes(store, id, "
                                "s.data, s.length);\n"
                                "}\n\n",
                                type->fixed_length, type->fixed_length);
@@ -3787,7 +3787,7 @@ static bool emit_dynamic_string_literals(const TypedProgram *program,
             continue;
         }
         if (!buffer_appendf(source,
-                            "static const uint8_t nippy_dyn_str_%zu[] = { ",
+                            "static const uint8_t nyx_dyn_str_%zu[] = { ",
                             i)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -3824,18 +3824,18 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
     ok = ok && buffer_appendf(
                    source,
                    "#define NIPPY_STORE_COUNT %zu\n\n"
-                   "static nippy_store nippy_stores[NIPPY_STORE_COUNT];\n\n",
+                   "static nyx_store nyx_stores[NIPPY_STORE_COUNT];\n\n",
                    store_count);
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_panic(const char *message)\n"
+                   "static void nyx_panic(const char *message)\n"
                    "{\n"
                    "    fprintf(stderr, \"%s\\n\", message);\n"
                    "    exit(1);\n"
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static size_t nippy_store_align(size_t offset, "
+                   "static size_t nyx_store_align(size_t offset, "
                    "size_t alignment)\n"
                    "{\n"
                    "    size_t remainder;\n\n"
@@ -3847,13 +3847,13 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "        return offset;\n"
                    "    }\n"
                    "    if (offset > (size_t)-1 - (alignment - remainder)) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
                    "    }\n"
                    "    return offset + (alignment - remainder);\n"
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_store_init(nippy_store *store, "
+                   "static void nyx_store_init(nyx_store *store, "
                    "size_t initial_bytes)\n"
                    "{\n"
                    "    if (initial_bytes == 0) {\n"
@@ -3861,7 +3861,7 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "    }\n"
                    "    store->data = malloc(initial_bytes);\n"
                    "    if (store->data == NULL) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
                    "    store->used = 0;\n"
@@ -3870,7 +3870,7 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_store_reserve(nippy_store *store, "
+                   "static void nyx_store_reserve(nyx_store *store, "
                    "size_t required)\n"
                    "{\n"
                    "    size_t capacity;\n"
@@ -3882,14 +3882,14 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "store->capacity;\n"
                    "    while (capacity < required) {\n"
                    "        if (capacity > (size_t)-1 / 2) {\n"
-                   "            nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "            nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "        }\n"
                    "        capacity *= 2;\n"
                    "    }\n"
                    "    grown = realloc(store->data, capacity);\n"
                    "    if (grown == NULL) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
                    "    store->data = grown;\n"
@@ -3897,30 +3897,30 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static nippy_handle nippy_store_alloc(nippy_store *store, "
+                   "static nyx_handle nyx_store_alloc(nyx_store *store, "
                    "size_t id,\n"
                    "                                      const void *value, "
                    "size_t size,\n"
                    "                                      size_t align)\n"
                    "{\n"
-                   "    nippy_handle handle;\n"
+                   "    nyx_handle handle;\n"
                    "    size_t offset;\n"
                    "    size_t end;\n\n"
                    "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\");\n"
                    "    }\n"
                    "    if (size == 0) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                    "\");\n"
                    "    }\n"
-                   "    offset = nippy_store_align(store->used, align);\n"
+                   "    offset = nyx_store_align(store->used, align);\n"
                    "    if (offset > (size_t)-1 - size) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                    "\");\n"
                    "    }\n"
                    "    end = offset + size;\n"
-                   "    nippy_store_reserve(store, end);\n"
+                   "    nyx_store_reserve(store, end);\n"
                    "    memcpy(store->data + offset, value, size);\n"
                    "    store->used = end;\n"
                    "    handle.store = (uint32_t)id;\n"
@@ -3930,58 +3930,58 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static unsigned char *nippy_handle_pointer("
-                   "nippy_handle handle,\n"
+                   "static unsigned char *nyx_handle_pointer("
+                   "nyx_handle handle,\n"
                    "                                           size_t size)\n"
                    "{\n"
-                   "    nippy_store *store;\n\n"
+                   "    nyx_store *store;\n\n"
                    "    if ((size_t)handle.store >= "
                    "(size_t)NIPPY_STORE_COUNT) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\");\n"
                    "    }\n"
-                   "    store = &nippy_stores[handle.store];\n"
+                   "    store = &nyx_stores[handle.store];\n"
                    "    if (handle.generation != store->generation) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_STALE_HANDLE
                    "\");\n"
                    "    }\n"
                    "    if (handle.offset > store->used ||\n"
                    "        size > store->used - handle.offset) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                    "\");\n"
                    "    }\n"
                    "    return store->data + handle.offset;\n"
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_handle_write(nippy_handle handle, "
+                   "static void nyx_handle_write(nyx_handle handle, "
                    "const void *value,\n"
                    "                               size_t size)\n"
                    "{\n"
-                   "    memcpy(nippy_handle_pointer(handle, size), value, "
+                   "    memcpy(nyx_handle_pointer(handle, size), value, "
                    "size);\n"
                    "}\n\n");
     if (needs_bytes_alloc) {
         ok = ok && buffer_append(
                        source,
-                       "static size_t nippy_store_alloc_bytes("
-                       "nippy_store *store, uint32_t id, size_t size)\n"
+                       "static size_t nyx_store_alloc_bytes("
+                       "nyx_store *store, uint32_t id, size_t size)\n"
                        "{\n"
                        "    size_t offset;\n\n"
                        "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\");\n"
                        "    }\n"
                        "    if (size == 0) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                        "\");\n"
                        "    }\n"
                        "    offset = store->used;\n"
                        "    if (offset > (size_t)-1 - size) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\");\n"
                        "    }\n"
-                       "    nippy_store_reserve(store, offset + size);\n"
+                       "    nyx_store_reserve(store, offset + size);\n"
                        "    store->used = offset + size;\n"
                        "    return offset;\n"
                        "}\n\n");
@@ -3989,37 +3989,37 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
     if (needs_aligned_alloc) {
         ok = ok && buffer_append(
                        source,
-                       "static size_t nippy_store_alloc_bytes_aligned("
-                       "nippy_store *store, uint32_t id, size_t size,\n"
+                       "static size_t nyx_store_alloc_bytes_aligned("
+                       "nyx_store *store, uint32_t id, size_t size,\n"
                        "                                              "
                        "size_t alignment)\n"
                        "{\n"
                        "    size_t offset;\n\n"
                        "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\");\n"
                        "    }\n"
                        "    if (size == 0) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                        "\");\n"
                        "    }\n"
-                       "    offset = nippy_store_align(store->used, alignment);\n"
+                       "    offset = nyx_store_align(store->used, alignment);\n"
                        "    if (offset > (size_t)-1 - size) {\n"
-                       "        nippy_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                       "        nyx_panic(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\");\n"
                        "    }\n"
-                       "    nippy_store_reserve(store, offset + size);\n"
+                       "    nyx_store_reserve(store, offset + size);\n"
                        "    store->used = offset + size;\n"
                        "    return offset;\n"
                        "}\n\n");
     }
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_store_reset(nippy_store *store)\n"
+                   "static void nyx_store_reset(nyx_store *store)\n"
                    "{\n"
                    "    store->used = 0;\n"
                    "    if (store->generation == UINT64_MAX) {\n"
-                   "        nippy_panic(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                   "        nyx_panic(\"" MESSAGE_RUNTIME_STALE_HANDLE
                    "\");\n"
                    "    }\n"
                    "    store->generation++;\n"
@@ -4029,18 +4029,18 @@ static bool emit_store_runtime(TextBuffer *source, size_t store_count,
        compiled with -Wall -Wextra. */
     ok = ok && buffer_append(
                    source,
-                   "static void nippy_store_free(nippy_store *store)\n"
+                   "static void nyx_store_free(nyx_store *store)\n"
                    "{\n"
                    "    free(store->data);\n"
                    "    store->data = NULL;\n"
                    "    store->used = 0;\n"
                    "    store->capacity = 0;\n"
                    "    store->generation = 0;\n"
-                   "    (void)nippy_store_reserve;\n"
-                   "    (void)nippy_store_alloc;\n"
-                   "    (void)nippy_handle_pointer;\n"
-                   "    (void)nippy_handle_write;\n"
-                   "    (void)nippy_store_reset;\n"
+                   "    (void)nyx_store_reserve;\n"
+                   "    (void)nyx_store_alloc;\n"
+                   "    (void)nyx_handle_pointer;\n"
+                   "    (void)nyx_handle_write;\n"
+                   "    (void)nyx_store_reset;\n"
                    "}\n\n");
     if (!ok) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -4065,7 +4065,7 @@ static bool emit_store_inits(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-                            "    nippy_store_init(&nippy_stores[%zu], %d);\n",
+                            "    nyx_store_init(&nyx_stores[%zu], %d);\n",
                             id, declaration->integer_value)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -4080,7 +4080,7 @@ static bool emit_store_frees(size_t store_count, TextBuffer *source,
     size_t id;
 
     for (id = 0; id < store_count; id++) {
-        if (!buffer_appendf(source, "    nippy_store_free(&nippy_stores[%zu]);\n",
+        if (!buffer_appendf(source, "    nyx_store_free(&nyx_stores[%zu]);\n",
                             id)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -4130,7 +4130,7 @@ static bool append_print_program(const TypedProgram *program,
         return false;
     }
 
-    if (!buffer_append(source, "int32_t nippy_program_value(void)\n{\n") ||
+    if (!buffer_append(source, "int32_t nyx_program_value(void)\n{\n") ||
         !buffer_appendf(source, "#line %zu \"%s\"\n", var->pos.line,
                         effective_source) ||
         !buffer_appendf(source, "    int32_t %s = ", name) ||
@@ -4159,7 +4159,7 @@ static bool append_print_program(const TypedProgram *program,
         !buffer_append(source, "}\n\nint main(void)\n{\n") ||
         !emit_store_inits(program, store_count, source, errors) ||
         !buffer_append(source,
-                       "    printf(\"%d\\n\", (int)nippy_program_value());\n") ||
+                       "    printf(\"%d\\n\", (int)nyx_program_value());\n") ||
         !emit_store_frees(store_count, source, errors) ||
         !buffer_append(source, "    return 0;\n}\n")) {
         if (!errors->reported) {
@@ -4214,68 +4214,68 @@ static bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    size_t offset;\n"
                    "    size_t length;\n"
                    "    size_t capacity;\n"
-                   "} nippy_builder_state;\n\n"
-                   "static NIPPY_UNUSED nippy_store *nippy_builder_store("
-                   "nippy_builder b)\n"
+                   "} nyx_builder_state;\n\n"
+                   "static NIPPY_UNUSED nyx_store *nyx_builder_store("
+                   "nyx_builder b)\n"
                    "{\n"
                    "    if (b.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\");\n"
                    "    }\n"
-                   "    if (nippy_stores[b.store].generation != b.generation) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                   "    if (nyx_stores[b.store].generation != b.generation) {\n"
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_STALE_HANDLE
                    "\");\n"
                    "    }\n"
-                   "    return &nippy_stores[b.store];\n"
+                   "    return &nyx_stores[b.store];\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nippy_builder_state *nippy_builder_get_state("
-                   "nippy_builder b)\n"
+                   "static NIPPY_UNUSED nyx_builder_state *nyx_builder_get_state("
+                   "nyx_builder b)\n"
                    "{\n"
-                   "    nippy_store *store = nippy_builder_store(b);\n\n"
+                   "    nyx_store *store = nyx_builder_store(b);\n\n"
                    "    if (b.offset > store->used ||\n"
-                   "        sizeof(nippy_builder_state) > store->used - b.offset) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
+                   "        sizeof(nyx_builder_state) > store->used - b.offset) {\n"
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_HANDLE_BOUNDS
                    "\");\n"
                    "    }\n"
-                   "    return (nippy_builder_state *)(void *)(store->data + "
+                   "    return (nyx_builder_state *)(void *)(store->data + "
                    "b.offset);\n"
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED nippy_builder nippy_builder_create("
-                   "nippy_store *store, uint32_t id, int32_t capacity)\n"
+                   "static NIPPY_UNUSED nyx_builder nyx_builder_create("
+                   "nyx_store *store, uint32_t id, int32_t capacity)\n"
                    "{\n"
-                   "    nippy_builder_state state;\n"
-                   "    nippy_handle handle;\n"
-                   "    nippy_builder builder;\n"
+                   "    nyx_builder_state state;\n"
+                   "    nyx_handle handle;\n"
+                   "    nyx_builder builder;\n"
                    "    size_t cap;\n"
                    "    size_t buffer;\n\n"
                    "    if (capacity < 0) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_STRING_BOUNDS
                    "\");\n"
                    "    }\n"
                    "    cap = (size_t)capacity;\n"
                    "    if (cap > (size_t)-1 - 1) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
-                   "    buffer = nippy_store_alloc_bytes(store, id, cap + 1);\n"
+                   "    buffer = nyx_store_alloc_bytes(store, id, cap + 1);\n"
                    "    store->data[buffer] = 0;\n"
                    "    state.offset = buffer;\n"
                    "    state.length = 0;\n"
                    "    state.capacity = cap;\n"
-                   "    handle = nippy_store_alloc(store, id, &state, sizeof(state),\n"
-                   "                               _Alignof(nippy_builder_state));\n"
+                   "    handle = nyx_store_alloc(store, id, &state, sizeof(state),\n"
+                   "                               _Alignof(nyx_builder_state));\n"
                    "    builder.store = id;\n"
                    "    builder.offset = handle.offset;\n"
                    "    builder.generation = handle.generation;\n"
                    "    return builder;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nippy_builder_reserve("
-                   "nippy_builder b, size_t needed)\n"
+                   "static NIPPY_UNUSED void nyx_builder_reserve("
+                   "nyx_builder b, size_t needed)\n"
                    "{\n"
-                   "    nippy_store *store = nippy_builder_store(b);\n"
-                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    nyx_store *store = nyx_builder_store(b);\n"
+                   "    nyx_builder_state *state = nyx_builder_get_state(b);\n"
                    "    size_t capacity;\n"
                    "    size_t old_offset;\n"
                    "    size_t old_length;\n"
@@ -4286,16 +4286,16 @@ static bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    capacity = state->capacity == 0 ? 1 : state->capacity;\n"
                    "    while (capacity < needed) {\n"
                    "        if (capacity > (size_t)-1 / 2) {\n"
-                   "            nippy_string_fail(\""
+                   "            nyx_string_fail(\""
                    MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
                    "        }\n"
                    "        capacity *= 2;\n"
                    "    }\n"
                    "    old_offset = state->offset;\n"
                    "    old_length = state->length;\n"
-                   "    offset = nippy_store_alloc_bytes(store, b.store, "
+                   "    offset = nyx_store_alloc_bytes(store, b.store, "
                    "capacity + 1);\n"
-                   "    state = nippy_builder_get_state(b);\n"
+                   "    state = nyx_builder_get_state(b);\n"
                    "    memcpy(store->data + offset, store->data + old_offset,\n"
                    "           old_length);\n"
                    "    state->offset = offset;\n"
@@ -4305,66 +4305,66 @@ static bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nippy_builder_append("
-                   "nippy_builder b, nippy_string s)\n"
+                   "static NIPPY_UNUSED void nyx_builder_append("
+                   "nyx_builder b, nyx_string s)\n"
                    "{\n"
-                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
+                   "    nyx_builder_state *state = nyx_builder_get_state(b);\n"
                    "    size_t needed;\n"
                    "    const uint8_t *data;\n"
-                   "    nippy_store *store;\n\n"
+                   "    nyx_store *store;\n\n"
                    "    if (s.length > (size_t)-1 - state->length) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
                    "    needed = state->length + s.length;\n"
-                   "    nippy_builder_reserve(b, needed);\n"
-                   "    state = nippy_builder_get_state(b);\n"
-                   "    store = nippy_builder_store(b);\n"
-                   "    data = nippy_string_data(s);\n"
+                   "    nyx_builder_reserve(b, needed);\n"
+                   "    state = nyx_builder_get_state(b);\n"
+                   "    store = nyx_builder_store(b);\n"
+                   "    data = nyx_string_data(s);\n"
                    "    memcpy(store->data + state->offset + state->length, data,\n"
                    "           s.length);\n"
                    "    state->length = needed;\n"
                    "    store->data[state->offset + needed] = 0;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nippy_builder_append_byte("
-                   "nippy_builder b, uint8_t byte)\n"
+                   "static NIPPY_UNUSED void nyx_builder_append_byte("
+                   "nyx_builder b, uint8_t byte)\n"
                    "{\n"
-                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
-                   "    nippy_store *store;\n"
+                   "    nyx_builder_state *state = nyx_builder_get_state(b);\n"
+                   "    nyx_store *store;\n"
                    "    size_t needed;\n\n"
                    "    if (state->length == (size_t)-1) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
                    "    needed = state->length + 1;\n"
-                   "    nippy_builder_reserve(b, needed);\n"
-                   "    state = nippy_builder_get_state(b);\n"
-                   "    store = nippy_builder_store(b);\n"
+                   "    nyx_builder_reserve(b, needed);\n"
+                   "    state = nyx_builder_get_state(b);\n"
+                   "    store = nyx_builder_store(b);\n"
                    "    store->data[state->offset + state->length] = byte;\n"
                    "    state->length = needed;\n"
                    "    store->data[state->offset + needed] = 0;\n"
                    "}\n\n");
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED int32_t nippy_builder_len("
-                   "nippy_builder b)\n"
+                   "static NIPPY_UNUSED int32_t nyx_builder_len("
+                   "nyx_builder b)\n"
                    "{\n"
-                   "    return (int32_t)nippy_builder_get_state(b)->length;\n"
+                   "    return (int32_t)nyx_builder_get_state(b)->length;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nippy_string nippy_builder_finish("
-                   "nippy_builder b)\n"
+                   "static NIPPY_UNUSED nyx_string nyx_builder_finish("
+                   "nyx_builder b)\n"
                    "{\n"
-                   "    nippy_builder_state *state = nippy_builder_get_state(b);\n"
-                   "    nippy_store *store = nippy_builder_store(b);\n"
-                   "    nippy_string result;\n"
+                   "    nyx_builder_state *state = nyx_builder_get_state(b);\n"
+                   "    nyx_store *store = nyx_builder_store(b);\n"
+                   "    nyx_string result;\n"
                    "    size_t length = state->length;\n"
                    "    size_t source = state->offset;\n"
                    "    size_t offset;\n\n"
                    "    if (length > (size_t)-1 - 1) {\n"
-                   "        nippy_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
+                   "        nyx_string_fail(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\");\n"
                    "    }\n"
-                   "    offset = nippy_store_alloc_bytes(store, b.store, "
+                   "    offset = nyx_store_alloc_bytes(store, b.store, "
                    "length + 1);\n"
                    "    memcpy(store->data + offset, store->data + source, "
                    "length);\n"
@@ -4391,7 +4391,7 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
 
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nippy_list_fail("
+                   "static NIPPY_UNUSED void nyx_list_fail("
                    "const char *message)\n"
                    "{\n"
                    "    fprintf(stderr, \"%s\\n\", message);\n"
@@ -4413,33 +4413,33 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                                      sizeof(element_name), errors)) {
             return false;
         }
-        snprintf(list_name, sizeof(list_name), "nippy_list_%zu", i);
+        snprintf(list_name, sizeof(list_name), "nyx_list_%zu", i);
         ok = ok && buffer_appendf(
                        source,
-                       "static NIPPY_UNUSED %s nippy_list_%zu_get("
+                       "static NIPPY_UNUSED %s nyx_list_%zu_get("
                        "%s list, int32_t i)\n"
                        "{\n"
                        "    if (i < 0 || (size_t)i >= list.length) {\n"
-                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                        "\");\n"
                        "    }\n"
                        "    return list.data[i];\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED void nippy_list_%zu_push("
+                       "static NIPPY_UNUSED void nyx_list_%zu_push("
                        "%s *list, %s value)\n"
                        "{\n"
                        "    if (list->length >= %zu) {\n"
-                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                        "\");\n"
                        "    }\n"
                        "    list->data[list->length] = value;\n"
                        "    list->length++;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED %s *nippy_list_%zu_at("
+                       "static NIPPY_UNUSED %s *nyx_list_%zu_at("
                        "%s *list, int32_t i)\n"
                        "{\n"
                        "    if (i < 0 || (size_t)i >= list->length) {\n"
-                       "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                       "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                        "\");\n"
                        "    }\n"
                        "    return &list->data[i];\n"
@@ -4466,59 +4466,59 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "    size_t offset;\n"
                            "    size_t length;\n"
                            "    size_t capacity;\n"
-                           "} nippy_list_state;\n\n"
-                           "static NIPPY_UNUSED nippy_store *nippy_list_store("
-                           "nippy_list list)\n"
+                           "} nyx_list_state;\n\n"
+                           "static NIPPY_UNUSED nyx_store *nyx_list_store("
+                           "nyx_list list)\n"
                            "{\n"
                            "    if (list.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_STORE_RANGE "\");\n"
                            "    }\n"
-                           "    if (nippy_stores[list.store].generation != "
+                           "    if (nyx_stores[list.store].generation != "
                            "list.generation) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_STALE_HANDLE "\");\n"
                            "    }\n"
-                           "    return &nippy_stores[list.store];\n"
+                           "    return &nyx_stores[list.store];\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED nippy_list_state *"
-                           "nippy_list_get_state(nippy_list list)\n"
+                           "static NIPPY_UNUSED nyx_list_state *"
+                           "nyx_list_get_state(nyx_list list)\n"
                            "{\n"
-                           "    nippy_store *store = nippy_list_store(list);\n\n"
+                           "    nyx_store *store = nyx_list_store(list);\n\n"
                            "    if (list.offset > store->used ||\n"
-                           "        sizeof(nippy_list_state) > "
+                           "        sizeof(nyx_list_state) > "
                            "store->used - list.offset) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
                            "    }\n"
-                           "    return (nippy_list_state *)(void *)"
+                           "    return (nyx_list_state *)(void *)"
                            "(store->data + list.offset);\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED void *nippy_list_data("
-                           "nippy_list list, int32_t index,\n"
+                           "static NIPPY_UNUSED void *nyx_list_data("
+                           "nyx_list list, int32_t index,\n"
                            "                                      "
                            "size_t element_size)\n"
                            "{\n"
-                           "    nippy_list_state *state = nippy_list_get_state(list);\n"
-                           "    nippy_store *store = nippy_list_store(list);\n"
+                           "    nyx_list_state *state = nyx_list_get_state(list);\n"
+                           "    nyx_store *store = nyx_list_store(list);\n"
                            "    size_t offset;\n\n"
                            "    if (index < 0 || (size_t)index >= state->length ||\n"
                            "        element_size == 0) {\n"
-                           "        nippy_list_fail(\"");
+                           "        nyx_list_fail(\"");
             ok = ok && buffer_append(
                            source,
                            MESSAGE_RUNTIME_LIST_BOUNDS "\");\n"
                            "    }\n"
                            "    if ((size_t)index > (size_t)-1 / "
                            "element_size) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
                            "    }\n"
                            "    offset = state->offset + (size_t)index * "
                            "element_size;\n"
                            "    if (offset > store->used ||\n"
                            "        element_size > store->used - offset) {\n"
-                           "        nippy_list_fail(\"");
+                           "        nyx_list_fail(\"");
             ok = ok && buffer_append(
                            source,
                            MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
@@ -4527,36 +4527,36 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "}\n\n");
             ok = ok && buffer_append(
                            source,
-                           "static NIPPY_UNUSED nippy_list nippy_list_create("
-                           "nippy_store *store, uint32_t id, int32_t capacity,\n"
+                           "static NIPPY_UNUSED nyx_list nyx_list_create("
+                           "nyx_store *store, uint32_t id, int32_t capacity,\n"
                            "                                              "
                            "size_t element_size, size_t alignment)\n"
                            "{\n"
-                           "    nippy_list_state state;\n"
-                           "    nippy_handle handle;\n"
-                           "    nippy_list list;\n"
+                           "    nyx_list_state state;\n"
+                           "    nyx_handle handle;\n"
+                           "    nyx_list list;\n"
                            "    size_t cap;\n"
                            "    size_t bytes;\n"
                            "    size_t buffer;\n\n"
                            "    if (capacity < 0 || element_size == 0) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_LIST_BOUNDS "\");\n"
                            "    }\n"
                            "    cap = (size_t)capacity;\n"
                            "    if (cap > (size_t)-1 / element_size) {\n"
-                           "        nippy_list_fail(\""
+                           "        nyx_list_fail(\""
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
                            "    }\n"
                            "    bytes = cap * element_size;\n"
-                           "    buffer = nippy_store_alloc_bytes_aligned(store, id,\n"
+                           "    buffer = nyx_store_alloc_bytes_aligned(store, id,\n"
                            "        bytes == 0 ? 1 : bytes, alignment);\n"
                            "    state.offset = buffer;\n"
                            "    state.length = 0;\n"
                            "    state.capacity = cap;\n"
-                           "    handle = nippy_store_alloc(store, id, &state, "
+                           "    handle = nyx_store_alloc(store, id, &state, "
                            "sizeof(state),\n"
                            "                               "
-                           "_Alignof(nippy_list_state));\n"
+                           "_Alignof(nyx_list_state));\n"
                            "    list.store = id;\n"
                            "    list.offset = handle.offset;\n"
                            "    list.generation = handle.generation;\n"
@@ -4564,17 +4564,17 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "}\n\n");
             ok = ok && buffer_append(
                            source,
-                           "static NIPPY_UNUSED void nippy_list_push("
-                           "nippy_list list, const void *value,\n"
+                           "static NIPPY_UNUSED void nyx_list_push("
+                           "nyx_list list, const void *value,\n"
                            "                                      "
                            "size_t element_size, size_t alignment)\n"
                            "{\n"
-                           "    nippy_list_state *state = nippy_list_get_state(list);\n"
-                           "    nippy_store *store;\n"
+                           "    nyx_list_state *state = nyx_list_get_state(list);\n"
+                           "    nyx_store *store;\n"
                            "    size_t needed;\n"
                            "    size_t capacity;\n\n"
                            "    if (state->length == (size_t)-1) {\n"
-                           "        nippy_list_fail(\"");
+                           "        nyx_list_fail(\"");
             ok = ok && buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
@@ -4590,7 +4590,7 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "state->capacity;\n"
                            "        while (capacity < needed) {\n"
                            "            if (capacity > (size_t)-1 / 2) {\n"
-                           "                nippy_list_fail(\"");
+                           "                nyx_list_fail(\"");
             ok = ok && buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
@@ -4598,35 +4598,35 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "            capacity *= 2;\n"
                            "        }\n"
                            "        if (capacity > (size_t)-1 / element_size) {\n"
-                           "            nippy_list_fail(\"");
+                           "            nyx_list_fail(\"");
             ok = ok && buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\");\n"
                            "        }\n"
                            "        new_bytes = capacity * element_size;\n"
-                           "        new_offset = nippy_store_alloc_bytes_aligned(\n"
-                           "            nippy_list_store(list), list.store, "
+                           "        new_offset = nyx_store_alloc_bytes_aligned(\n"
+                           "            nyx_list_store(list), list.store, "
                            "new_bytes,\n"
                            "            alignment);\n"
-                           "        store = nippy_list_store(list);\n"
+                           "        store = nyx_list_store(list);\n"
                            "        memcpy(store->data + new_offset, "
                            "store->data + old_offset,\n"
                            "               old_bytes);\n"
-                           "        state = nippy_list_get_state(list);\n"
+                           "        state = nyx_list_get_state(list);\n"
                            "        state->offset = new_offset;\n"
                            "        state->capacity = capacity;\n"
                            "    }\n"
-                           "    state = nippy_list_get_state(list);\n"
-                           "    store = nippy_list_store(list);\n"
+                           "    state = nyx_list_get_state(list);\n"
+                           "    store = nyx_list_store(list);\n"
                            "    memcpy(store->data + state->offset + "
                            "state->length * element_size,\n"
                            "           value, element_size);\n"
                            "    state->length = needed;\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED int32_t nippy_list_len("
-                           "nippy_list list)\n"
+                           "static NIPPY_UNUSED int32_t nyx_list_len("
+                           "nyx_list list)\n"
                            "{\n"
-                           "    return (int32_t)nippy_list_get_state(list)->length;\n"
+                           "    return (int32_t)nyx_list_get_state(list)->length;\n"
                            "}\n\n");
         }
     }
@@ -4665,27 +4665,27 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
             if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
                 ok = ok && buffer_appendf(
                                source,
-                               "static NIPPY_UNUSED nippy_nil "
-                               "nippy_list_pop_%zu(%s *list)\n"
+                               "static NIPPY_UNUSED nyx_nil "
+                               "nyx_list_pop_%zu(%s *list)\n"
                                "{\n"
                                "    if (list->length != 0) {\n"
                                "        list->length--;\n"
                                "    }\n"
-                               "    return (nippy_nil)0;\n"
+                               "    return (nyx_nil)0;\n"
                                "}\n\n",
                                i, list_name);
             } else {
                 ok = ok && buffer_appendf(
                                source,
-                               "static NIPPY_UNUSED nippy_nil "
-                               "nippy_list_pop_%zu(nippy_list list)\n"
+                               "static NIPPY_UNUSED nyx_nil "
+                               "nyx_list_pop_%zu(nyx_list list)\n"
                                "{\n"
-                               "    nippy_list_state *state = "
-                               "nippy_list_get_state(list);\n"
+                               "    nyx_list_state *state = "
+                               "nyx_list_get_state(list);\n"
                                "    if (state->length != 0) {\n"
                                "        state->length--;\n"
                                "    }\n"
-                               "    return (nippy_nil)0;\n"
+                               "    return (nyx_nil)0;\n"
                                "}\n\n",
                                i);
             }
@@ -4724,12 +4724,12 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
         buffer_init(&body);
         if (!buffer_appendf(
                 &body,
-                "static NIPPY_UNUSED %s nippy_list_pop_%zu(",
+                "static NIPPY_UNUSED %s nyx_list_pop_%zu(",
                 union_name, i) ||
             !buffer_append(&body,
                            receiver_type->kind == NIPPY_TYPE_FIXED_LIST
                                ? ""
-                               : "nippy_list list)\n{\n")) {
+                               : "nyx_list list)\n{\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             buffer_free(&body);
             return false;
@@ -4750,7 +4750,7 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                             "    }\n",
                             receiver_type->kind == NIPPY_TYPE_FIXED_LIST
                                 ? "list->length"
-                                : "nippy_list_get_state(list)->length",
+                                : "nyx_list_get_state(list)->length",
                             union_name, nil_tag)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             buffer_free(&body);
@@ -4769,9 +4769,9 @@ static bool emit_list_runtime(const TypedProgram *program, size_t store_count,
             if (!buffer_appendf(
                     &body,
                     "    {\n"
-                    "        nippy_list_state *state = "
-                    "nippy_list_get_state(list);\n"
-                    "        nippy_store *store = nippy_list_store(list);\n"
+                    "        nyx_list_state *state = "
+                    "nyx_list_get_state(list);\n"
+                    "        nyx_store *store = nyx_list_store(list);\n"
                     "        size_t offset = state->offset + "
                     "(state->length - 1) * sizeof(%s);\n\n"
                     "        value = *(%s *)(void *)(store->data + offset);\n"
@@ -4859,35 +4859,35 @@ static bool emit_slice_runtime(TextBuffer *source, ErrorState *errors)
 
     ok = ok && buffer_append(
                    source,
-                   "static NIPPY_UNUSED nippy_store *nippy_slice_store("
-                   "nippy_slice slice)\n"
+                   "static NIPPY_UNUSED nyx_store *nyx_slice_store("
+                   "nyx_slice slice)\n"
                    "{\n"
                    "    if (slice.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
-                   "        nippy_list_fail(\""
+                   "        nyx_list_fail(\""
                    MESSAGE_RUNTIME_STORE_RANGE "\");\n"
                    "    }\n"
-                   "    if (nippy_stores[slice.store].generation != "
+                   "    if (nyx_stores[slice.store].generation != "
                    "slice.generation) {\n"
-                   "        nippy_list_fail(\""
+                   "        nyx_list_fail(\""
                    MESSAGE_RUNTIME_STALE_HANDLE "\");\n"
                    "    }\n"
-                   "    return &nippy_stores[slice.store];\n"
+                   "    return &nyx_stores[slice.store];\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nippy_slice nippy_slice_from_list("
-                   "nippy_list list, int32_t start, int32_t length,\n"
+                   "static NIPPY_UNUSED nyx_slice nyx_slice_from_list("
+                   "nyx_list list, int32_t start, int32_t length,\n"
                    "                                              "
                    "size_t element_size)\n"
                    "{\n"
-                   "    nippy_list_state *state = nippy_list_get_state(list);\n"
-                   "    nippy_store *store = nippy_list_store(list);\n"
-                   "    nippy_slice result;\n"
+                   "    nyx_list_state *state = nyx_list_get_state(list);\n"
+                   "    nyx_store *store = nyx_list_store(list);\n"
+                   "    nyx_slice result;\n"
                    "    size_t offset;\n\n"
                    "    if (start < 0 || length < 0 ||\n"
                    "        (size_t)start > state->length ||\n"
                    "        (size_t)length > state->length - (size_t)start ||\n"
                    "        element_size == 0 ||\n"
                    "        (size_t)start > (size_t)-1 / element_size) {\n"
-                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                    "\");\n"
                    "    }\n"
                    "    offset = state->offset + (size_t)start * element_size;\n"
@@ -4897,48 +4897,48 @@ static bool emit_slice_runtime(TextBuffer *source, ErrorState *errors)
                    "    result.generation = store->generation;\n"
                    "    return result;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nippy_slice nippy_slice_sub("
-                   "nippy_slice slice, int32_t start, int32_t length,\n"
+                   "static NIPPY_UNUSED nyx_slice nyx_slice_sub("
+                   "nyx_slice slice, int32_t start, int32_t length,\n"
                    "                                        size_t element_size)\n"
                    "{\n"
-                   "    nippy_slice result;\n\n"
+                   "    nyx_slice result;\n\n"
                    "    if (start < 0 || length < 0 ||\n"
                    "        (size_t)start > slice.length ||\n"
                    "        (size_t)length > slice.length - (size_t)start ||\n"
                    "        element_size == 0 ||\n"
                    "        (size_t)start > (size_t)-1 / element_size) {\n"
-                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                    "\");\n"
                    "    }\n"
-                   "    (void)nippy_slice_store(slice);\n"
+                   "    (void)nyx_slice_store(slice);\n"
                    "    result = slice;\n"
                    "    result.offset += (size_t)start * element_size;\n"
                    "    result.length = (size_t)length;\n"
                    "    return result;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED const void *nippy_slice_data("
-                   "nippy_slice slice, int32_t index, size_t element_size)\n"
+                   "static NIPPY_UNUSED const void *nyx_slice_data("
+                   "nyx_slice slice, int32_t index, size_t element_size)\n"
                    "{\n"
-                   "    nippy_store *store = nippy_slice_store(slice);\n"
+                   "    nyx_store *store = nyx_slice_store(slice);\n"
                    "    size_t offset;\n\n"
                    "    if (index < 0 || (size_t)index >= slice.length ||\n"
                    "        element_size == 0 ||\n"
                    "        (size_t)index > (size_t)-1 / element_size) {\n"
-                   "        nippy_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
+                   "        nyx_list_fail(\"" MESSAGE_RUNTIME_LIST_BOUNDS
                    "\");\n"
                    "    }\n"
                    "    offset = slice.offset + (size_t)index * element_size;\n"
                    "    if (offset > store->used ||\n"
                    "        element_size > store->used - offset) {\n"
-                   "        nippy_list_fail(\""
+                   "        nyx_list_fail(\""
                    MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
                    "    }\n"
                    "    return (const void *)(store->data + offset);\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED int32_t nippy_slice_len("
-                   "nippy_slice slice)\n"
+                   "static NIPPY_UNUSED int32_t nyx_slice_len("
+                   "nyx_slice slice)\n"
                    "{\n"
-                   "    (void)nippy_slice_store(slice);\n"
+                   "    (void)nyx_slice_store(slice);\n"
                    "    return (int32_t)slice.length;\n"
                    "}\n\n");
     if (!ok) {
@@ -5125,7 +5125,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         return false;
     }
     if (!buffer_appendf(source,
-                        "static void nippy_print_%zu(%s value, int depth)\n"
+                        "static void nyx_print_%zu(%s value, int depth)\n"
                         "{\n"
                         "    (void)value;\n"
                         "    if (depth > %d) {\n"
@@ -5173,7 +5173,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
     case NIPPY_TYPE_DYNAMIC_STRING:
         if (!buffer_append(source,
                            "    if (value.length != 0) {\n"
-                           "        fwrite(nippy_string_data(value), 1, "
+                           "        fwrite(nyx_string_data(value), 1, "
                            "value.length, stdout);\n"
                            "    }\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -5192,9 +5192,9 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         break;
     case NIPPY_TYPE_TEXT_BUILDER:
         if (!buffer_append(source,
-                           "    nippy_builder_state *state = "
-                           "nippy_builder_get_state(value);\n"
-                           "    nippy_store *store = nippy_builder_store(value);\n"
+                           "    nyx_builder_state *state = "
+                           "nyx_builder_get_state(value);\n"
+                           "    nyx_store *store = nyx_builder_store(value);\n"
                            "    if (state->length != 0) {\n"
                            "        fwrite(store->data + state->offset, 1, "
                            "state->length, stdout);\n"
@@ -5244,7 +5244,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             if (!buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
                                 i == 0 ? "" : ", ", field_name) ||
                 !buffer_appendf(source,
-                                "    nippy_print_%zu(value.%s, depth + 1);\n",
+                                "    nyx_print_%zu(value.%s, depth + 1);\n",
                                 field->type_index, field_name)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -5283,7 +5283,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                 }
             } else if (!buffer_appendf(
                            source,
-                           "        nippy_print_%zu(value.value.v%zu, "
+                           "        nyx_print_%zu(value.value.v%zu, "
                            "depth + 1);\n",
                            alternative, i)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -5319,7 +5319,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             if (!buffer_appendf(source, "    fputs(\"%s\", stdout);\n",
                                 i == 0 ? "" : ", ") ||
                 !buffer_appendf(source,
-                                "    nippy_print_%zu(value.%s, depth + 1);\n",
+                                "    nyx_print_%zu(value.%s, depth + 1);\n",
                                 field, names[i])) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -5343,7 +5343,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                            "    for (size_t i = 0; i < value.length; i++) {\n"
                            "        if (i != 0) fputs(\", \", stdout);\n") ||
             !buffer_appendf(source,
-                            "        nippy_print_%zu(value.data[i], "
+                            "        nyx_print_%zu(value.data[i], "
                             "depth + 1);\n",
                             element) ||
             !buffer_append(source,
@@ -5360,11 +5360,11 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                                                    type->first_child);
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
         const char *get = type->kind == NIPPY_TYPE_LIST
-                              ? "nippy_list_len(value)"
-                              : "nippy_slice_len(value)";
+                              ? "nyx_list_len(value)"
+                              : "nyx_slice_len(value)";
         const char *data = type->kind == NIPPY_TYPE_LIST
-                               ? "nippy_list_data"
-                               : "nippy_slice_data";
+                               ? "nyx_list_data"
+                               : "nyx_slice_data";
 
         if (!format_c_type(program, element, element_name,
                            sizeof(element_name), errors)) {
@@ -5374,7 +5374,7 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                             "    fputs(\"[\", stdout);\n"
                             "    for (size_t i = 0; i < (size_t)%s; i++) {\n"
                             "        if (i != 0) fputs(\", \", stdout);\n"
-                            "        nippy_print_%zu(*(%s *)%s(value, i, "
+                            "        nyx_print_%zu(*(%s *)%s(value, i, "
                             "sizeof(%s)), depth + 1);\n"
                             "    }\n"
                             "    fputs(\"]\", stdout);\n",
@@ -5400,10 +5400,10 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                            "; i++) {\n"
                            "        if (value.states[i] != 1) continue;\n"
                            "        if (count++ != 0) fputs(\", \", stdout);\n") ||
-            !buffer_appendf(source, "        nippy_print_%zu(value.keys[i], "
+            !buffer_appendf(source, "        nyx_print_%zu(value.keys[i], "
                                     "depth + 1);\n"
                                     "        fputs(\": \", stdout);\n"
-                                    "        nippy_print_%zu(value.values[i], "
+                                    "        nyx_print_%zu(value.values[i], "
                                     "depth + 1);\n"
                                     "    }\n"
                                     "    fputs(\"}\", stdout);\n",
@@ -5428,8 +5428,8 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             return false;
         }
         if (!buffer_appendf(source,
-            "    nippy_table_state_%zu *state = nippy_table_%zu_state(value);\n"
-            "    nippy_store *store = &nippy_stores[value.store];\n"
+            "    nyx_table_state_%zu *state = nyx_table_%zu_state(value);\n"
+            "    nyx_store *store = &nyx_stores[value.store];\n"
             "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
             "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
             "    uint8_t *states = (uint8_t *)(void *)(store->data + "
@@ -5439,9 +5439,9 @@ static bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             "    for (size_t i = 0; i < state->buckets; i++) {\n"
             "        if (states[i] != 1) continue;\n"
             "        if (count++ != 0) fputs(\", \", stdout);\n"
-            "        nippy_print_%zu(keys[i], depth + 1);\n"
+            "        nyx_print_%zu(keys[i], depth + 1);\n"
             "        fputs(\": \", stdout);\n"
-            "        nippy_print_%zu(values[i], depth + 1);\n"
+            "        nyx_print_%zu(values[i], depth + 1);\n"
             "    }\n"
             "    fputs(\"}\", stdout);\n",
             type_index, type_index, key_name, key_name, value_name,
@@ -5497,7 +5497,7 @@ static bool emit_print_helpers(const TypedProgram *program, TextBuffer *source,
             if (!format_c_type(program, type_index, c_type,
                                sizeof(c_type), errors) ||
                 !buffer_appendf(source,
-                                "static void nippy_print_%zu(%s value, int "
+                                "static void nyx_print_%zu(%s value, int "
                                 "depth);\n",
                                 type_index, c_type)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -5545,7 +5545,7 @@ static bool emit_print_statement(const TypedProgram *program,
             return false;
         }
         if (!append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nippy_print_arg_%zu_%zu = ",
+            !buffer_appendf(source, "%s nyx_print_arg_%zu_%zu = ",
                             c_type, node->pos.offset, i) ||
             !emit_expression(program, child, source, errors) ||
             !buffer_append(source, ";\n")) {
@@ -5563,7 +5563,7 @@ static bool emit_print_statement(const TypedProgram *program,
         }
         if (!append_indent(source, depth + 1) ||
             !buffer_appendf(source,
-                            "nippy_print_%zu(nippy_print_arg_%zu_%zu, 0);\n",
+                            "nyx_print_%zu(nyx_print_arg_%zu_%zu, 0);\n",
                             argument->type_index, node->pos.offset, i)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -5611,7 +5611,7 @@ static bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         return false;
     }
     if (!buffer_appendf(source,
-        "static uint64_t nippy_record_%zu_hash(%s key)\n"
+        "static uint64_t nyx_record_%zu_hash(%s key)\n"
         "{\n"
         "    uint64_t h = 14695981039346656037ULL;\n"
         "    for (size_t i = 0; i < key.length; i++) {\n"
@@ -5620,43 +5620,43 @@ static bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "    }\n"
         "    return h;\n"
         "}\n\n"
-        "static bool nippy_record_%zu_eq(%s a, %s b)\n"
+        "static bool nyx_record_%zu_eq(%s a, %s b)\n"
         "{\n"
         "    return a.length == b.length &&\n"
         "           memcmp(a.data, b.data, a.length) == 0;\n"
         "}\n\n"
-        "static size_t nippy_record_%zu_find(const %s *r, %s key)\n"
+        "static size_t nyx_record_%zu_find(const %s *r, %s key)\n"
         "{\n"
-        "    size_t start = (size_t)(nippy_record_%zu_hash(key) %% %zu);\n"
+        "    size_t start = (size_t)(nyx_record_%zu_hash(key) %% %zu);\n"
         "    for (size_t p = 0; p < %zu; p++) {\n"
         "        size_t i = (start + p) %% %zu;\n"
         "        if (r->states[i] == 0) return SIZE_MAX;\n"
-        "        if (r->states[i] == 1 && nippy_record_%zu_eq(r->keys[i], key)) "
+        "        if (r->states[i] == 1 && nyx_record_%zu_eq(r->keys[i], key)) "
         "return i;\n"
         "    }\n"
         "    return SIZE_MAX;\n"
         "}\n\n"
-        "static bool nippy_record_%zu_get(const %s *r, %s key, %s *out)\n"
+        "static bool nyx_record_%zu_get(const %s *r, %s key, %s *out)\n"
         "{\n"
-        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i == SIZE_MAX) return false;\n"
         "    *out = r->values[i];\n"
         "    return true;\n"
         "}\n\n"
-        "static bool nippy_record_%zu_has(const %s *r, %s key)\n"
+        "static bool nyx_record_%zu_has(const %s *r, %s key)\n"
         "{\n"
-        "    return nippy_record_%zu_find(r, key) != SIZE_MAX;\n"
+        "    return nyx_record_%zu_find(r, key) != SIZE_MAX;\n"
         "}\n\n"
-        "static int32_t nippy_record_%zu_len(const %s *r)\n"
+        "static int32_t nyx_record_%zu_len(const %s *r)\n"
         "{\n"
         "    return (int32_t)r->length;\n"
         "}\n\n"
-        "static void nippy_record_%zu_set(%s *r, %s key, %s value)\n"
+        "static void nyx_record_%zu_set(%s *r, %s key, %s value)\n"
         "{\n"
-        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i != SIZE_MAX) { r->values[i] = value; return; }\n"
-        "    if (r->length >= %zu) nippy_map_fail(\"%s\");\n"
-        "    size_t start = (size_t)(nippy_record_%zu_hash(key) %% %zu);\n"
+        "    if (r->length >= %zu) nyx_map_fail(\"%s\");\n"
+        "    size_t start = (size_t)(nyx_record_%zu_hash(key) %% %zu);\n"
         "    for (size_t p = 0; p < %zu; p++) {\n"
         "        size_t j = (start + p) %% %zu;\n"
         "        if (r->states[j] != 1) {\n"
@@ -5667,28 +5667,28 @@ static bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "            return;\n"
         "        }\n"
         "    }\n"
-        "    nippy_map_fail(\"%s\");\n"
+        "    nyx_map_fail(\"%s\");\n"
         "}\n\n"
-        "static bool nippy_record_%zu_remove(%s *r, %s key)\n"
+        "static bool nyx_record_%zu_remove(%s *r, %s key)\n"
         "{\n"
-        "    size_t i = nippy_record_%zu_find(r, key);\n"
+        "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i == SIZE_MAX) return false;\n"
         "    r->states[i] = 2;\n"
         "    r->length--;\n"
         "    return true;\n"
         "}\n\n"
-        "static %s nippy_record_%zu_get_required(const %s *r, %s key)\n"
+        "static %s nyx_record_%zu_get_required(const %s *r, %s key)\n"
         "{\n"
         "    %s out;\n"
-        "    if (!nippy_record_%zu_get(r, key, &out)) "
-        "nippy_map_fail(\"%s\");\n"
+        "    if (!nyx_record_%zu_get(r, key, &out)) "
+        "nyx_map_fail(\"%s\");\n"
         "    return out;\n"
         "}\n\n"
-        "static %s nippy_record_%zu_literal(%s *keys, %s *values, size_t n)\n"
+        "static %s nyx_record_%zu_literal(%s *keys, %s *values, size_t n)\n"
         "{\n"
         "    %s r = {0};\n"
         "    for (size_t i = 0; i < n; i++) "
-        "nippy_record_%zu_set(&r, keys[i], values[i]);\n"
+        "nyx_record_%zu_set(&r, keys[i], values[i]);\n"
         "    return r;\n"
         "}\n\n",
         type_index, key_name,
@@ -5717,29 +5717,29 @@ static bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
 {
     if (!buffer_append(
             source,
-            "static void nippy_arith_fail(const char *message)\n"
+            "static void nyx_arith_fail(const char *message)\n"
             "{\n"
             "    fprintf(stderr, \"%s\\n\", message);\n"
             "    exit(1);\n"
             "}\n\n"
-            "static NIPPY_UNUSED int32_t nippy_div_i32(int32_t a, int32_t b)\n"
+            "static NIPPY_UNUSED int32_t nyx_div_i32(int32_t a, int32_t b)\n"
             "{\n"
-            "    if (b == 0) nippy_arith_fail(\"division by zero\");\n"
+            "    if (b == 0) nyx_arith_fail(\"division by zero\");\n"
             "    if (a == INT32_MIN && b == -1) "
-            "nippy_arith_fail(\"integer overflow\");\n"
+            "nyx_arith_fail(\"integer overflow\");\n"
             "    return a / b;\n"
             "}\n\n"
-            "static NIPPY_UNUSED int32_t nippy_mod_i32(int32_t a, int32_t b)\n"
+            "static NIPPY_UNUSED int32_t nyx_mod_i32(int32_t a, int32_t b)\n"
             "{\n"
-            "    if (b == 0) nippy_arith_fail(\"division by zero\");\n"
+            "    if (b == 0) nyx_arith_fail(\"division by zero\");\n"
             "    if (a == INT32_MIN && b == -1) return 0;\n"
             "    return a % b;\n"
             "}\n\n"
-            "static NIPPY_UNUSED int32_t nippy_shl_i32(int32_t a, int32_t b)\n"
+            "static NIPPY_UNUSED int32_t nyx_shl_i32(int32_t a, int32_t b)\n"
             "{\n"
             "    return (int32_t)((uint32_t)a << ((uint32_t)b & 31u));\n"
             "}\n\n"
-            "static NIPPY_UNUSED int32_t nippy_shr_i32(int32_t a, int32_t b)\n"
+            "static NIPPY_UNUSED int32_t nyx_shr_i32(int32_t a, int32_t b)\n"
             "{\n"
             "    return (int32_t)((uint32_t)a >> ((uint32_t)b & 31u));\n"
             "}\n\n")) {
@@ -5767,7 +5767,7 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
         return true;
     }
     if (!buffer_append(source,
-        "static void nippy_map_fail(const char *message)\n"
+        "static void nyx_map_fail(const char *message)\n"
         "{\n"
         "    fprintf(stderr, \"%s\\n\", message);\n"
         "    exit(1);\n"
@@ -5813,8 +5813,8 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    size_t keys_offset;\n"
             "    size_t values_offset;\n"
             "    size_t states_offset;\n"
-            "} nippy_table_state_%zu;\n\n"
-            "static uint64_t nippy_table_%zu_hash(%s key)\n"
+            "} nyx_table_state_%zu;\n\n"
+            "static uint64_t nyx_table_%zu_hash(%s key)\n"
             "{\n"
             "    uint64_t h = 14695981039346656037ULL;\n"
             "    for (size_t i = 0; i < key.length; i++) {\n"
@@ -5823,23 +5823,23 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    }\n"
             "    return h;\n"
             "}\n\n"
-            "static bool nippy_table_%zu_eq(%s a, %s b)\n"
+            "static bool nyx_table_%zu_eq(%s a, %s b)\n"
             "{\n"
             "    return a.length == b.length &&\n"
             "           memcmp(a.data, b.data, a.length) == 0;\n"
             "}\n\n"
-            "static nippy_table_state_%zu *nippy_table_%zu_state(nippy_table t)\n"
+            "static nyx_table_state_%zu *nyx_table_%zu_state(nyx_table t)\n"
             "{\n"
-            "    nippy_store *store;\n"
+            "    nyx_store *store;\n"
             "    if (t.store >= (uint32_t)NIPPY_STORE_COUNT) "
-            "nippy_map_fail(\"%s\");\n"
-            "    store = &nippy_stores[t.store];\n"
+            "nyx_map_fail(\"%s\");\n"
+            "    store = &nyx_stores[t.store];\n"
             "    if (store->generation != t.generation) "
-            "nippy_map_fail(\"%s\");\n"
+            "nyx_map_fail(\"%s\");\n"
             "    if (t.offset > store->used ||\n"
-            "        sizeof(nippy_table_state_%zu) > store->used - t.offset) "
-            "nippy_map_fail(\"%s\");\n"
-            "    return (nippy_table_state_%zu *)(void *)(store->data + "
+            "        sizeof(nyx_table_state_%zu) > store->used - t.offset) "
+            "nyx_map_fail(\"%s\");\n"
+            "    return (nyx_table_state_%zu *)(void *)(store->data + "
             "t.offset);\n"
             "}\n\n",
             i, i, key_name, i, key_name, key_name,
@@ -5851,19 +5851,19 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
         /* The real finder needs the descriptor's store; use a helper with the
            descriptor so it can locate both the state and the arrays. */
         if (!buffer_appendf(source,
-            "static size_t nippy_table_%zu_find_in(nippy_table t, "
-            "nippy_table_state_%zu *s, %s key)\n"
+            "static size_t nyx_table_%zu_find_in(nyx_table t, "
+            "nyx_table_state_%zu *s, %s key)\n"
             "{\n"
-            "    nippy_store *store = &nippy_stores[t.store];\n"
+            "    nyx_store *store = &nyx_stores[t.store];\n"
             "    %s *keys = (%s *)(void *)(store->data + s->keys_offset);\n"
             "    uint8_t *states = (uint8_t *)(void *)(store->data + "
             "s->states_offset);\n"
-            "    size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "    size_t start = (size_t)(nyx_table_%zu_hash(key) %% "
             "s->buckets);\n"
             "    for (size_t p = 0; p < s->buckets; p++) {\n"
             "        size_t j = (start + p) %% s->buckets;\n"
             "        if (states[j] == 0) return SIZE_MAX;\n"
-            "        if (states[j] == 1 && nippy_table_%zu_eq(keys[j], key)) "
+            "        if (states[j] == 1 && nyx_table_%zu_eq(keys[j], key)) "
             "return j;\n"
             "    }\n"
             "    return SIZE_MAX;\n"
@@ -5873,24 +5873,24 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-            "static bool nippy_table_%zu_get(nippy_table t, %s key, %s *out)\n"
+            "static bool nyx_table_%zu_get(nyx_table t, %s key, %s *out)\n"
             "{\n"
-            "    nippy_table_state_%zu *s = nippy_table_%zu_state(t);\n"
-            "    nippy_store *store = &nippy_stores[t.store];\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state(t);\n"
+            "    nyx_store *store = &nyx_stores[t.store];\n"
             "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
-            "    size_t p = nippy_table_%zu_find_in(t, s, key);\n"
+            "    size_t p = nyx_table_%zu_find_in(t, s, key);\n"
             "    if (p == SIZE_MAX) return false;\n"
             "    *out = values[p];\n"
             "    return true;\n"
             "}\n\n"
-            "static bool nippy_table_%zu_has(nippy_table t, %s key)\n"
+            "static bool nyx_table_%zu_has(nyx_table t, %s key)\n"
             "{\n"
-            "    nippy_table_state_%zu *s = nippy_table_%zu_state(t);\n"
-            "    return nippy_table_%zu_find_in(t, s, key) != SIZE_MAX;\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state(t);\n"
+            "    return nyx_table_%zu_find_in(t, s, key) != SIZE_MAX;\n"
             "}\n\n"
-            "static int32_t nippy_table_%zu_len(nippy_table t)\n"
+            "static int32_t nyx_table_%zu_len(nyx_table t)\n"
             "{\n"
-            "    return (int32_t)nippy_table_%zu_state(t)->length;\n"
+            "    return (int32_t)nyx_table_%zu_state(t)->length;\n"
             "}\n\n",
             i, key_name, value_name, i, i, value_name, value_name, i,
             i, key_name, i, i, i, i, i)) {
@@ -5898,10 +5898,10 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-            "static void nippy_table_%zu_grow(nippy_table *t)\n"
+            "static void nyx_table_%zu_grow(nyx_table *t)\n"
             "{\n"
-            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
-            "    nippy_store *store = &nippy_stores[t->store];\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    nyx_store *store = &nyx_stores[t->store];\n"
             "    size_t old_buckets = s->buckets;\n"
             "    size_t old_length = s->length;\n"
             "    size_t old_keys = s->keys_offset;\n"
@@ -5909,17 +5909,17 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    size_t old_states = s->states_offset;\n"
             "    size_t new_capacity = s->capacity == 0 ? 1 : s->capacity * 2;\n"
             "    size_t new_buckets = new_capacity * 2 + 1;\n"
-            "    size_t new_keys = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t new_keys = nyx_store_alloc_bytes_aligned(store, "
             "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
-            "    size_t new_values = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t new_values = nyx_store_alloc_bytes_aligned(store, "
             "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
-            "    size_t new_states = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t new_states = nyx_store_alloc_bytes_aligned(store, "
             "t->store, new_buckets, 1);\n"
             "    %s *keys;\n"
             "    %s *values;\n"
             "    uint8_t *states;\n"
             "    memset(store->data + new_states, 0, new_buckets);\n"
-            "    s = nippy_table_%zu_state(*t);\n"
+            "    s = nyx_table_%zu_state(*t);\n"
             "    keys = (%s *)(void *)(store->data + new_keys);\n"
             "    values = (%s *)(void *)(store->data + new_values);\n"
             "    states = (uint8_t *)(void *)(store->data + new_states);\n"
@@ -5931,7 +5931,7 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "i * sizeof(%s));\n"
             "        %s value = *(%s *)(void *)(store->data + old_values + "
             "i * sizeof(%s));\n"
-            "        size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "        size_t start = (size_t)(nyx_table_%zu_hash(key) %% "
             "new_buckets);\n"
             "        for (size_t p = 0; p < new_buckets; p++) {\n"
             "            size_t j = (start + p) %% new_buckets;\n"
@@ -5948,25 +5948,25 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    s->values_offset = new_values;\n"
             "    s->states_offset = new_states;\n"
             "}\n\n"
-            "static void nippy_table_%zu_set(nippy_table *t, %s key, %s value)\n"
+            "static void nyx_table_%zu_set(nyx_table *t, %s key, %s value)\n"
             "{\n"
-            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
-            "    size_t p = nippy_table_%zu_find_in(*t, s, key);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    size_t p = nyx_table_%zu_find_in(*t, s, key);\n"
             "    if (p != SIZE_MAX) {\n"
-            "        nippy_store *store = &nippy_stores[t->store];\n"
+            "        nyx_store *store = &nyx_stores[t->store];\n"
             "        %s *values = (%s *)(void *)(store->data + "
             "s->values_offset);\n"
             "        values[p] = value;\n"
             "        return;\n"
             "    }\n"
-            "    if (s->length >= s->capacity) { nippy_table_%zu_grow(t); "
-            "s = nippy_table_%zu_state(*t); }\n"
-            "    nippy_store *store = &nippy_stores[t->store];\n"
+            "    if (s->length >= s->capacity) { nyx_table_%zu_grow(t); "
+            "s = nyx_table_%zu_state(*t); }\n"
+            "    nyx_store *store = &nyx_stores[t->store];\n"
             "    %s *keys = (%s *)(void *)(store->data + s->keys_offset);\n"
             "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
             "    uint8_t *states = (uint8_t *)(void *)(store->data + "
             "s->states_offset);\n"
-            "    size_t start = (size_t)(nippy_table_%zu_hash(key) %% "
+            "    size_t start = (size_t)(nyx_table_%zu_hash(key) %% "
             "s->buckets);\n"
             "    for (size_t q = 0; q < s->buckets; q++) {\n"
             "        size_t j = (start + q) %% s->buckets;\n"
@@ -5976,7 +5976,7 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "            return;\n"
             "        }\n"
             "    }\n"
-            "    nippy_map_fail(\"%s\");\n"
+            "    nyx_map_fail(\"%s\");\n"
             "}\n\n",
             i, i, i, key_name, key_name, value_name, value_name, key_name,
             value_name, i, key_name, value_name, key_name, key_name,
@@ -5988,43 +5988,43 @@ static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-            "static bool nippy_table_%zu_remove(nippy_table *t, %s key)\n"
+            "static bool nyx_table_%zu_remove(nyx_table *t, %s key)\n"
             "{\n"
-            "    nippy_table_state_%zu *s = nippy_table_%zu_state(*t);\n"
-            "    size_t p = nippy_table_%zu_find_in(*t, s, key);\n"
-            "    nippy_store *store;\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    size_t p = nyx_table_%zu_find_in(*t, s, key);\n"
+            "    nyx_store *store;\n"
             "    uint8_t *states;\n"
             "    if (p == SIZE_MAX) return false;\n"
-            "    store = &nippy_stores[t->store];\n"
+            "    store = &nyx_stores[t->store];\n"
             "    states = (uint8_t *)(void *)(store->data + s->states_offset);\n"
             "    states[p] = 2;\n"
             "    s->length--;\n"
             "    return true;\n"
             "}\n\n"
-            "static %s nippy_table_%zu_get_required(nippy_table t, %s key)\n"
+            "static %s nyx_table_%zu_get_required(nyx_table t, %s key)\n"
             "{\n"
             "    %s out;\n"
-            "    if (!nippy_table_%zu_get(t, key, &out)) "
-            "nippy_map_fail(\"%s\");\n"
+            "    if (!nyx_table_%zu_get(t, key, &out)) "
+            "nyx_map_fail(\"%s\");\n"
             "    return out;\n"
             "}\n\n"
-            "static nippy_table nippy_table_%zu_create(nippy_store *store, "
+            "static nyx_table nyx_table_%zu_create(nyx_store *store, "
             "uint32_t id, int32_t cap)\n"
             "{\n"
-            "    nippy_table_state_%zu *s;\n"
-            "    nippy_table result;\n"
+            "    nyx_table_state_%zu *s;\n"
+            "    nyx_table result;\n"
             "    size_t capacity = cap < 0 ? 0 : (size_t)cap;\n"
             "    size_t buckets = capacity == 0 ? 1 : capacity * 2 + 1;\n"
-            "    size_t state_offset = nippy_store_alloc_bytes_aligned(store, "
-            "id, sizeof(nippy_table_state_%zu), _Alignof(nippy_table_state_%zu));\n"
-            "    size_t keys_offset = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t state_offset = nyx_store_alloc_bytes_aligned(store, "
+            "id, sizeof(nyx_table_state_%zu), _Alignof(nyx_table_state_%zu));\n"
+            "    size_t keys_offset = nyx_store_alloc_bytes_aligned(store, "
             "id, sizeof(%s) * buckets, _Alignof(%s));\n"
-            "    size_t values_offset = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t values_offset = nyx_store_alloc_bytes_aligned(store, "
             "id, sizeof(%s) * buckets, _Alignof(%s));\n"
-            "    size_t states_offset = nippy_store_alloc_bytes_aligned(store, "
+            "    size_t states_offset = nyx_store_alloc_bytes_aligned(store, "
             "id, buckets, 1);\n"
             "    memset(store->data + states_offset, 0, buckets);\n"
-            "    s = (nippy_table_state_%zu *)(void *)(store->data + "
+            "    s = (nyx_table_state_%zu *)(void *)(store->data + "
             "state_offset);\n"
             "    s->buckets = buckets;\n"
             "    s->length = 0;\n"
@@ -6155,13 +6155,13 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                 "    uint32_t store;\n"
                 "    size_t offset;\n"
                 "    uint64_t generation;\n"
-                "} nippy_handle;\n\n"
+                "} nyx_handle;\n\n"
                 "typedef struct {\n"
                 "    unsigned char *data;\n"
                 "    size_t used;\n"
                 "    size_t capacity;\n"
                 "    uint64_t generation;\n"
-                "} nippy_store;\n\n")) {
+                "} nyx_store;\n\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
@@ -6217,7 +6217,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
 
     if (print_program &&
-        !buffer_append(&header, "int32_t nippy_program_value(void);\n\n")) {
+        !buffer_append(&header, "int32_t nyx_program_value(void);\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }

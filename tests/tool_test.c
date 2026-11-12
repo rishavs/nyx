@@ -209,7 +209,7 @@ static TestResult run_generated_driver(const char *source, const char *driver,
     /* The generated translation unit always defines main; rename it so the
        driver's main can call the Nippy functions. */
     status = run_command(
-        "cc -std=c11 -Dmain=nippy_generated_main -c tests/.test-runtime.c "
+        "cc -std=c11 -Dmain=nyx_generated_main -c tests/.test-runtime.c "
         "-o tests/.test-runtime.o",
         "tests/.test-runtime.log");
     if (status == 0) {
