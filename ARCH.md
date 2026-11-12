@@ -32,11 +32,11 @@ forward-only rule enforced structurally rather than by convention.
 
 | Stage | Consumes | Produces | Source |
 |---|---|---|---|
-| Lexer | source string | `LexerResult`: token list, or an error list | `compiler/lexer.c` |
-| Parser | token list and string-byte pool | `Ast`: flattened syntax tree | `compiler/parser.c` |
-| Checker | syntax tree | `TypedProgram`: typed, link-resolved program | `compiler/checker.c` |
-| Analyser | typed program | nothing (validates only) | `compiler/analyser.c` |
-| Generator | typed program | owned C11 `.c` and `.h` text | `compiler/generator.c` |
+| Lexer | source string | `LexerResult`: token list, or an error list | `compiler/lexer/` |
+| Parser | token list and string-byte pool | `Ast`: flattened syntax tree | `compiler/parser/` |
+| Checker | syntax tree | `TypedProgram`: typed, link-resolved program | `compiler/checker/` |
+| Analyser | typed program | nothing (validates only) | `compiler/analyser/` |
+| Generator | typed program | owned C11 `.c` and `.h` text | `compiler/generator/` |
 
 ### Forward-only rules
 
@@ -399,7 +399,7 @@ linear `List`s of fixed-size records; a `List` element never owns another
 
 Two structures sit outside `List` by design:
 
-- `TextBuffer` (`compiler/generator.c`) is a growable `char *` used to compose
+- `TextBuffer` (`compiler/generator/`) is a growable `char *` used to compose
   generated source, since the output is text rather than an array of elements.
 - `LexerResult`, `Ast`, `TypedProgram`, `CompilerResult`, and `ErrorState` are
   plain structs that aggregate lists, counts, and flags.
@@ -421,11 +421,20 @@ never pointers.
 
 ## Module layout
 
+Each pipeline stage owns a directory. Large stages are split by concern, and
+their shared private declarations live in a `*_internal.h` beside the code.
+Public stage headers remain in `include/` and expose only the stage entry point.
+
 | Path | Contents |
 |---|---|
-| `compiler/` | One `.c` per stage, plus the driver and shared helpers |
-| `include/` | Public headers, same names as their implementation |
-| `tests/` | `harness.c` shared reporting, plus one source per suite |
+| `compiler/` | Driver, shared helpers, and one directory per stage |
+| `compiler/lexer/` | Lexer stage |
+| `compiler/parser/` | Parser: types, expressions, calls, statements, declarations |
+| `compiler/checker/` | Checker: names, types, resolution, inference, expressions, access, calls, methods, statements, flow, declarations |
+| `compiler/analyser/` | Analyser stage |
+| `compiler/generator/` | Generator: support, types, expressions, statements, print, and runtime emitters |
+| `include/` | Public headers only |
+| `tests/` | Shared test support and data, plus one source per suite module |
 | `bin/` | Build output (git-ignored) |
 | `tmp/` | Scratch space for temporary scripts and probes (git-ignored) |
 
@@ -433,16 +442,16 @@ never pointers.
 |---|---|
 | `compiler/main.c` | Command-line driver: read, compile, write, invoke `cc` |
 | `compiler/compiler.c` | `compiler_compile`: drives the stages, owns the result |
-| `compiler/lexer.c` | Source text to tokens or lexer errors |
-| `compiler/parser.c` | Tokens to flattened `Ast` |
-| `compiler/checker.c` | `Ast` to `TypedProgram` |
-| `compiler/analyser.c` | Validates `TypedProgram` links |
-| `compiler/generator.c` | `TypedProgram` to C11 text |
 | `compiler/ast.c` | `Ast` lifecycle and symbol interning |
 | `compiler/typed_program.c` | `TypedProgram` lifecycle and symbol copying |
 | `compiler/list.c` | The owning list container |
 | `compiler/error.c` | Fixed-buffer diagnostic accumulation |
 | `compiler/alloc.c` | Checked allocation wrappers with a test-failure hook |
+
+Each stage directory has one entry-point translation unit (`lexer.c`,
+`parser.c`, `checker.c`, `analyser.c`, `generator.c`) plus its private modules.
+Anything shared between those modules is declared in the directory's
+`*_internal.h`; it is compiler-internal and is not part of the public API.
 
 ## Known gaps
 

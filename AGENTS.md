@@ -158,8 +158,11 @@ personal preference.
 - **Braces:** opening brace on its own line for function definitions, on the
   same line for `if`/`for`/`while`/`switch`. `case` labels sit at the
   `switch`'s indentation level.
-- **Headers:** guarded as `NIPPY_<FILE>_H`. Every new module gets a header in
-  `include/` and an entry in the Makefile's `COMPILER_SOURCES`.
+- **Headers:** guarded as `NIPPY_<FILE>_H`. Public modules get a header in
+  `include/` and a `COMPILER_SOURCES` entry. Internal helpers shared by several
+  modules in one stage get a private `compiler/<stage>/<stage>_internal.h`;
+  they are not part of the public API. Every new `.c` file needs a
+  `COMPILER_SOURCES` entry.
 - **Naming:** functions `module_verb` (`lexer_tokenize`), types `PascalCase`
   with a module prefix (`AstNode`), enum constants and macros
   `SCREAMING_SNAKE_CASE`, struct fields `snake_case`.

@@ -15,6 +15,9 @@ Everything here is C11 and depends only on libc.
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
 | `source_pos.h` | `SourcePos`: byte offset plus 1-based line and column |
 | `identifier.h` | `NIPPY_IDENTIFIER_MAX`, the shared name limit, and `NIPPY_GENERATED_PREFIX`, the reserved emitted-name prefix |
+
+Internal headers under `compiler/<stage>/` are implementation details and are
+not part of this API.
 | `operator.h` | `NippyOperator`, shared by syntax and typed nodes |
 | `list.h` | `List`, the owning dynamic array |
 

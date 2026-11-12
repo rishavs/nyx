@@ -15,9 +15,18 @@ typedef struct {
     TestResult (*run)(void);
 } TestCase;
 
+typedef struct {
+    const char *name;
+    const TestCase *tests;
+    size_t count;
+} TestSuite;
+
 /* Run every case in `tests`, print one line per case and a summary, and return
    0 when nothing failed or errored. */
 int test_run_suite(const char *suite, const TestCase *tests, size_t count);
+
+/* Run several test tables as one suite, with a single summary. */
+int test_run_suites(const char *suite, const TestSuite *suites, size_t count);
 
 /* Render a MESSAGE_* format with its arguments into `buffer`. */
 void expect_message(char *buffer, size_t size, const char *format, ...);
