@@ -2125,6 +2125,67 @@ TestResult test_runtime_if_match_expressions(void)
     return run_generated(source, "10 1 5 8\n", "if/match expressions");
 }
 
+
+TestResult test_runtime_const(void)
+{
+    const char *source =
+        "const x: Int32 = 3\n"
+        "const y = 4\n"
+        "print(x + y)\n"
+        "fun f(): Int32\n"
+        "  const z: Int32 = 5\n"
+        "  return z\n"
+        "end\n"
+        "print(f())\n"
+        "global arena: Store = Store(64)\n"
+        "const xs: List<Int32> = arena.list<Int32>(2)\n"
+        "xs.push(1)\n"
+        "print(xs.len())\n";
+    return run_generated(source, "7\n5\n1\n", "const bindings");
+}
+
+
+TestResult test_runtime_operators(void)
+{
+    const char *source =
+        "print(7 - 2, 3 * 4, 8 / 3, 8 % 3, -5, ~1)\n"
+        "print(1 << 4, 16 >> 2, 6 & 3, 6 | 3, 6 ^ 3)\n"
+        "print(!true, true && false, true || false)\n";
+    return run_generated(source, "5 12 2 2 -5 -2\n16 4 2 7 5\nfalse false true\n",
+                         "operators");
+}
+
+TestResult test_runtime_exhaustive_match(void)
+{
+    const char *source =
+        "type V = Int32 | Bool | Nil\n"
+        "var x: V = true\n"
+        "match typeof x with Int32 then\n"
+        "  print(\"int\")\n"
+        "with Bool then\n"
+        "  print(\"bool\")\n"
+        "with Nil then\n"
+        "  print(\"nil\")\n"
+        "end\n"
+        "var b: Bool = false\n"
+        "match b with true then\n"
+        "  print(\"yes\")\n"
+        "with false then\n"
+        "  print(\"no\")\n"
+        "end\n";
+    return run_generated(source, "bool\nno\n", "exhaustive match");
+}
+
+
+TestResult test_runtime_divide_by_zero(void)
+{
+    const char *source =
+        "var z: Int32 = 0\n"
+        "print(1 / z)\n";
+    return run_generated_failure(source, "division by zero",
+                                 "runtime division by zero");
+}
+
 /* Every test in this suite, in run order. The table lives here so adding
    a test needs only its definition above and one entry below. */
 static const TestCase tests[] = {
@@ -2178,6 +2239,10 @@ static const TestCase tests[] = {
     {"runtime: typeof match", test_runtime_typeof_match},
     {"runtime: value match", test_runtime_value_match},
     {"runtime: if/match expressions", test_runtime_if_match_expressions},
+    {"runtime: const bindings", test_runtime_const},
+    {"runtime: operators", test_runtime_operators},
+    {"runtime: divide by zero", test_runtime_divide_by_zero},
+    {"runtime: exhaustive match", test_runtime_exhaustive_match},
     {"runtime: Record full", test_runtime_record_full},
     {"runtime: Table missing", test_runtime_table_missing},
     {"runtime: Table stale", test_runtime_table_stale},

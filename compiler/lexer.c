@@ -14,6 +14,9 @@ static TokenType keyword_type(const char *text, size_t length)
     if (length == 3 && memcmp(text, "var", 3) == 0) {
         return TOKEN_KEYWORD_VAR;
     }
+    if (length == 5 && memcmp(text, "const", 5) == 0) {
+        return TOKEN_KEYWORD_CONST;
+    }
     if (length == 4 && memcmp(text, "type", 4) == 0) {
         return TOKEN_KEYWORD_TYPE;
     }
@@ -414,6 +417,72 @@ LexerResult lexer_tokenize(const char *code)
             continue;
         }
 
+        if (current == '-') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_MINUS, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '*') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_STAR, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '/') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_SLASH, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '%') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_PERCENT, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '~') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_TILDE, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '^') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_CARET, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
         if (current == '<') {
             SourcePos start = {cursor, line, column};
             bool with_equals = code[cursor + 1] == '=';
@@ -470,6 +539,17 @@ LexerResult lexer_tokenize(const char *code)
                 goto failed;
             }
             advance(code, &cursor, &line, &column);
+            advance(code, &cursor, &line, &column);
+            continue;
+        }
+
+        if (current == '&') {
+            SourcePos start = {cursor, line, column};
+
+            if (!push_token(&result.tokens, TOKEN_AMP, start)) {
+                result.out_of_memory = true;
+                goto failed;
+            }
             advance(code, &cursor, &line, &column);
             continue;
         }

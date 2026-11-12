@@ -252,7 +252,8 @@ holds the optional second binding.
 argument in `right_child`, its method name in `name_index`, and its positional
 arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
 expression in `left_child`; the checker accepts it only for call expressions.
-`AST_DECLARATION` sets `is_global` for a `global` declaration. `AST_ASSIGNMENT`
+`AST_DECLARATION` sets `is_global` for a `global` declaration and `is_const`
+for a `const` declaration. `AST_ASSIGNMENT`
 stores the target name in `name_index` and the value in `left_child`. `AST_STRING_LITERAL` stores an offset and byte length into `Ast.bytes`;
 `AST_TYPE_FIXED_STRING` stores its capacity in `integer_value`.
 `AST_TYPE_LIST` has its element type in `left_child`; `AST_TYPE_FIXED_LIST`

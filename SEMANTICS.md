@@ -13,7 +13,8 @@ A program is a sequence of items, read in source order:
 
 - a struct type declaration, `type Name ... end`;
 - a type alias, `type Name = Type`;
-- a value declaration, `var name [: Type] = expression`;
+- a value declaration, `var name [: Type] = expression` or
+  `const name [: Type] = expression`;
 - a global store declaration, `global name: Store = Store(bytes)`;
 - a function declaration, `fun name(parameters): Type ... end`;
 - an expression statement, which must be a call, such as `points.reset()`.
@@ -170,11 +171,23 @@ Operator precedence, tightest first:
 | Level | Operators | Operand types | Result |
 |---|---|---|---|
 | unary | `!` | `Bool` | `Bool` |
-| additive | `+` | `Int32`, `Int32` | `Int32` |
+| unary | `-`, `~` | `Int32` | `Int32` |
+| multiplicative | `*`, `/`, `%` | `Int32`, `Int32` | `Int32` |
+| additive | `+`, `-` | `Int32`, `Int32` | `Int32` |
+| shift | `<<`, `>>` | `Int32`, `Int32` | `Int32` |
 | relational | `<`, `<=`, `>`, `>=` | `Int32`, `Int32` | `Bool` |
 | equality | `==`, `!=` | same type: `Int32`, `Bool`, `Byte`, `Text`, or `String<N>` | `Bool` |
+| bitwise and | `&` | `Int32`, `Int32` | `Int32` |
+| bitwise xor | `^` | `Int32`, `Int32` | `Int32` |
+| bitwise or | `\|` | `Int32`, `Int32` | `Int32` |
 | logical and | `&&` | `Bool`, `Bool` | `Bool` |
 | logical or | `\|\|` | `Bool`, `Bool` | `Bool` |
+
+Integer arithmetic wraps on `+`, `-`, `*`, and unary `-`. Division and modulo
+by a literal `0` is a compile-time error. A non-literal divisor is checked at
+runtime and traps if it is zero. `INT32_MIN / -1` is a runtime error and
+`INT32_MIN % -1` is `0`. `<<` and `>>` mask the shift count to 31.
+All arithmetic is `Int32` only. `&`, `|`, `^`, and `~` are bitwise `Int32`.
 
 All binary operators are left-associative. `&&` and `||` short-circuit in
 generated C. Addition wraps: generated C performs the addition in unsigned
@@ -299,8 +312,18 @@ Expression form:
 var z: Int32 = match typeof x with Int32 then 1 with Bool then 2 else 0 end
 ```
 
-All expression arms must have the same type. `else` is required until
-exhaustiveness checking exists.
+All expression arms must have the same type. `else` is required.
+
+### Exhaustiveness
+
+A statement match with no `else` is accepted only when it is exhaustive:
+
+- a type match over a union must cover every alternative;
+- a value match over `Bool` must cover `true` and `false`;
+- a value match over `Nil` needs `Nil`;
+- every other match needs `else`.
+
+Duplicate type patterns are rejected. Expression matches still require `else`.
 
 ### `if` expression
 
@@ -309,7 +332,7 @@ var z: Int32 = if typeof x is Int32 then 1 else 0 end
 ```
 
 Each branch is one expression, all branches must have the same type, and `else`
-is required until exhaustiveness checking exists.
+is required.
 
 ### Value checks
 
@@ -374,9 +397,23 @@ type:
 There is no other implicit conversion. `var x: SomeStruct = 13` is an error, and
 so is `var x: Int32 = Point(1, 2)`.
 
-A declaration is initialised at its declaration point. Variables are mutable;
-see [Assignment](#assignment). There is no
-uninitialised variable and no default-initialisation. A program-level variable
+A declaration is initialised at its declaration point. `var` bindings are
+mutable; `const` bindings cannot be reassigned. There is no uninitialised
+variable and no default-initialisation.
+
+`const` is binding immutability, not deep immutability:
+
+```nippy
+const Max: Int32 = 10
+Max = 20              // rejected
+
+const xs: List<Int32> = arena.list<Int32>(2)
+xs.push(1)            // allowed: xs is not reassigned
+```
+
+Const declarations use the same type inference and scope rules as `var`.
+Program-level consts are not visible inside functions unless passed as
+arguments. `Store` still uses `global`, not `const`. A program-level variable
 may refer to variables and functions declared before it.
 
 Program-level variables are local to the generated `main` (or to

@@ -177,6 +177,8 @@ Reads the syntax tree through a `const` pointer and writes a separate
   `break`/`continue` outside a loop;
 - proves that every function returns on every path, using the structured
   statement tree (a `while` or `for` never guarantees a return);
+- tracks `const` bindings and rejects assignment to them; `const` does not
+  restrict mutation through collection values;
 - checks assignment targets and types, and deactivates any active narrowing
   of the target after the right-hand side has been checked;
 - infers a variable's type from its initializer when the annotation is omitted,

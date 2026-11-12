@@ -716,6 +716,8 @@ static bool argument_looks_like_expression(const Token *token)
             token->type == TOKEN_KEYWORD_FALSE ||
             token->type == TOKEN_KEYWORD_NIL ||
             token->type == TOKEN_BANG ||
+            token->type == TOKEN_MINUS ||
+            token->type == TOKEN_TILDE ||
             token->type == TOKEN_LPAREN ||
             token->type == TOKEN_LBRACKET ||
             token->type == TOKEN_LBRACE);
@@ -1058,10 +1060,9 @@ static bool parse_match(const TokenList *tokens, const List *string_bytes,
     bool type_match = false;
     size_t head;
     size_t else_body = AST_NO_NODE;
-    List conditions;
-    List bodies;
-    size_t i;
-    bool ok = false;
+    List children;
+    size_t children_start;
+    AstNode node = {0};
 
     (*cursor)++; /* past match */
     if (token_at(tokens, *cursor) != NULL &&
@@ -1084,60 +1085,47 @@ static bool parse_match(const TokenList *tokens, const List *string_bytes,
         return false;
     }
     (*cursor)++;
-    list_init(&conditions, sizeof(size_t));
-    list_init(&bodies, sizeof(size_t));
+    list_init(&children, sizeof(size_t));
     for (;;) {
         size_t pattern;
-        size_t condition;
         size_t body;
-        AstNode test = {0};
+        const Token *token;
 
         if (type_match) {
             if (!parse_type(tokens, string_bytes, ast, cursor, &pattern,
                             errors)) {
-                goto done;
+                list_free(&children);
+                return false;
             }
-            test.kind = AST_IS;
-            test.pos = position_at(tokens, *cursor);
-            test.left_child = head;
-            test.right_child = pattern;
-        } else {
-            if (!parse_expression(tokens, string_bytes, ast, cursor,
-                                  &pattern, errors)) {
-                goto done;
-            }
-            test.kind = AST_BINARY;
-            test.pos = position_at(tokens, *cursor);
-            test.op = NIPPY_OPERATOR_EQ;
-            test.left_child = head;
-            test.right_child = pattern;
+        } else if (!parse_expression(tokens, string_bytes, ast, cursor,
+                                     &pattern, errors)) {
+            list_free(&children);
+            return false;
         }
-        test.name_index = AST_NO_NODE;
-        test.children_start = 0;
-        test.children_count = 0;
-        if (!push_node(ast, &test, &condition)) {
-            goto done;
-        }
-        if (token_at(tokens, *cursor) == NULL ||
-            token_at(tokens, *cursor)->type != TOKEN_KEYWORD_THEN) {
+        token = token_at(tokens, *cursor);
+        if (token == NULL || token->type != TOKEN_KEYWORD_THEN) {
             error_report_at(errors, position_at(tokens, *cursor),
                             MESSAGE_PARSER_EXPECTED_THEN);
-            goto done;
+            list_free(&children);
+            return false;
         }
         (*cursor)++;
         if (expression_form) {
             if (!parse_expression(tokens, string_bytes, ast, cursor, &body,
                                   errors)) {
-                goto done;
+                list_free(&children);
+                return false;
             }
         } else if (!parse_block(tokens, string_bytes, ast, cursor, &body,
                                 errors)) {
-            goto done;
+            list_free(&children);
+            return false;
         }
-        if (!list_push(&conditions, &condition) ||
-            !list_push(&bodies, &body)) {
+        if (!list_push(&children, &pattern) ||
+            !list_push(&children, &body)) {
+            list_free(&children);
             error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-            goto done;
+            return false;
         }
         if (token_at(tokens, *cursor) != NULL &&
             token_at(tokens, *cursor)->type == TOKEN_KEYWORD_WITH) {
@@ -1152,96 +1140,48 @@ static bool parse_match(const TokenList *tokens, const List *string_bytes,
         if (expression_form) {
             if (!parse_expression(tokens, string_bytes, ast, cursor,
                                   &else_body, errors)) {
-                goto done;
+                list_free(&children);
+                return false;
             }
         } else if (!parse_block(tokens, string_bytes, ast, cursor, &else_body,
                                 errors)) {
-            goto done;
+            list_free(&children);
+            return false;
         }
     } else if (expression_form) {
         error_report_at(errors, position_at(tokens, *cursor),
                         MESSAGE_PARSER_EXPECTED_ELSE);
-        goto done;
+        list_free(&children);
+        return false;
     }
     if (token_at(tokens, *cursor) == NULL ||
         token_at(tokens, *cursor)->type != TOKEN_KEYWORD_END) {
         error_report_at(errors, position_at(tokens, *cursor),
                         MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
-        goto done;
+        list_free(&children);
+        return false;
     }
     (*cursor)++;
-    for (i = bodies.length; i > 0; i--) {
-        AstNode node = {0};
-        size_t condition = *(const size_t *)list_get(&conditions, i - 1);
-        size_t body = *(const size_t *)list_get(&bodies, i - 1);
+    children_start = ast->children.length;
+    for (size_t i = 0; i < children.length; i++) {
+        size_t child = *(const size_t *)list_get(&children, i);
 
-        if (expression_form) {
-            size_t children_start = ast->children.length;
-
-            if (!ast_push_child(ast, else_body)) {
-                error_report(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                goto done;
-            }
-            node.kind = AST_IF_EXPRESSION;
-            node.left_child = condition;
-            node.right_child = body;
-            node.children_start = children_start;
-            node.children_count = 1;
-        } else {
-            size_t children_start;
-            size_t else_child = else_body;
-
-            if (else_body != AST_NO_NODE) {
-                const AstNode *existing = ast_get_node(ast, else_body);
-
-                if (existing != NULL && existing->kind != AST_BLOCK) {
-                    AstNode wrapper = {0};
-                    size_t wrapper_start = ast->children.length;
-
-                    wrapper.kind = AST_BLOCK;
-                    wrapper.pos = pos;
-                    wrapper.name_index = AST_NO_NODE;
-                    wrapper.left_child = AST_NO_NODE;
-                    wrapper.right_child = AST_NO_NODE;
-                    wrapper.children_start = wrapper_start;
-                    wrapper.children_count = 1;
-                    if (!ast_push_child(ast, else_body) ||
-                        !push_node(ast, &wrapper, &else_child)) {
-                        error_report(
-                            errors,
-                            MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                        goto done;
-                    }
-                }
-            }
-            children_start = ast->children.length;
-            if (!ast_push_child(ast, body) ||
-                (else_child != AST_NO_NODE &&
-                 !ast_push_child(ast, else_child))) {
-                error_report(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                goto done;
-            }
-            node.kind = AST_IF;
-            node.left_child = condition;
-            node.right_child = AST_NO_NODE;
-            node.children_start = children_start;
-            node.children_count = else_child == AST_NO_NODE ? 1 : 2;
-        }
-        node.pos = pos;
-        node.name_index = AST_NO_NODE;
-        if (!push_node(ast, &node, &else_body)) {
-            goto done;
+        if (!ast_push_child(ast, child)) {
+            list_free(&children);
+            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            return false;
         }
     }
-    *out_index = else_body;
-    ok = true;
-
-done:
-    list_free(&conditions);
-    list_free(&bodies);
-    return ok;
+    list_free(&children);
+    node.kind = expression_form ? AST_MATCH_EXPRESSION : AST_MATCH;
+    node.pos = pos;
+    node.integer_value = type_match ? 1 : 0;
+    node.name_index = AST_NO_NODE;
+    node.left_child = head;
+    node.right_child = else_body;
+    node.children_start = children_start;
+    node.children_count = ast->children.length - children_start;
+    return push_node(ast, &node, out_index);
 }
 
 static bool parse_if_expression(const TokenList *tokens,
@@ -1805,14 +1745,19 @@ static bool parse_unary(
     AstNode node = {0};
     size_t operand;
 
-    if (token != NULL && token->type == TOKEN_BANG) {
+    if (token != NULL && (token->type == TOKEN_BANG ||
+                          token->type == TOKEN_MINUS ||
+                          token->type == TOKEN_TILDE)) {
         (*cursor)++;
         if (!parse_unary(tokens, string_bytes, ast, cursor, &operand, errors)) {
             return false;
         }
         node.kind = AST_UNARY;
         node.pos = token->pos;
-        node.op = NIPPY_OPERATOR_NOT;
+        node.op = token->type == TOKEN_BANG
+                      ? NIPPY_OPERATOR_NOT
+                      : (token->type == TOKEN_MINUS ? NIPPY_OPERATOR_NEG
+                                                    : NIPPY_OPERATOR_BIT_NOT);
         node.name_index = AST_NO_NODE;
         node.left_child = operand;
         node.right_child = AST_NO_NODE;
@@ -1820,15 +1765,6 @@ static bool parse_unary(
     }
     return parse_postfix(tokens, string_bytes, ast, cursor, out_index, errors);
 }
-
-static bool parse_additive(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
-);
-static bool parse_unary(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
-);
 
 typedef bool (*ParseLevel)(const TokenList *tokens,
                            const List *string_bytes, Ast *ast,
@@ -1850,7 +1786,6 @@ static bool parse_binary_level(ParseLevel next, const BinaryOperator *operators,
     if (!next(tokens, string_bytes, ast, cursor, &left, errors)) {
         return false;
     }
-
     for (;;) {
         const Token *token = token_at(tokens, *cursor);
         const BinaryOperator *matched = NULL;
@@ -1880,12 +1815,87 @@ static bool parse_binary_level(ParseLevel next, const BinaryOperator *operators,
         node.name_index = AST_NO_NODE;
         node.left_child = left;
         node.right_child = right;
+        node.children_start = 0;
+        node.children_count = 0;
         if (!push_node(ast, &node, &left)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
     }
+    *out_index = left;
+    return true;
+}
 
+static bool parse_multiplicative(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    static const BinaryOperator operators[] = {
+        {TOKEN_STAR, NIPPY_OPERATOR_MUL},
+        {TOKEN_SLASH, NIPPY_OPERATOR_DIV},
+        {TOKEN_PERCENT, NIPPY_OPERATOR_MOD}
+    };
+
+    return parse_binary_level(parse_unary, operators,
+                              sizeof(operators) / sizeof(operators[0]), tokens,
+                              string_bytes, ast, cursor, out_index, errors);
+}
+
+static bool parse_additive(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    static const BinaryOperator operators[] = {
+        {TOKEN_PLUS, NIPPY_OPERATOR_ADD},
+        {TOKEN_MINUS, NIPPY_OPERATOR_SUB}
+    };
+
+    return parse_binary_level(parse_multiplicative, operators,
+                              sizeof(operators) / sizeof(operators[0]), tokens,
+                              string_bytes, ast, cursor, out_index, errors);
+}
+
+static bool parse_shift(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    size_t left;
+
+    if (!parse_additive(tokens, string_bytes, ast, cursor, &left, errors)) {
+        return false;
+    }
+    for (;;) {
+        const Token *token = token_at(tokens, *cursor);
+        const Token *next = token_at(tokens, *cursor + 1);
+        NippyOperator op;
+        size_t right;
+        AstNode node = {0};
+
+        if (token == NULL || next == NULL ||
+            (token->type != TOKEN_LT && token->type != TOKEN_GT) ||
+            next->type != token->type) {
+            break;
+        }
+        op = token->type == TOKEN_LT ? NIPPY_OPERATOR_SHL
+                                     : NIPPY_OPERATOR_SHR;
+        *cursor += 2;
+        if (!parse_additive(tokens, string_bytes, ast, cursor, &right, errors)) {
+            return false;
+        }
+        node.kind = AST_BINARY;
+        node.pos = token->pos;
+        node.op = op;
+        node.name_index = AST_NO_NODE;
+        node.left_child = left;
+        node.right_child = right;
+        node.children_start = 0;
+        node.children_count = 0;
+        if (!push_node(ast, &node, &left)) {
+            return false;
+        }
+    }
     *out_index = left;
     return true;
 }
@@ -1902,21 +1912,7 @@ static bool parse_relational(
         {TOKEN_GE, NIPPY_OPERATOR_GE}
     };
 
-    return parse_binary_level(parse_additive, operators,
-                              sizeof(operators) / sizeof(operators[0]), tokens,
-                              string_bytes, ast, cursor, out_index, errors);
-}
-
-static bool parse_additive(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
-)
-{
-    static const BinaryOperator operators[] = {
-        {TOKEN_PLUS, NIPPY_OPERATOR_ADD}
-    };
-
-    return parse_binary_level(parse_unary, operators,
+    return parse_binary_level(parse_shift, operators,
                               sizeof(operators) / sizeof(operators[0]), tokens,
                               string_bytes, ast, cursor, out_index, errors);
 }
@@ -1936,6 +1932,48 @@ static bool parse_equality(
                               string_bytes, ast, cursor, out_index, errors);
 }
 
+static bool parse_bit_and(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    static const BinaryOperator operators[] = {
+        {TOKEN_AMP, NIPPY_OPERATOR_BIT_AND}
+    };
+
+    return parse_binary_level(parse_equality, operators,
+                              sizeof(operators) / sizeof(operators[0]), tokens,
+                              string_bytes, ast, cursor, out_index, errors);
+}
+
+static bool parse_bit_xor(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    static const BinaryOperator operators[] = {
+        {TOKEN_CARET, NIPPY_OPERATOR_BIT_XOR}
+    };
+
+    return parse_binary_level(parse_bit_and, operators,
+                              sizeof(operators) / sizeof(operators[0]), tokens,
+                              string_bytes, ast, cursor, out_index, errors);
+}
+
+static bool parse_bit_or(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    static const BinaryOperator operators[] = {
+        {TOKEN_PIPE, NIPPY_OPERATOR_BIT_OR}
+    };
+
+    return parse_binary_level(parse_bit_xor, operators,
+                              sizeof(operators) / sizeof(operators[0]), tokens,
+                              string_bytes, ast, cursor, out_index, errors);
+}
+
 static bool parse_logical_and(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
@@ -1945,7 +1983,7 @@ static bool parse_logical_and(
         {TOKEN_ANDAND, NIPPY_OPERATOR_AND}
     };
 
-    return parse_binary_level(parse_equality, operators,
+    return parse_binary_level(parse_bit_or, operators,
                               sizeof(operators) / sizeof(operators[0]), tokens,
                               string_bytes, ast, cursor, out_index, errors);
 }
@@ -2516,8 +2554,8 @@ static bool parse_expression_statement(
 
 static bool parse_var_declaration(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    SourcePos declaration_pos, bool is_global, bool as_statement,
-    size_t *out_index, ErrorState *errors);
+    SourcePos declaration_pos, bool is_global, bool is_const,
+    bool as_statement, size_t *out_index, ErrorState *errors);
 
 static bool parse_statement(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
@@ -2533,11 +2571,14 @@ static bool parse_statement(
         return false;
     }
 
-    if (token->type == TOKEN_KEYWORD_VAR) {
+    if (token->type == TOKEN_KEYWORD_VAR ||
+        token->type == TOKEN_KEYWORD_CONST) {
+        bool is_const = token->type == TOKEN_KEYWORD_CONST;
+
         (*cursor)++;
         return parse_var_declaration(tokens, string_bytes, ast, cursor,
-                                     token->pos, false, true, out_index,
-                                     errors);
+                                     token->pos, false, is_const, true,
+                                     out_index, errors);
     }
 
     if (token->type == TOKEN_KEYWORD_RETURN) {
@@ -2610,8 +2651,8 @@ static bool parse_statement(
    checker. */
 static bool parse_var_declaration(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    SourcePos declaration_pos, bool is_global, bool as_statement,
-    size_t *out_index, ErrorState *errors
+    SourcePos declaration_pos, bool is_global, bool is_const,
+    bool as_statement, size_t *out_index, ErrorState *errors
 )
 {
     const Token *token;
@@ -2664,6 +2705,7 @@ static bool parse_var_declaration(
     declaration.left_child = initialiser_index;
     declaration.right_child = type_index;
     declaration.is_global = is_global;
+    declaration.is_const = is_const;
     if (as_statement) {
         return push_node(ast, &declaration, out_index);
     }
@@ -3021,18 +3063,21 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
     while (token != NULL && token->type != TOKEN_EOF) {
         SourcePos declaration_pos = token->pos;
 
-        if (token->type == TOKEN_KEYWORD_VAR) {
+        if (token->type == TOKEN_KEYWORD_VAR ||
+            token->type == TOKEN_KEYWORD_CONST) {
+            bool is_const = token->type == TOKEN_KEYWORD_CONST;
+
             cursor++;
             if (!parse_var_declaration(tokens, string_bytes, ast, &cursor,
-                                       declaration_pos, false, false, NULL,
-                                       errors)) {
+                                       declaration_pos, false, is_const, false,
+                                       NULL, errors)) {
                 return false;
             }
         } else if (token->type == TOKEN_KEYWORD_GLOBAL) {
             cursor++;
             if (!parse_var_declaration(tokens, string_bytes, ast, &cursor,
-                                       declaration_pos, true, false, NULL,
-                                       errors)) {
+                                       declaration_pos, true, false, false,
+                                       NULL, errors)) {
                 return false;
             }
         } else if (token->type == TOKEN_KEYWORD_TYPE) {

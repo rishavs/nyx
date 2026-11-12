@@ -42,11 +42,13 @@ field              = identifier, ":", type ;
 
 (* ---- values ---- *)
 
-value-declaration  = "var", identifier, [ ":", type ], "=", expression ;
+value-declaration  = ( "var" | "const" ), identifier,
+                     [ ":", type ], "=", expression ;
 
 (* The same form is a statement inside a function or block. Store declarations
    remain program-level only. *)
-local-declaration  = "var", identifier, [ ":", type ], "=", expression ;
+local-declaration  = ( "var" | "const" ), identifier,
+                     [ ":", type ], "=", expression ;
 
 (* The checker requires a global declaration's type to be Store. The legacy
    "var name: Store = Store(bytes)" spelling is still accepted. *)
@@ -142,31 +144,27 @@ type-name          = identifier ;
 
 (* ---- expressions ---- *)
 
-(* Precedence, tightest first: is, unary, additive, relational, equality, &&,
-   ||. *)
+(* Precedence, tightest first: unary, multiplicative, additive, shift,
+   relational, equality, bitwise, &&, ||. *)
 expression         = logical-or ;
 
 logical-or         = logical-and, { "||", logical-and } ;
-
-logical-and        = equality, { "&&", equality } ;
-
+logical-and        = bit-or, { "&&", bit-or } ;
+bit-or             = bit-xor, { "|", bit-xor } ;
+bit-xor            = bit-and, { "^", bit-and } ;
+bit-and            = equality, { "&", equality } ;
 equality           = relational, { ( "==" | "!=" ), relational } ;
-
-relational         = additive, { ( "<" | "<=" | ">" | ">=" ), additive } ;
-
-additive           = unary, { "+", unary } ;
-
-unary              = "!", unary
-                   | postfix ;
-
-(* Member operations are methods and fields. Type tests are `typeof x is T`. *)
-postfix            = primary, { "[", expression, "]" | ".",
-                                 ( member-operation | field-name ) } ;
+relational         = shift, { ( "<" | "<=" | ">" | ">=" ), shift } ;
+shift              = additive, { ( "<<" | ">>" ), additive } ;
+additive           = multiplicative, { ( "+" | "-" ), multiplicative } ;
+multiplicative     = unary, { ( "*" | "/" | "%" ), unary } ;
+unary              = ( "!" | "-" | "~" ), unary | postfix ;
+postfix            = primary, { ( "[", expression, "]" )
+                                | ( ".", ( member-operation | field-name ) ) } ;
 
 field-name         = identifier ;
 
-member-operation   = "is", "<", type, ">", "(", ")"
-                   | identifier, [ "<", type, ">" ],
+member-operation   = identifier, [ "<", type, ">" ],
                      "(", [ expression, { ",", expression } ], ")" ;
 
 primary            = typeof-test
@@ -244,7 +242,8 @@ nil-literal        = "nil" ;
 
 identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
                      (* at most 31 characters. "var", "type", "fun", "return",
-                        "if", "then", "elseif", "else", "while", "for", "in",
+                        "if", "then", "elseif", "else", "while", "for",
+                        "const", "in",
                         "do", "break", "continue", "true", "false", "nil", and
                         "end" are
                         keywords and are not identifiers. Longer names are a
@@ -259,6 +258,7 @@ digit              = "0" | ... | "9" ;
 (* Keywords *)
 global             = "global" ;
 var                = "var" ;
+const              = "const" ;
 type               = "type" ;
 fun                = "fun" ;
 return             = "return" ;

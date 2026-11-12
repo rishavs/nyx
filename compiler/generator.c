@@ -570,6 +570,28 @@ static const char *binary_operator_text(NippyOperator op)
         return ">";
     case NIPPY_OPERATOR_GE:
         return ">=";
+    case NIPPY_OPERATOR_SUB:
+        return "-";
+    case NIPPY_OPERATOR_MUL:
+        return "*";
+    case NIPPY_OPERATOR_DIV:
+        return "/";
+    case NIPPY_OPERATOR_MOD:
+        return "%";
+    case NIPPY_OPERATOR_BIT_AND:
+        return "&";
+    case NIPPY_OPERATOR_BIT_OR:
+        return "|";
+    case NIPPY_OPERATOR_BIT_XOR:
+        return "^";
+    case NIPPY_OPERATOR_SHL:
+        return "<<";
+    case NIPPY_OPERATOR_SHR:
+        return ">>";
+    case NIPPY_OPERATOR_NEG:
+        return "-";
+    case NIPPY_OPERATOR_BIT_NOT:
+        return "~";
     case NIPPY_OPERATOR_AND:
         return "&&";
     case NIPPY_OPERATOR_OR:
@@ -1730,6 +1752,48 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
                 return true;
             }
         }
+        if (node->op == NIPPY_OPERATOR_SUB ||
+            node->op == NIPPY_OPERATOR_MUL) {
+            const char *op = node->op == NIPPY_OPERATOR_SUB ? "-" : "*";
+
+            if (!buffer_append(buffer, "(int32_t)((uint32_t)(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_appendf(buffer, ") %s (uint32_t)(", op) ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, "))")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (node->op == NIPPY_OPERATOR_DIV ||
+            node->op == NIPPY_OPERATOR_MOD ||
+            node->op == NIPPY_OPERATOR_SHL ||
+            node->op == NIPPY_OPERATOR_SHR) {
+            const char *helper = node->op == NIPPY_OPERATOR_DIV
+                                     ? "nippy_div_i32"
+                                     : node->op == NIPPY_OPERATOR_MOD
+                                           ? "nippy_mod_i32"
+                                           : node->op == NIPPY_OPERATOR_SHL
+                                                 ? "nippy_shl_i32"
+                                                 : "nippy_shr_i32";
+
+            if (!buffer_appendf(buffer, "%s(", helper) ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, ", ") ||
+                !emit_expression(program, node->right_child, buffer, errors) ||
+                !buffer_append(buffer, ")")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
         if (node->op == NIPPY_OPERATOR_ADD) {
             if (!buffer_append(buffer, "(int32_t)((uint32_t)(") ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
@@ -1765,19 +1829,44 @@ static bool emit_expression(const TypedProgram *program, size_t node_index,
         }
     }
     if (node->kind == TYPED_UNARY) {
-        if (node->op != NIPPY_OPERATOR_NOT) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-            return false;
-        }
-        if (!buffer_append(buffer, "(!(") ||
-            !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        if (node->op == NIPPY_OPERATOR_NOT) {
+            if (!buffer_append(buffer, "(!(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "))")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
             }
-            return false;
+            return true;
         }
-        return true;
+        if (node->op == NIPPY_OPERATOR_NEG) {
+            if (!buffer_append(buffer, "(int32_t)(0u - (uint32_t)(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "))")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        if (node->op == NIPPY_OPERATOR_BIT_NOT) {
+            if (!buffer_append(buffer, "(~(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "))")) {
+                if (!errors->reported) {
+                    error_report(errors,
+                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
+        }
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+        return false;
     }
     if (node->kind == TYPED_STRUCT_CONSTRUCTOR) {
         if (!format_c_type(program, node->type_index, type_name,
@@ -4885,6 +4974,21 @@ static bool validate_store_declarations(const TypedProgram *program,
 }
 
 
+static bool program_uses_binary_operator(const TypedProgram *program,
+                                        NippyOperator op)
+{
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node != NULL && node->kind == TYPED_BINARY && node->op == op) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool program_uses_print(const TypedProgram *program)
 {
     size_t i;
@@ -5609,6 +5713,42 @@ static bool emit_record_runtime(const TypedProgram *program, size_t type_index,
     return true;
 }
 
+static bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
+{
+    if (!buffer_append(
+            source,
+            "static void nippy_arith_fail(const char *message)\n"
+            "{\n"
+            "    fprintf(stderr, \"%s\\n\", message);\n"
+            "    exit(1);\n"
+            "}\n\n"
+            "static NIPPY_UNUSED int32_t nippy_div_i32(int32_t a, int32_t b)\n"
+            "{\n"
+            "    if (b == 0) nippy_arith_fail(\"division by zero\");\n"
+            "    if (a == INT32_MIN && b == -1) "
+            "nippy_arith_fail(\"integer overflow\");\n"
+            "    return a / b;\n"
+            "}\n\n"
+            "static NIPPY_UNUSED int32_t nippy_mod_i32(int32_t a, int32_t b)\n"
+            "{\n"
+            "    if (b == 0) nippy_arith_fail(\"division by zero\");\n"
+            "    if (a == INT32_MIN && b == -1) return 0;\n"
+            "    return a % b;\n"
+            "}\n\n"
+            "static NIPPY_UNUSED int32_t nippy_shl_i32(int32_t a, int32_t b)\n"
+            "{\n"
+            "    return (int32_t)((uint32_t)a << ((uint32_t)b & 31u));\n"
+            "}\n\n"
+            "static NIPPY_UNUSED int32_t nippy_shr_i32(int32_t a, int32_t b)\n"
+            "{\n"
+            "    return (int32_t)((uint32_t)a >> ((uint32_t)b & 31u));\n"
+            "}\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
 static bool emit_map_runtime(const TypedProgram *program, size_t store_count,
                              TextBuffer *source, ErrorState *errors)
 {
@@ -5928,6 +6068,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool uses_print;
     bool uses_map;
     bool uses_table;
+    bool uses_arith_helpers;
     size_t store_count;
     size_t i;
     bool ok = false;
@@ -5960,6 +6101,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     uses_dynamic_list = program_uses_dynamic_list(program);
     uses_slice = program_uses_slice(program);
     uses_print = program_uses_print(program);
+    uses_arith_helpers =
+        program_uses_binary_operator(program, NIPPY_OPERATOR_DIV) ||
+        program_uses_binary_operator(program, NIPPY_OPERATOR_MOD) ||
+        program_uses_binary_operator(program, NIPPY_OPERATOR_SHL) ||
+        program_uses_binary_operator(program, NIPPY_OPERATOR_SHR);
     uses_map = false;
     uses_table = false;
     {
@@ -6086,7 +6232,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     if (store_count > 0 || program_uses_string(program) ||
         uses_dynamic_string || uses_list || uses_slice || uses_print ||
-        uses_map) {
+        uses_map || uses_arith_helpers) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
@@ -6099,7 +6245,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (uses_dynamic_string || uses_list || uses_slice) {
+    if (uses_dynamic_string || uses_list || uses_slice || uses_arith_helpers) {
         if (!buffer_append(&source,
                            "#if defined(__GNUC__) || defined(__clang__)\n"
                            "#define NIPPY_UNUSED __attribute__((unused))\n"
@@ -6109,6 +6255,10 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
+    }
+    if (uses_arith_helpers &&
+        !emit_arithmetic_runtime(&source, errors)) {
+        goto done;
     }
     if (store_count > 0 &&
         !emit_store_runtime(&source, store_count, uses_dynamic_string,

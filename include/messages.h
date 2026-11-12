@@ -41,7 +41,7 @@
 
 /* Parser */
 #define MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN \
-    "parser: expected 'global', 'var', 'type', or 'fun' to start a declaration"
+    "parser: expected 'global', 'var', 'const', 'type', or 'fun' to start a declaration"
 #define MESSAGE_PARSER_EXPECTED_VARIABLE_NAME \
     "parser: expected a variable name after 'var'"
 #define MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME \
@@ -220,6 +220,10 @@
     "checker: type '%s' cannot be used as a value"
 #define MESSAGE_CHECKER_ASSIGN_TARGET \
     "checker: '%s' is not an assignable variable"
+#define MESSAGE_CHECKER_CONST_ASSIGN \
+    "checker: cannot assign to const '%s'"
+#define MESSAGE_CHECKER_CONST_STORE \
+    "checker: Store declarations use global, not const"
 #define MESSAGE_CHECKER_ASSIGN_TYPE \
     "checker: cannot assign a value of the wrong type to '%s'"
 #define MESSAGE_CHECKER_NOT_CALLABLE \
@@ -234,8 +238,16 @@
     "checker: return expression of '%s' has the wrong type"
 #define MESSAGE_CHECKER_MISSING_RETURN \
     "checker: function '%s' has no return expression"
+#define MESSAGE_CHECKER_ZERO_DIVISOR \
+    "checker: '%s' by zero"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
+#define MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE \
+    "checker: match is not exhaustive and has no else arm"
+#define MESSAGE_CHECKER_MATCH_PATTERN \
+    "checker: match pattern does not fit the scrutinee"
+#define MESSAGE_CHECKER_MATCH_DUPLICATE \
+    "checker: duplicate match pattern"
 #define MESSAGE_CHECKER_IF_EXPR_MISMATCH \
     "checker: if expression branches must have the same type"
 #define MESSAGE_CHECKER_CONDITION_TYPE \

@@ -21,6 +21,8 @@ typedef enum {
     AST_RETURN,
     AST_IF,
     AST_IF_EXPRESSION,
+    AST_MATCH,
+    AST_MATCH_EXPRESSION,
     AST_WHILE,
     AST_FOR,
     AST_BREAK,
@@ -85,6 +87,8 @@ typedef struct {
     size_t type_parameters_count;
     /* AST_DECLARATION: declared with `global` rather than `var`. */
     bool is_global;
+    /* AST_DECLARATION: declared with `const` rather than `var`. */
+    bool is_const;
     /* AST_STRING_LITERAL points into Ast.bytes. */
     size_t string_offset;
     size_t string_length;

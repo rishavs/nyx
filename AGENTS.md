@@ -72,7 +72,7 @@ numbered rules are the concrete consequences.
 6. Compiles to C11. The generated C is internal IR: it is not required to be
    human-readable or formatted.
 7. Trivial import of C libraries and tools.
-8. Incremental compiler: only recompile the module that changed.
+8. Every issue that can be caught at compile time with small and local checks, must be caught at compile time.
 9. Fast compilation.
 10. Trivial concurrency and multithreading.
 11. Low ceremony: minimise boilerplate and syntactic noise.

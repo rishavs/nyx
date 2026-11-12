@@ -8921,6 +8921,97 @@ TestResult test_checker_match_expression_mismatch(void)
         MESSAGE_CHECKER_IF_EXPR_MISMATCH);
 }
 
+TestResult test_checker_const_assign(void)
+{
+    return compile_fails(
+        "const x: Int32 = 1\nx = 2\n",
+        "assign to const",
+        MESSAGE_CHECKER_CONST_ASSIGN, "x");
+}
+
+TestResult test_checker_local_const_assign(void)
+{
+    return compile_fails(
+        "fun f(): Nil\n  const x: Int32 = 1\n  x = 2\n  return nil\nend\n",
+        "assign to local const",
+        MESSAGE_CHECKER_CONST_ASSIGN, "x");
+}
+
+TestResult test_checker_const_store(void)
+{
+    return compile_fails(
+        "const s: Store = Store(16)\n",
+        "const Store",
+        MESSAGE_CHECKER_CONST_STORE);
+}
+
+TestResult test_checker_match_not_exhaustive(void)
+{
+    return compile_fails(
+        "type V = Int32 | Bool\n"
+        "var x: V = 1\n"
+        "match typeof x with Int32 then\n"
+        "  print(\"i\")\n"
+        "end\n",
+        "non-exhaustive type match",
+        MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE);
+}
+
+TestResult test_checker_bool_match_not_exhaustive(void)
+{
+    return compile_fails(
+        "var x: Bool = true\n"
+        "match x with true then\n"
+        "  print(\"t\")\n"
+        "end\n",
+        "non-exhaustive bool match",
+        MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE);
+}
+
+TestResult test_checker_match_duplicate(void)
+{
+    return compile_fails(
+        "type V = Int32 | Bool\n"
+        "var x: V = 1\n"
+        "match typeof x with Int32 then\n"
+        "  print(\"i\")\n"
+        "with Int32 then\n"
+        "  print(\"j\")\n"
+        "end\n",
+        "duplicate match pattern",
+        MESSAGE_CHECKER_MATCH_DUPLICATE);
+}
+
+TestResult test_checker_match_pattern(void)
+{
+    return compile_fails(
+        "type V = Int32 | Bool\n"
+        "var x: V = 1\n"
+        "match typeof x with String<8> then\n"
+        "  print(\"s\")\n"
+        "else\n"
+        "  print(\"o\")\n"
+        "end\n",
+        "match pattern does not fit",
+        MESSAGE_CHECKER_MATCH_PATTERN);
+}
+
+TestResult test_checker_literal_divide_zero(void)
+{
+    return compile_fails(
+        "var x: Int32 = 1 / 0\n",
+        "literal division by zero",
+        MESSAGE_CHECKER_ZERO_DIVISOR, "/");
+}
+
+TestResult test_checker_literal_modulo_zero(void)
+{
+    return compile_fails(
+        "var x: Int32 = 1 % 0\n",
+        "literal modulo by zero",
+        MESSAGE_CHECKER_ZERO_DIVISOR, "%");
+}
+
 static const TestCase tests[] = {
     {"var declaration of 13 generates the golden C", test_13_codegen},
     {"type declaration generates the golden C struct",
@@ -9123,6 +9214,15 @@ static const TestCase tests[] = {
     {"print as a value", test_checker_print_statement},
     {"print named argument", test_checker_print_named},
     {"print reserved", test_checker_print_reserved},
+    {"assign to const", test_checker_const_assign},
+    {"assign to local const", test_checker_local_const_assign},
+    {"const Store", test_checker_const_store},
+    {"non-exhaustive type match", test_checker_match_not_exhaustive},
+    {"non-exhaustive bool match", test_checker_bool_match_not_exhaustive},
+    {"duplicate match pattern", test_checker_match_duplicate},
+    {"match pattern does not fit", test_checker_match_pattern},
+    {"literal division by zero", test_checker_literal_divide_zero},
+    {"literal modulo by zero", test_checker_literal_modulo_zero},
     {"typeof missing is", test_parser_typeof_missing_is},
     {"match head expression", test_parser_match_head},
     {"match missing with", test_parser_match_with},

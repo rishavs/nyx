@@ -38,6 +38,26 @@ var p2: Point = Point(x = 3, y = 4)
 var p3 = Point(6, 7)
 ```
 
+`const` declares an immutable binding:
+
+```nippy
+const Max: Int32 = 10
+const local = "nyx"
+
+Max = 20   // rejected
+```
+
+A const binding cannot be reassigned. Values inside a mutable value can still
+change:
+
+```nippy
+const xs: List<Int32> = arena.list<Int32>(2)
+xs.push(1)   // allowed: the binding is unchanged
+```
+
+Program-level consts follow the same visibility rule as other program-level
+variables: they must be passed into functions explicitly.
+
 Struct values are built with `Name(...)`: arguments may be positional or named,
 but not mixed. Named arguments may appear in any order, and every field must be
 supplied. When a variable omits its type, the initialiser's type is used; either
@@ -78,7 +98,8 @@ var sum2 : Int32 = apply(add, 1, 2)
 ```
 
 Expressions are integer, boolean, and `nil` literals, names, calls, struct
-constructors, arithmetic (`+`), comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`),
+constructors, arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`), bitwise (`&`, `|`, `^`, `~`,
+`<<`, `>>`), comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`),
 logical operators (`!`, `&&`, `||`), `typeof x is T` tests, `if` expressions,
 `match` expressions, and grouped expressions.
 `Bool` is the built-in boolean type; `true` and `false` are its literals. `Nil`
@@ -271,6 +292,10 @@ end
 Inside the then-block, `x` is narrowed to `T`. The else-block and the code after
 the `if` keep the original union type. The old method form is gone.
 
+`match` must be exhaustive: a union type match must cover every alternative, a
+`Bool` value match must cover `true` and `false`, and every other form needs an
+`else` arm unless it is already exhaustive.
+
 `match` is a multi-arm form of the same tests:
 
 ```nippy
@@ -295,8 +320,8 @@ with false then
 end
 ```
 
-`if` and `match` also have expression forms. Every expression form needs an
-`else` until exhaustiveness checking exists:
+`if` and `match` also have expression forms. Every expression form currently
+needs an `else`:
 
 ```nippy
 var z: Int32 = if typeof x is Int32 then 1 else 0 end
