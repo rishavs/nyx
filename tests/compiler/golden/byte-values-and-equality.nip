@@ -1,0 +1,3 @@
+var b: Byte = 255
+var c: Byte | Nil = 7
+var ok: Bool = b == 255

@@ -1,0 +1,7 @@
+type Pair<A, B>
+  first: A
+  second: B
+end
+
+var a = Pair(1, true)
+var b = Pair(true, 1)

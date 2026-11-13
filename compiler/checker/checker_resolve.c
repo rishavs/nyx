@@ -260,8 +260,35 @@ bool resolve_type_name(CheckContext *ctx, const AstNode *node,
     if (env != NULL && env_lookup(env, name, out_index)) {
         return true;
     }
+    if (strcmp(name, "Int8") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_INT8, out_index);
+    }
+    if (strcmp(name, "Int16") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_INT16, out_index);
+    }
     if (strcmp(name, "Int32") == 0) {
         return builtin_type(ctx, NIPPY_TYPE_INT32, out_index);
+    }
+    if (strcmp(name, "Int64") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_INT64, out_index);
+    }
+    if (strcmp(name, "Uint8") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_BYTE, out_index);
+    }
+    if (strcmp(name, "Uint16") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_UINT16, out_index);
+    }
+    if (strcmp(name, "Uint32") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_UINT32, out_index);
+    }
+    if (strcmp(name, "Uint64") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_UINT64, out_index);
+    }
+    if (strcmp(name, "Float32") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_FLOAT32, out_index);
+    }
+    if (strcmp(name, "Float64") == 0) {
+        return builtin_type(ctx, NIPPY_TYPE_FLOAT64, out_index);
     }
     if (strcmp(name, "Bool") == 0) {
         return builtin_type(ctx, NIPPY_TYPE_BOOL, out_index);

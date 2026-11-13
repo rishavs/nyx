@@ -1,0 +1,13 @@
+type Point
+  x: Int32
+  y: Int32
+end
+
+fun pick(p: Point | Nil): Point
+  if typeof p is Point then
+    return p
+  end
+  return Point(0, 0)
+end
+
+var q: Point = pick(Point(1, 2))

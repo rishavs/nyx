@@ -1,0 +1,2 @@
+var s: Store = Store(1 + 2)
+var h: Handle<Int32> = s.alloc<Int32>(1)

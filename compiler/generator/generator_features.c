@@ -206,3 +206,27 @@ bool program_uses_recursion(const TypedProgram *program)
     }
     return false;
 }
+
+bool program_uses_numeric_conversion(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node != NULL && node->kind == TYPED_NUMERIC_CONVERSION) {
+            const TypedType *target = typed_program_type(program,
+                                                         node->type_index);
+            const TypedType *source = typed_program_type(
+                program, node->auxiliary_type);
+
+            /* A folded constant, or a conversion to the same type, emits no
+               helper call. */
+            if (target != NULL && source != NULL &&
+                target->kind != source->kind) {
+                return true;
+            }
+        }
+    }
+    return false;
+}

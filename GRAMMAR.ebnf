@@ -23,6 +23,7 @@ item               = declaration
                    | if-statement
                    | match-statement
                    | for-statement
+                   | while-statement
                    | assignment-statement
                    | expression-statement ;
 
@@ -100,7 +101,7 @@ if-statement       = "if", expression, "then", block,
                      { "elseif", expression, "then", block },
                      [ "else", block ], "end" ;
 
-while-statement    = "while", expression, block, "end" ;
+while-statement    = "while", expression, "do", block, "end" ;
 
 match-statement    = "match", [ "typeof" ], expression,
                      "with", pattern, "then", block,
@@ -136,7 +137,9 @@ function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")",
                      ":", type, ">" ;
 
 type-name          = identifier ;
-                     (* "Int32", "Bool", "Byte", "Nil", "Text",
+                     (* "Int8", "Int16", "Int32", "Int64", "Uint8",
+                        "Uint16", "Uint32", "Uint64", "Float32", "Float64",
+                        "Bool", "Byte" (alias for Uint8), "Nil", "Text",
                         "TextBuilder", "List", "Array", "Slice", "Record",
                         "Table", "String", "Store", "Handle", "Error", a
                         declared struct or alias, or a type parameter in scope.
@@ -180,6 +183,7 @@ primary            = typeof-test
                    | if-expression
                    | match-expression
                    | integer-literal
+                   | float-literal
                    | string-literal
                    | list-literal
                    | record-literal
@@ -210,6 +214,10 @@ record-literal     = "{", [ string-literal, ":", expression,
    either all positional or all named; mixing them is a parse error. *)
 call               = identifier, "(", [ argument-list ], ")" ;
 
+(* "print" and "base64" are builtins resolved by the checker and cannot be
+   redeclared. base64 takes exactly one string literal and yields a static
+   Text of the decoded bytes. *)
+
 typeof-test        = "typeof", expression, "is", type ;
 
 if-expression      = "if", expression, "then", expression,
@@ -232,9 +240,28 @@ named-argument     = identifier, "=", expression ;
 
 (* ---- terminals ---- *)
 
-integer-literal    = digit, { digit } ;
-                     (* decimal only; must fit in a signed 32-bit int, so a
-                        larger literal is a lexer error, not a wrap-around *)
+integer-literal    = decimal-digits
+                   | "0x", hex-digits
+                   | "0b", binary-digits
+                   | "0o", octal-digits ;
+                     (* may be up to 64 bits. The prefix is lowercase only, a
+                        leading zero alone is not octal (010 is ten), and the
+                        checker checks the value against the contextual
+                        integer type. A radix literal is an integer: it has no
+                        fraction or exponent. *)
+
+float-literal      = decimal-digits, ".", decimal-digits, [ exponent ]
+                   | decimal-digits, exponent ;
+exponent           = ( "e" | "E" ), [ "+" | "-" ], decimal-digits ;
+
+(* Digits of every literal may be grouped with single underscores, written only
+   between two digits: 1_000, 0xFF_FF, 1_000.000_1, 1e1_0. *)
+decimal-digits     = digit, { [ "_" ], digit } ;
+hex-digits         = hex-digit, { [ "_" ], hex-digit } ;
+binary-digits      = ( "0" | "1" ), { [ "_" ], ( "0" | "1" ) } ;
+octal-digits       = octal-digit, { [ "_" ], octal-digit } ;
+hex-digit          = digit | "a" | ... | "f" | "A" | ... | "F" ;
+octal-digit        = "0" | ... | "7" ;
 
 string-literal     = '"', { string-character }, '"' ;
                      (* string-character is any source byte except a double
@@ -262,6 +289,12 @@ letter-or-digit-or-underscore = letter-or-underscore | digit ;
 digit              = "0" | ... | "9" ;
 
 (* ---- lexical structure ---- *)
+
+(* Comments are discarded as whitespace. A line comment ends before the next
+   newline; a bracket comment ends at the first closing `]--`. *)
+line-comment       = "--", { ? any source byte except CR or LF ? } ;
+bracket-comment    = "--[", { ? any source byte until `]--` ? }, "]--" ;
+comment            = line-comment | bracket-comment ;
 
 (* Keywords *)
 global             = "global" ;

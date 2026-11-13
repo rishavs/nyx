@@ -132,16 +132,53 @@ bool check_reserved_name(CheckContext *ctx, SourcePos pos,
 
 bool is_builtin_type_name(const char *name)
 {
-    return strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-           strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-           strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
-           strcmp(name, "String") == 0 ||
-           strcmp(name, "Text") == 0 ||
-           strcmp(name, "TextBuilder") == 0 ||
-           strcmp(name, "List") == 0 ||
-           strcmp(name, "Array") == 0 ||
-           strcmp(name, "Slice") == 0 ||
-           strcmp(name, "Record") == 0 ||
-           strcmp(name, "Table") == 0 ||
-           strcmp(name, "Error") == 0;
+    return strcmp(name, "Int8") == 0 || strcmp(name, "Int16") == 0 ||
+           strcmp(name, "Int32") == 0 || strcmp(name, "Int64") == 0 ||
+           strcmp(name, "Uint8") == 0 || strcmp(name, "Uint16") == 0 ||
+           strcmp(name, "Uint32") == 0 || strcmp(name, "Uint64") == 0 ||
+           strcmp(name, "Float32") == 0 || strcmp(name, "Float64") == 0 ||
+           strcmp(name, "Bool") == 0 || strcmp(name, "Nil") == 0 ||
+           strcmp(name, "Byte") == 0 || strcmp(name, "Store") == 0 ||
+           strcmp(name, "Handle") == 0 || strcmp(name, "String") == 0 ||
+           strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
+           strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
+           strcmp(name, "Slice") == 0 || strcmp(name, "Record") == 0 ||
+           strcmp(name, "Table") == 0 || strcmp(name, "Error") == 0;
+}
+
+bool is_builtin_function_name(const char *name)
+{
+    return strcmp(name, "print") == 0 || strcmp(name, "base64") == 0;
+}
+
+
+bool numeric_type_from_name(const char *name, NippyType *out)
+{
+    if (name == NULL) {
+        return false;
+    }
+    if (strcmp(name, "Int8") == 0) {
+        *out = NIPPY_TYPE_INT8;
+    } else if (strcmp(name, "Int16") == 0) {
+        *out = NIPPY_TYPE_INT16;
+    } else if (strcmp(name, "Int32") == 0) {
+        *out = NIPPY_TYPE_INT32;
+    } else if (strcmp(name, "Int64") == 0) {
+        *out = NIPPY_TYPE_INT64;
+    } else if (strcmp(name, "Uint8") == 0 || strcmp(name, "Byte") == 0) {
+        *out = NIPPY_TYPE_BYTE;
+    } else if (strcmp(name, "Uint16") == 0) {
+        *out = NIPPY_TYPE_UINT16;
+    } else if (strcmp(name, "Uint32") == 0) {
+        *out = NIPPY_TYPE_UINT32;
+    } else if (strcmp(name, "Uint64") == 0) {
+        *out = NIPPY_TYPE_UINT64;
+    } else if (strcmp(name, "Float32") == 0) {
+        *out = NIPPY_TYPE_FLOAT32;
+    } else if (strcmp(name, "Float64") == 0) {
+        *out = NIPPY_TYPE_FLOAT64;
+    } else {
+        return false;
+    }
+    return true;
 }

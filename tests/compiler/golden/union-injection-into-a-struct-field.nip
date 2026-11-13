@@ -1,0 +1,5 @@
+type Holder
+  value: Int32 | Nil
+end
+
+var h: Holder = Holder(3)

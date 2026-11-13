@@ -1,0 +1,11 @@
+var s: Store = Store(16)
+
+fun make(x: Int32): Handle<Int32>
+  return s.alloc<Int32>(x)
+end
+
+fun read_it(h: Handle<Int32>): Int32
+  return h.read()
+end
+
+var n: Int32 = read_it(make(42))

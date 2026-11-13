@@ -1,0 +1,5 @@
+type B
+  value: Byte
+end
+
+var b: B = B(200)

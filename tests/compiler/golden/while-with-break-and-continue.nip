@@ -1,0 +1,11 @@
+fun loop(x:Int32):Int32
+  while true do
+    if x > 0 then
+      break
+    end
+    continue
+  end
+  return 7
+end
+
+var n : Int32 = loop(1)

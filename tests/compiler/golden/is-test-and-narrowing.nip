@@ -1,0 +1,15 @@
+fun classify(x: Int32 | Bool | Nil): Int32
+  if typeof x is Int32 then
+    return x
+  elseif typeof x is Bool then
+    if x then
+      return 1
+    else
+      return 0
+    end
+  else
+    return 0
+  end
+end
+
+var n: Int32 = classify(3)

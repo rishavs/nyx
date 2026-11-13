@@ -172,8 +172,10 @@ bool check_generic_constructor(CheckContext *ctx, const AstNode *node,
 bool check_constructor(CheckContext *ctx, const AstNode *node,
                               const TypeEntry *entry, size_t ast_index)
 {
-    const TypedNode *type_decl = typed_program_node(
-        ctx->program, struct_declaration_node(ctx, entry));
+    /* Checking an argument adds nodes, which can move the node array, so the
+       declaration is kept as an index and fetched where it is read. */
+    size_t decl_index = struct_declaration_node(ctx, entry);
+    const TypedNode *type_decl = typed_program_node(ctx->program, decl_index);
     size_t field_count;
     bool named = false;
     size_t i;
@@ -244,8 +246,9 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
             }
             argument_name = ast_symbol_text(ctx->ast, argument->name_index);
             for (j = 0; j < field_count; j++) {
-                const char *field_name = struct_field_name(ctx->program,
-                                                           type_decl, j);
+                const char *field_name = struct_field_name(
+                    ctx->program,
+                    typed_program_node(ctx->program, decl_index), j);
 
                 if (argument_name != NULL && field_name != NULL &&
                     strcmp(argument_name, field_name) == 0) {
@@ -262,8 +265,9 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
         }
 
         for (i = 0; i < field_count; i++) {
-            const char *field_name = struct_field_name(ctx->program,
-                                                       type_decl, i);
+            const char *field_name = struct_field_name(
+                ctx->program,
+                typed_program_node(ctx->program, decl_index), i);
             const AstNode *found = NULL;
             size_t j;
 

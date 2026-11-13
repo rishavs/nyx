@@ -16,6 +16,25 @@ source, then invokes the system C compiler to produce a native binary. There is
 no interpreter, no VM, and no runtime library. The repository is a prototype:
 the language is being designed and implemented at the same time.
 
+## Target platforms
+
+### Supported target
+
+| OS | Architecture | Dependencies |
+|---|---|---|
+| POSIX | x86_64 | Linux kernel 6.18 (LTS), libclang (expected preinstalled; not packaged) |
+
+This is the only target that is built and tested.
+
+### Proposed targets
+
+Not built or tested; listed as direction only.
+
+| OS | Architectures |
+|---|---|
+| Windows | x86_64, aarch64, riscv |
+| macOS | x86_64, aarch64, riscv |
+
 ## Language Goals & Philosophy
 
 The goals below are the design authority for the language. When a proposed
@@ -99,7 +118,7 @@ the goal.
 
 | Goal | Current state |
 |---|---|
-| Rule 8 — incremental compilation | Absent. `make` rebuilds every translation unit. |
+| Rule 8 — incremental compilation | Absent for Nippy programs: every compile regenerates all the C. The repository's own build is incremental (one object per source, headers tracked). |
 | Rule 10 — concurrency | Absent, and no design recorded yet. |
 | Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
 
@@ -154,7 +173,8 @@ Match what is already there; consistency in this codebase is worth more than
 personal preference.
 
 - **C11 everywhere**, for both the compiler and the C it emits. No new
-  dependencies; libc only.
+  dependencies beyond libc and those named under
+  [Target platforms](#target-platforms); today the compiler links libc only.
 - **Indentation:** 4 spaces, no tabs. Lines stay within roughly 88 columns.
 - **Braces:** opening brace on its own line for function definitions, on the
   same line for `if`/`for`/`while`/`switch`. `case` labels sit at the

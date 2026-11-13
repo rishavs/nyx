@@ -1,0 +1,5 @@
+fun identity<T>(x: T): T
+  return x
+end
+
+var n: Int32 = identity(3)

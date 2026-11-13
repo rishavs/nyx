@@ -137,6 +137,8 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         return false;
     }
     switch (type->kind) {
+    case NIPPY_TYPE_INT8:
+    case NIPPY_TYPE_INT16:
     case NIPPY_TYPE_INT32:
         if (!buffer_append(source,
                            "    fprintf(stdout, \"%d\", (int)value);\n")) {
@@ -144,9 +146,34 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             return false;
         }
         break;
+    case NIPPY_TYPE_INT64:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"%lld\", (long long)value);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
     case NIPPY_TYPE_BYTE:
+    case NIPPY_TYPE_UINT16:
+    case NIPPY_TYPE_UINT32:
         if (!buffer_append(source,
                            "    fprintf(stdout, \"%u\", (unsigned)value);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_UINT64:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"%llu\", "
+                           "(unsigned long long)value);\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        break;
+    case NIPPY_TYPE_FLOAT32:
+    case NIPPY_TYPE_FLOAT64:
+        if (!buffer_append(source,
+                           "    fprintf(stdout, \"%g\", (double)value);\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -237,15 +264,24 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                     ? NULL
                     : typed_program_symbol_text(program, field->name_index);
 
-            if (field == NULL || field_name == NULL) {
+            char member_text[USER_NAME_CAPACITY];
+            const char *member = field == NULL
+                                     ? NULL
+                                     : user_c_name(program, field->name_index,
+                                                   member_text,
+                                                   sizeof(member_text));
+
+            if (field == NULL || field_name == NULL || member == NULL) {
                 error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
                 return false;
             }
+            /* The text shows the name the program used; the C member access
+               needs the name the generator emitted. */
             if (!buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
                                 i == 0 ? "" : ", ", field_name) ||
                 !buffer_appendf(source,
                                 "    nyx_print_%zu(value.%s, depth + 1);\n",
-                                field->type_index, field_name)) {
+                                field->type_index, member)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }

@@ -19,8 +19,8 @@ Everything here is C11 and depends only on libc.
 | `list.h` | `List`, the owning dynamic array |
 
 Internal headers under `compiler/<stage>/` are implementation details and are
-not part of this API. `test_harness.h` is used only by the test binaries; its
-`expect_message`/`test_run_suite`/`test_run_suites` interface is described in
+not part of this API. The test runner (`tests/harness/harness.h`) is used only
+by the test binaries and is not installed with `include/`; it is described in
 `BUILD.md`.
 
 Stage headers (`lexer.h`, `parser.h`, `checker.h`, `analyser.h`, `generator.h`)
@@ -66,9 +66,10 @@ not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB). All by-value types are capped at
 Errors, and unions are rejected.
 `max_print_depth` defaults to 16 and may not exceed `NIPPY_MAX_PRINT_DEPTH`
 (1024); explicit values must be positive.
-`max_source_bytes` defaults to 4096;
-`compiler_compile` rejects longer source strings, and the command-line driver
-uses the same limit when reading a file.
+`max_source_bytes` defaults to 4096. `compiler_compile` rejects longer source
+strings, and the command-line driver uses the same limit when reading a file.
+The driver accepts `--max-source-bytes N` to raise the limit, where `N` is a
+positive integer no greater than `INT_MAX`.
 
 Ownership rules:
 
@@ -87,6 +88,7 @@ handled â€” it returns a failed result with `compiler: source string is null` â€
 but the caller is responsible for the string's lifetime, and it must be
 NUL-terminated. Source size is limited by `CompilerConfig.max_source_bytes`
 (default 4096); both `compiler_compile` and the command-line driver enforce it.
+The driver can raise its limit with `--max-source-bytes N`.
 
 Example:
 
@@ -308,7 +310,15 @@ typedef enum {
     NIPPY_TYPE_RECORD,
     NIPPY_TYPE_TABLE,
     NIPPY_TYPE_STRING_LITERAL,
-    NIPPY_TYPE_ERROR
+    NIPPY_TYPE_ERROR,
+    NIPPY_TYPE_INT8,
+    NIPPY_TYPE_INT16,
+    NIPPY_TYPE_INT64,
+    NIPPY_TYPE_UINT16,
+    NIPPY_TYPE_UINT32,
+    NIPPY_TYPE_UINT64,
+    NIPPY_TYPE_FLOAT32,
+    NIPPY_TYPE_FLOAT64
 } NippyType;
 
 typedef struct {
@@ -380,10 +390,11 @@ The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 `TYPED_PRINT`, `TYPED_ERROR_THROW`, `TYPED_RECORD_LITERAL`,
 `TYPED_RECORD_GET`, `TYPED_RECORD_SET`, `TYPED_RECORD_HAS`,
 `TYPED_RECORD_REMOVE`, `TYPED_RECORD_LEN`, `TYPED_TABLE_CREATE`,
-`TYPED_TABLE_GET`, `TYPED_TABLE_GET_OPTIONAL`, `TYPED_TABLE_SET`,
+`TYPED_NUMERIC_CONVERSION`, `TYPED_TABLE_GET`, `TYPED_TABLE_GET_OPTIONAL`,
+`TYPED_TABLE_SET`,
 `TYPED_TABLE_HAS`,
 `TYPED_TABLE_REMOVE`, `TYPED_TABLE_LEN`,
-`TYPED_STRING_LITERAL`,
+`TYPED_INTEGER_LITERAL`, `TYPED_FLOAT_LITERAL`, `TYPED_STRING_LITERAL`,
 `TYPED_STRING_LEN`, `TYPED_STRING_AT`, `TYPED_STRING_SLICE`,
 `TYPED_STRING_CONCAT`, `TYPED_STRING_COPY`, `TYPED_STRING_FROM_FIXED`,
 `TYPED_BUILDER_CREATE`, `TYPED_BUILDER_APPEND`, `TYPED_BUILDER_APPEND_BYTE`,
@@ -399,6 +410,21 @@ a tag comparison. `TYPED_IF_EXPRESSION` has the condition in `left_child`, the
 then expression in `right_child`, and the else expression in a one-child run.
 `match` and `typeof` tests are lowered by the parser/checker into `if` chains and
 `TYPED_IS` nodes, so there is no separate typed match node.
+
+`TYPED_NUMERIC_CONVERSION` has the target type in `type_index`, the source type
+in `auxiliary_type`, and the converted value in `left_child`. A conversion of a
+constant is folded by the checker: its `left_child` is already a literal of the
+target type and `auxiliary_type` equals `type_index`, so the generator emits no
+runtime check. Integer literals store their magnitude in `integer_value_u`; a
+negative constant is a `TYPED_UNARY` negation of a literal typed as the unsigned
+counterpart of the signed type, because the most negative value's magnitude does
+not fit the signed type. Floating literals store their value in `float_value`.
+A `TYPED_STRING_LITERAL` whose `fixed_type` is true has its type fixed where it
+was written (the result of `base64`, always a `Text`); context never retypes it,
+and the analyser rejects one with any other type.
+The analyser checks that a literal's value fits its type's width, that a float
+literal has a float type, and that a conversion has a numeric child whose type
+is the recorded source type.
 
 `TypedNode.store_id` carries the global store id for a store declaration,
 allocation, reset, concat, copy, fixed-to-dynamic conversion, or builder

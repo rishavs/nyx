@@ -1,0 +1,9 @@
+fun identity<T>(x: T): T
+  return x
+end
+
+fun wrap<T>(x: T): T
+  return identity(x)
+end
+
+var n: Int32 = wrap(3)

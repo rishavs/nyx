@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define TYPED_NO_NODE ((size_t)-1)
 
@@ -39,10 +40,12 @@ typedef enum {
     TYPED_BREAK,
     TYPED_CONTINUE,
     TYPED_INTEGER_LITERAL,
+    TYPED_FLOAT_LITERAL,
     TYPED_BOOL_LITERAL,
     TYPED_IDENTIFIER,
     TYPED_STRUCT_CONSTRUCTOR,
     TYPED_FUNCTION_CALL,
+    TYPED_NUMERIC_CONVERSION,
     TYPED_BINARY,
     TYPED_UNARY,
     TYPED_NIL_LITERAL,
@@ -120,8 +123,23 @@ typedef enum {
     NIPPY_TYPE_RECORD,
     NIPPY_TYPE_TABLE,
     NIPPY_TYPE_STRING_LITERAL,
-    NIPPY_TYPE_ERROR
+    NIPPY_TYPE_ERROR,
+    NIPPY_TYPE_INT8,
+    NIPPY_TYPE_INT16,
+    NIPPY_TYPE_INT64,
+    NIPPY_TYPE_UINT16,
+    NIPPY_TYPE_UINT32,
+    NIPPY_TYPE_UINT64,
+    NIPPY_TYPE_FLOAT32,
+    NIPPY_TYPE_FLOAT64
 } NippyType;
+
+bool nippy_type_is_integer(NippyType kind);
+bool nippy_type_is_signed_integer(NippyType kind);
+bool nippy_type_is_unsigned_integer(NippyType kind);
+bool nippy_type_is_float(NippyType kind);
+bool nippy_type_is_numeric(NippyType kind);
+unsigned nippy_type_bit_width(NippyType kind);
 
 /* A resolved type. Struct types refer to their declaration name and, for an
    instantiated generic, a run of type arguments. Union types refer to a
@@ -156,6 +174,8 @@ typedef struct {
     size_t type_index;
     SourcePos pos;
     int integer_value;
+    uint64_t integer_value_u;
+    double float_value;
     NippyOperator op;
     size_t name_index;
     /* TYPED_FOR: the value binding when an index binding is present. */
@@ -171,6 +191,9 @@ typedef struct {
     /* TYPED_STRING_LITERAL points into TypedProgram.bytes. */
     size_t string_offset;
     size_t string_length;
+    /* TYPED_STRING_LITERAL: true when the literal's type was fixed where it was
+       written (the result of base64()), so context never retypes it. */
+    bool fixed_type;
 } TypedNode;
 
 typedef struct {

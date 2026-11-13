@@ -1,0 +1,5 @@
+type MaybeInt = Int32 | Nil
+type Value = MaybeInt | Bool
+
+var v: Value = true
+var n: Value = 3

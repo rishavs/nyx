@@ -1,0 +1,8 @@
+type Point
+  x: Int32
+  y: Int32
+end
+
+var p1: Point = Point(1, 2)
+var p2: Point = Point(x = 3, y = 4)
+var p3 = Point(6, 7)

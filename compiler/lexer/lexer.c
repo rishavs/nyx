@@ -1,7 +1,7 @@
 #include "lexer.h"
 
 #include <ctype.h>
-#include <errno.h>
+#include <float.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,6 +106,254 @@ static bool push_token(TokenList *tokens, TokenType type, SourcePos pos)
     return list_push(tokens, &token);
 }
 
+/* The value of a digit character in any base up to 16, or UINT_MAX when the
+   character is not a digit. */
+static unsigned digit_value(unsigned char character)
+{
+    if (character >= '0' && character <= '9') {
+        return (unsigned)(character - '0');
+    }
+    if (character >= 'a' && character <= 'f') {
+        return (unsigned)(character - 'a') + 10;
+    }
+    if (character >= 'A' && character <= 'F') {
+        return (unsigned)(character - 'A') + 10;
+    }
+    return UINT_MAX;
+}
+
+
+static bool push_lexer_error(LexerResult *result, LexerErrorKind kind,
+                             SourcePos pos, unsigned char character,
+                             unsigned base)
+{
+    LexerError error = {kind, pos, character, base};
+
+    if (!list_push(&result->errors, &error)) {
+        result->out_of_memory = true;
+        return false;
+    }
+    return true;
+}
+
+
+/* Scans a run of digits of `base`. A single '_' is allowed between two digits;
+   any other '_' sets *bad_separator but is still consumed so the whole literal
+   is skipped once. The digits, without separators, are appended to `digits`.
+   Returns false only when out of memory. */
+static bool scan_digits(const char *code, size_t *scan, unsigned base,
+                        List *digits, size_t *count, bool *bad_separator)
+{
+    bool previous_is_digit = false;
+
+    for (;;) {
+        unsigned char character = (unsigned char)code[*scan];
+
+        if (digit_value(character) < base) {
+            if (!list_push(digits, &character)) {
+                return false;
+            }
+            (*count)++;
+            previous_is_digit = true;
+        } else if (character == '_') {
+            if (!previous_is_digit ||
+                digit_value((unsigned char)code[*scan + 1]) >= base) {
+                *bad_separator = true;
+            }
+            previous_is_digit = false;
+        } else {
+            return true;
+        }
+        (*scan)++;
+    }
+}
+
+
+/* The integer value of collected digits, or false when it needs more than 64
+   bits. Accumulating by hand keeps separators out of the parse and makes the
+   overflow test exact for every base. */
+static bool digits_to_integer(const List *digits, unsigned base,
+                              uint64_t *out)
+{
+    const unsigned char *items = digits->items;
+    uint64_t value = 0;
+    size_t i;
+
+    for (i = 0; i < digits->length; i++) {
+        unsigned digit = digit_value(items[i]);
+
+        if (value > (UINT64_MAX - digit) / base) {
+            return false;
+        }
+        value = value * base + digit;
+    }
+    *out = value;
+    return true;
+}
+
+
+static bool is_identifier_character(unsigned char character)
+{
+    return isalnum(character) || character == '_';
+}
+
+
+/* Lexes one numeric literal starting at code[*cursor], which is a digit.
+
+     integer = digits | "0x" hex | "0b" binary | "0o" octal
+     float   = digits "." digits [exponent] | digits exponent
+
+   Digits of every kind may be grouped with single underscores. A literal that
+   is malformed is reported once and skipped whole. Returns false only when out
+   of memory, after setting out_of_memory. */
+static bool lex_number(const char *code, LexerResult *result, size_t *cursor,
+                       size_t line, size_t *column)
+{
+    SourcePos start = {*cursor, line, *column};
+    size_t scan = *cursor;
+    unsigned base = 10;
+    bool radix = false;
+    bool is_float = false;
+    bool bad_separator = false;
+    size_t count = 0;
+    List digits;
+    Token token = {0};
+    bool ok = false;
+
+    list_init(&digits, sizeof(unsigned char));
+    if (code[scan] == '0') {
+        unsigned char marker = (unsigned char)code[scan + 1];
+
+        if (marker == 'x' || marker == 'b' || marker == 'o') {
+            base = marker == 'x' ? 16 : marker == 'b' ? 2 : 8;
+            radix = true;
+            scan += 2;
+        } else if (marker == 'X' || marker == 'B' || marker == 'O') {
+            /* One spelling: the prefix is lowercase. */
+            while (is_identifier_character((unsigned char)code[scan])) {
+                scan++;
+            }
+            ok = push_lexer_error(result, LEXER_UPPERCASE_PREFIX, start,
+                                  marker, 0);
+            goto finished;
+        }
+    }
+
+    if (!scan_digits(code, &scan, base, &digits, &count, &bad_separator)) {
+        result->out_of_memory = true;
+        goto finished;
+    }
+    if (radix) {
+        unsigned char next = (unsigned char)code[scan];
+        bool fraction = next == '.' && isdigit((unsigned char)code[scan + 1]);
+
+        if (isalnum(next) || fraction) {
+            /* A digit that does not belong to the base, such as 0b102, or a
+               fraction on a radix literal. Skip the rest of the literal. */
+            while (is_identifier_character((unsigned char)code[scan])) {
+                scan++;
+            }
+            ok = push_lexer_error(result, LEXER_INVALID_DIGIT, start, next,
+                                  base);
+            goto finished;
+        }
+        if (!bad_separator && count == 0) {
+            ok = push_lexer_error(result, LEXER_MISSING_DIGITS, start, 0, base);
+            goto finished;
+        }
+    } else {
+        if (code[scan] == '.' && isdigit((unsigned char)code[scan + 1])) {
+            unsigned char point = '.';
+
+            is_float = true;
+            if (!list_push(&digits, &point)) {
+                result->out_of_memory = true;
+                goto finished;
+            }
+            scan++;
+            if (!scan_digits(code, &scan, 10, &digits, &count,
+                             &bad_separator)) {
+                result->out_of_memory = true;
+                goto finished;
+            }
+        }
+        if (code[scan] == 'e' || code[scan] == 'E') {
+            size_t exponent = scan + 1;
+            unsigned char sign = 0;
+
+            if (code[exponent] == '+' || code[exponent] == '-') {
+                sign = (unsigned char)code[exponent];
+                exponent++;
+            }
+            if (isdigit((unsigned char)code[exponent])) {
+                unsigned char marker = 'e';
+
+                is_float = true;
+                if (!list_push(&digits, &marker) ||
+                    (sign != 0 && !list_push(&digits, &sign))) {
+                    result->out_of_memory = true;
+                    goto finished;
+                }
+                scan = exponent;
+                if (!scan_digits(code, &scan, 10, &digits, &count,
+                                 &bad_separator)) {
+                    result->out_of_memory = true;
+                    goto finished;
+                }
+            }
+        }
+    }
+
+    if (bad_separator) {
+        ok = push_lexer_error(result, LEXER_BAD_SEPARATOR, start, 0, base);
+        goto finished;
+    }
+    if (is_float) {
+        unsigned char terminator = '\0';
+        double parsed;
+
+        if (!list_push(&digits, &terminator)) {
+            result->out_of_memory = true;
+            goto finished;
+        }
+        parsed = strtod(digits.items, NULL);
+        /* Only overflow is an error. strtod also sets ERANGE for a denormal
+           result, which is a valid literal. */
+        if (parsed > DBL_MAX) {
+            ok = push_lexer_error(result, LEXER_FLOAT_OUT_OF_RANGE, start, 0,
+                                  10);
+            goto finished;
+        }
+        token.type = TOKEN_FLOAT;
+        token.float_value = parsed;
+    } else {
+        uint64_t value;
+
+        if (!digits_to_integer(&digits, base, &value)) {
+            ok = push_lexer_error(result, LEXER_INTEGER_OUT_OF_RANGE, start, 0,
+                                  base);
+            goto finished;
+        }
+        token.type = TOKEN_INTEGER;
+        token.integer_value_u = value;
+        token.integer_value = value <= INT_MAX ? (int)value : 0;
+    }
+    token.pos = start;
+    if (!list_push(&result->tokens, &token)) {
+        result->out_of_memory = true;
+        goto finished;
+    }
+    ok = true;
+
+finished:
+    list_free(&digits);
+    /* Numbers hold no newline, so the column advances by the bytes consumed. */
+    *column += scan - *cursor;
+    *cursor = scan;
+    return ok;
+}
+
+
 void lexer_result_free(LexerResult *result)
 {
     list_free(&result->tokens);
@@ -127,38 +375,50 @@ LexerResult lexer_tokenize(const char *code)
     while (code[cursor] != '\0') {
         unsigned char current = (unsigned char)code[cursor];
 
+        if (current == '-' && code[cursor + 1] == '-') {
+            SourcePos start = {cursor, line, column};
+
+            advance(code, &cursor, &line, &column);
+            advance(code, &cursor, &line, &column);
+            if (code[cursor] == '[') {
+                bool terminated = false;
+
+                advance(code, &cursor, &line, &column);
+                while (code[cursor] != '\0') {
+                    if (code[cursor] == ']' && code[cursor + 1] == '-' &&
+                        code[cursor + 2] == '-') {
+                        advance(code, &cursor, &line, &column);
+                        advance(code, &cursor, &line, &column);
+                        advance(code, &cursor, &line, &column);
+                        terminated = true;
+                        break;
+                    }
+                    advance(code, &cursor, &line, &column);
+                }
+                if (!terminated) {
+                    LexerError error = {LEXER_UNTERMINATED_COMMENT, start, 0,
+                                        0};
+                    if (!list_push(&result.errors, &error)) {
+                        result.out_of_memory = true;
+                        goto failed;
+                    }
+                    break;
+                }
+            } else {
+                while (code[cursor] != '\0' && code[cursor] != '\n') {
+                    advance(code, &cursor, &line, &column);
+                }
+            }
+            continue;
+        }
+
         if (isspace(current)) {
             advance(code, &cursor, &line, &column);
             continue;
         }
 
         if (isdigit(current)) {
-            char *end;
-            long parsed;
-            SourcePos start = {cursor, line, column};
-            Token token = {0};
-
-            errno = 0;
-            parsed = strtol(code + cursor, &end, 10);
-            cursor = (size_t)(end - code);
-            /* Integer literals contain no newlines, so column advances by the
-               number of digits consumed. */
-            column += cursor - start.offset;
-
-            if (errno == ERANGE || parsed > INT_MAX) {
-                LexerError error = {LEXER_INTEGER_OUT_OF_RANGE, start, 0};
-                if (!list_push(&result.errors, &error)) {
-                    result.out_of_memory = true;
-                    goto failed;
-                }
-                continue;
-            }
-
-            token.type = TOKEN_INTEGER;
-            token.integer_value = (int)parsed;
-            token.pos = start;
-            if (!list_push(&result.tokens, &token)) {
-                result.out_of_memory = true;
+            if (!lex_number(code, &result, &cursor, line, &column)) {
                 goto failed;
             }
             continue;
@@ -175,7 +435,7 @@ LexerResult lexer_tokenize(const char *code)
                 unsigned char byte = (unsigned char)code[cursor];
 
                 if (byte == '\0') {
-                    LexerError error = {LEXER_UNTERMINATED_STRING, start, 0};
+                    LexerError error = {LEXER_UNTERMINATED_STRING, start, 0, 0};
                     if (!list_push(&result.errors, &error)) {
                         result.out_of_memory = true;
                         goto failed;
@@ -185,7 +445,8 @@ LexerResult lexer_tokenize(const char *code)
                 }
                 if (byte == '\n' || byte == '\r') {
                     LexerError error = {LEXER_STRING_NEWLINE,
-                                        (SourcePos){cursor, line, column}, 0};
+                                        (SourcePos){cursor, line, column}, 0,
+                                        0};
                     if (!list_push(&result.errors, &error)) {
                         result.out_of_memory = true;
                         goto failed;
@@ -204,7 +465,7 @@ LexerResult lexer_tokenize(const char *code)
                     escaped = (unsigned char)code[cursor];
                     if (escaped == '\0') {
                         LexerError error = {LEXER_UNTERMINATED_STRING, start,
-                                            0};
+                                            0, 0};
                         if (!list_push(&result.errors, &error)) {
                             result.out_of_memory = true;
                             goto failed;
@@ -225,7 +486,7 @@ LexerResult lexer_tokenize(const char *code)
                     } else {
                         LexerError error = {LEXER_INVALID_ESCAPE,
                                             (SourcePos){cursor, line, column},
-                                            escaped};
+                                            escaped, 0};
                         if (!list_push(&result.errors, &error)) {
                             result.out_of_memory = true;
                             goto failed;
@@ -271,7 +532,7 @@ LexerResult lexer_tokenize(const char *code)
 
             /* The buffer also needs room for the terminating NUL. */
             if (length >= NIPPY_IDENTIFIER_MAX) {
-                LexerError error = {LEXER_IDENTIFIER_TOO_LONG, start, 0};
+                LexerError error = {LEXER_IDENTIFIER_TOO_LONG, start, 0, 0};
                 if (!list_push(&result.errors, &error)) {
                     result.out_of_memory = true;
                     goto failed;
@@ -572,7 +833,7 @@ LexerResult lexer_tokenize(const char *code)
 
         {
             SourcePos start = {cursor, line, column};
-            LexerError error = {LEXER_UNEXPECTED_CHARACTER, start, current};
+            LexerError error = {LEXER_UNEXPECTED_CHARACTER, start, current, 0};
 
             if (!list_push(&result.errors, &error)) {
                 result.out_of_memory = true;

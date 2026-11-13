@@ -10,6 +10,46 @@
    has been freed, so this stage cannot reach back even by accident. It still
    produces no artifact of its own; when ownership rules land they either refine
    the typed program or become a distinct analysis artifact. */
+/* A numeric literal has a numeric type its value can be stored in. A
+   conversion converts a numeric child, whose type is the recorded source type,
+   to a numeric target; a folded constant records its own target as the source.
+   A negated literal carries its magnitude in the unsigned counterpart of its
+   type, so a literal's magnitude is checked against that width. */
+static bool numeric_node_is_valid(const TypedProgram *program,
+                                  const TypedNode *node)
+{
+    const TypedType *type = typed_program_type(program, node->type_index);
+
+    if (type == NULL) {
+        return false;
+    }
+    if (node->kind == TYPED_INTEGER_LITERAL) {
+        unsigned width = nippy_type_bit_width(type->kind);
+
+        return nippy_type_is_integer(type->kind) &&
+               (width == 64 || node->integer_value_u < (1ULL << width));
+    }
+    if (node->kind == TYPED_FLOAT_LITERAL) {
+        return nippy_type_is_float(type->kind) &&
+               node->float_value == node->float_value &&
+               node->float_value <= 1.7976931348623157e308 &&
+               node->float_value >= -1.7976931348623157e308;
+    }
+    {
+        const TypedType *source = typed_program_type(program,
+                                                     node->auxiliary_type);
+        const TypedNode *child = typed_program_node(program, node->left_child);
+        const TypedType *child_type =
+            child == NULL ? NULL
+                          : typed_program_type(program, child->type_index);
+
+        return nippy_type_is_numeric(type->kind) && source != NULL &&
+               nippy_type_is_numeric(source->kind) && child_type != NULL &&
+               child_type->kind == source->kind;
+    }
+}
+
+
 bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
 {
     size_t i;
@@ -148,6 +188,13 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                                 MESSAGE_ANALYSER_INVALID_STRING_LITERAL);
                 return false;
             }
+            /* A literal whose type is fixed (base64) is always a Text. */
+            if (node->fixed_type &&
+                type->kind != NIPPY_TYPE_DYNAMIC_STRING) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_STRING_LITERAL);
+                return false;
+            }
         }
         if (node->kind == TYPED_ERROR_CONSTRUCT) {
             const TypedType *type = typed_program_type(program,
@@ -182,6 +229,15 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             if (node->integer_value < 0 || node->integer_value > 5) {
                 error_report_at(errors, node->pos,
                                 MESSAGE_ANALYSER_INVALID_ERROR, i);
+                return false;
+            }
+        }
+        if (node->kind == TYPED_INTEGER_LITERAL ||
+            node->kind == TYPED_FLOAT_LITERAL ||
+            node->kind == TYPED_NUMERIC_CONVERSION) {
+            if (!numeric_node_is_valid(program, node)) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_NUMERIC, i);
                 return false;
             }
         }

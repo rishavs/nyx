@@ -1,0 +1,2 @@
+var a: Bool | Int32 = 3
+var b: Int32 | Bool = false

@@ -167,8 +167,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
         value = *(const size_t *)list_get(&program->children,
                                           node->children_start + 1);
         if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-            const char *name = typed_program_symbol_text(
-                program, node->name_index);
+            char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
 
             if (!valid_identifier(name) ||
                 !buffer_appendf(buffer, "(*nyx_list_%zu_at(&%s, ",
@@ -210,8 +211,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                 : typed_program_type(program, receiver->type_index);
         const TypedType *element_type =
             typed_program_type(program, node->auxiliary_type);
-        const char *name = typed_program_symbol_text(program,
-                                                      node->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
 
         if (receiver_type == NULL || element_type == NULL ||
@@ -254,8 +256,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             receiver == NULL
                 ? NULL
                 : typed_program_type(program, receiver->type_index);
-        const char *name = typed_program_symbol_text(program,
-                                                      node->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
 
         if (receiver_type == NULL || !valid_identifier(name)) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);

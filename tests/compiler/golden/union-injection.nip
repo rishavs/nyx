@@ -1,0 +1,5 @@
+type Something = Int32 | Bool | Nil
+
+var a: Something = 3
+var b: Something = true
+var c: Something = nil

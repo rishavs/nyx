@@ -4,8 +4,28 @@
 #include "messages.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+/* True when both paths name the same existing file, however they are spelled
+   (`x.nip`, `./x.nip`, a symlink). A path that does not exist yet cannot be the
+   source, so it is a different file. */
+static int is_same_file(const char *first, const char *second)
+{
+    struct stat first_status;
+    struct stat second_status;
+
+    if (strcmp(first, second) == 0) {
+        return 1;
+    }
+    if (stat(first, &first_status) != 0 || stat(second, &second_status) != 0) {
+        return 0;
+    }
+    return first_status.st_dev == second_status.st_dev &&
+           first_status.st_ino == second_status.st_ino;
+}
 
 static void print_errors(ErrorState *errors)
 {
@@ -178,6 +198,22 @@ static size_t fail_allocation_from_environment(void)
     return (size_t)strtoul(value, NULL, 10);
 }
 
+static int parse_source_limit(const char *text, int *out_limit)
+{
+    char *end;
+    unsigned long value;
+
+    if (text == NULL || *text == '\0' || *text == '-') {
+        return 0;
+    }
+    value = strtoul(text, &end, 10);
+    if (*end != '\0' || value == 0 || value > INT_MAX) {
+        return 0;
+    }
+    *out_limit = (int)value;
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     ErrorState errors;
@@ -188,19 +224,34 @@ int main(int argc, char **argv)
     char *h_path;
     const char *header_name;
     const char *slash;
+    const char *source_path;
+    const char *output_path;
     int succeeded = 0;
 
     error_init(&errors);
     nippy_alloc_fail_after(fail_allocation_from_environment());
-    if (argc != 3) {
+    source_path = NULL;
+    output_path = NULL;
+    if (argc == 3) {
+        source_path = argv[1];
+        output_path = argv[2];
+    } else if (argc == 5 && strcmp(argv[1], "--max-source-bytes") == 0) {
+        if (!parse_source_limit(argv[2], &config.max_source_bytes)) {
+            error_report(&errors, MESSAGE_DRIVER_SOURCE_LIMIT);
+            print_errors(&errors);
+            return 2;
+        }
+        source_path = argv[3];
+        output_path = argv[4];
+    } else {
         error_report(&errors, MESSAGE_DRIVER_USAGE, argv[0]);
         print_errors(&errors);
         return 2;
     }
-    errors.source_name = argv[1];
+    errors.source_name = source_path;
 
     source = read_source(
-        argv[1],
+        source_path,
         config.max_source_bytes > 0
             ? (size_t)config.max_source_bytes
             : (size_t)NIPPY_DEFAULT_MAX_SOURCE_BYTES,
@@ -210,8 +261,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    c_path = append_suffix(argv[2], ".c");
-    h_path = append_suffix(argv[2], ".h");
+    c_path = append_suffix(output_path, ".c");
+    h_path = append_suffix(output_path, ".h");
     if (c_path == NULL || h_path == NULL) {
         error_report(&errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS);
         free(source);
@@ -220,10 +271,31 @@ int main(int argc, char **argv)
         print_errors(&errors);
         return 1;
     }
+    /* The compiler writes `output`, `output.c`, and `output.h`. Any of them
+       being the source would destroy it, so refuse before writing anything. */
+    {
+        const char *outputs[3];
+        size_t i;
+
+        outputs[0] = output_path;
+        outputs[1] = c_path;
+        outputs[2] = h_path;
+        for (i = 0; i < 3; i++) {
+            if (is_same_file(source_path, outputs[i])) {
+                error_report(&errors, MESSAGE_DRIVER_OUTPUT_IS_SOURCE,
+                             outputs[i]);
+                free(source);
+                free(c_path);
+                free(h_path);
+                print_errors(&errors);
+                return 1;
+            }
+        }
+    }
     slash = strrchr(h_path, '/');
     header_name = slash == NULL ? h_path : slash + 1;
     config.header_name = header_name;
-    config.source_name = argv[1];
+    config.source_name = source_path;
     compiled = compiler_compile(source, &config);
     free(source);
 
@@ -244,7 +316,7 @@ int main(int argc, char **argv)
         error_report(&errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
         goto report_driver_error;
     }
-    if (!build_binary(c_path, argv[2], &errors)) {
+    if (!build_binary(c_path, output_path, &errors)) {
         goto report_driver_error;
     }
     succeeded = 1;

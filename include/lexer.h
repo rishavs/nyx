@@ -3,6 +3,8 @@
 
 #include "identifier.h"
 #include "list.h"
+
+#include <stdint.h>
 #include "source_pos.h"
 
 #include <stdbool.h>
@@ -35,6 +37,7 @@ typedef enum {
     TOKEN_KEYWORD_END,
     TOKEN_IDENTIFIER,
     TOKEN_INTEGER,
+    TOKEN_FLOAT,
     TOKEN_STRING,
     TOKEN_COLON,
     TOKEN_EQUALS,
@@ -75,6 +78,8 @@ typedef enum {
 typedef struct {
     TokenType type;
     int integer_value;
+    uint64_t integer_value_u;
+    double float_value;
     SourcePos pos;
     size_t length;
     char text[NIPPY_IDENTIFIER_MAX];
@@ -88,8 +93,14 @@ typedef List TokenList;
 typedef enum {
     LEXER_UNEXPECTED_CHARACTER,
     LEXER_INTEGER_OUT_OF_RANGE,
+    LEXER_FLOAT_OUT_OF_RANGE,
+    LEXER_INVALID_DIGIT,
+    LEXER_MISSING_DIGITS,
+    LEXER_BAD_SEPARATOR,
+    LEXER_UPPERCASE_PREFIX,
     LEXER_IDENTIFIER_TOO_LONG,
     LEXER_UNTERMINATED_STRING,
+    LEXER_UNTERMINATED_COMMENT,
     LEXER_STRING_NEWLINE,
     LEXER_INVALID_ESCAPE
 } LexerErrorKind;
@@ -98,6 +109,8 @@ typedef struct {
     LexerErrorKind kind;
     SourcePos pos;
     unsigned char character;
+    /* The numeric base for a number-literal error. */
+    unsigned base;
 } LexerError;
 
 typedef List LexerErrorList;

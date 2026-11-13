@@ -34,6 +34,22 @@ bool valid_line_name(const char *name)
     return true;
 }
 
+const char *user_c_name(const TypedProgram *program, size_t symbol_index,
+                        char *out, size_t size)
+{
+    const char *name = typed_program_symbol_text(program, symbol_index);
+
+    /* The prefix would make almost any text a valid identifier, so the source
+       name is checked first. */
+    if (!valid_identifier(name) ||
+        strlen(name) + sizeof(NYX_USER_PREFIX) > size) {
+        return NULL;
+    }
+    snprintf(out, size, "%s%s", NYX_USER_PREFIX, name);
+    return out;
+}
+
+
 bool valid_identifier(const char *name)
 {
     const unsigned char *cursor = (const unsigned char *)name;
@@ -144,8 +160,40 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
+    if (type->kind == NIPPY_TYPE_INT8) {
+        snprintf(out, out_size, "int8_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_INT16) {
+        snprintf(out, out_size, "int16_t");
+        return true;
+    }
     if (type->kind == NIPPY_TYPE_INT32) {
         snprintf(out, out_size, "int32_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_INT64) {
+        snprintf(out, out_size, "int64_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_UINT16) {
+        snprintf(out, out_size, "uint16_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_UINT32) {
+        snprintf(out, out_size, "uint32_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_UINT64) {
+        snprintf(out, out_size, "uint64_t");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_FLOAT32) {
+        snprintf(out, out_size, "float");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_FLOAT64) {
+        snprintf(out, out_size, "double");
         return true;
     }
     if (type->kind == NIPPY_TYPE_BOOL) {
@@ -201,7 +249,9 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
         return true;
     }
     if (type->kind == NIPPY_TYPE_STRUCT) {
-        const char *name = typed_program_symbol_text(program, type->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, type->name_index,
+                                  name_text, sizeof(name_text));
 
         if (!valid_identifier(name)) {
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
@@ -348,8 +398,8 @@ bool types_equivalent(const TypedProgram *program, size_t first,
     if (left == NULL || right == NULL || left->kind != right->kind) {
         return false;
     }
-    if (left->kind == NIPPY_TYPE_INT32 || left->kind == NIPPY_TYPE_BOOL ||
-        left->kind == NIPPY_TYPE_NIL || left->kind == NIPPY_TYPE_BYTE ||
+    if (nippy_type_is_numeric(left->kind) ||
+        left->kind == NIPPY_TYPE_BOOL || left->kind == NIPPY_TYPE_NIL ||
         left->kind == NIPPY_TYPE_STORE) {
         return true;
     }

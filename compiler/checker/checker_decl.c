@@ -1,5 +1,6 @@
 #include "checker_internal.h"
 
+#include <limits.h>
 #include <stdint.h>
 
 
@@ -11,6 +12,9 @@ bool literal_int_value(const Ast *ast, size_t ast_index, int *out)
         return false;
     }
     if (node->kind == AST_INTEGER_LITERAL) {
+        if (node->integer_value_u > (uint64_t)INT_MAX) {
+            return false;
+        }
         *out = node->integer_value;
         return true;
     }
@@ -73,6 +77,10 @@ static bool const_int_eval_node(CheckContext *ctx, size_t ast_index, int *out,
         return false;
     }
     if (node->kind == AST_INTEGER_LITERAL) {
+        if (node->integer_value_u > (uint64_t)INT32_MAX) {
+            *is_constant = false;
+            return true;
+        }
         *out = node->integer_value;
         *is_constant = true;
         return true;
@@ -314,7 +322,7 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
+        is_builtin_type_name(name) || is_builtin_function_name(name)) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);
         return false;
@@ -550,7 +558,11 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     if (strcmp(name, "Byte") == 0 || strcmp(name, "Store") == 0 ||
-        strcmp(name, "Handle") == 0) {
+        strcmp(name, "Handle") == 0 || strcmp(name, "Int8") == 0 ||
+        strcmp(name, "Int16") == 0 || strcmp(name, "Int64") == 0 ||
+        strcmp(name, "Uint8") == 0 || strcmp(name, "Uint16") == 0 ||
+        strcmp(name, "Uint32") == 0 || strcmp(name, "Uint64") == 0 ||
+        strcmp(name, "Float32") == 0 || strcmp(name, "Float64") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_REDEFINES_BUILTIN, name);
         return false;
@@ -635,6 +647,40 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_TYPE_HAS_NO_FIELDS);
         return false;
+    }
+    /* Two fields of one name would be two members of one C struct. */
+    {
+        size_t first;
+        size_t second;
+
+        for (first = 0; first < node->children_count; first++) {
+            const AstNode *field = ast_get_node(
+                ctx->ast, *(const size_t *)list_get(
+                              &ctx->ast->children,
+                              node->children_start + first));
+            const char *field_name =
+                field == NULL ? NULL
+                              : ast_symbol_text(ctx->ast, field->name_index);
+
+            for (second = first + 1; second < node->children_count; second++) {
+                const AstNode *other = ast_get_node(
+                    ctx->ast, *(const size_t *)list_get(
+                                  &ctx->ast->children,
+                                  node->children_start + second));
+                const char *other_name =
+                    other == NULL
+                        ? NULL
+                        : ast_symbol_text(ctx->ast, other->name_index);
+
+                if (field_name != NULL && other_name != NULL &&
+                    strcmp(field_name, other_name) == 0) {
+                    error_report_at(ctx->errors, other->pos,
+                                    MESSAGE_CHECKER_DUPLICATE_FIELD,
+                                    field_name, name);
+                    return false;
+                }
+            }
+        }
     }
     if (entry.parameter_count == 0) {
         size_t type_index;

@@ -1,0 +1,10 @@
+type Marker
+  value: Nil
+end
+
+fun take(n: Nil): Int32
+  return 0
+end
+
+var m: Marker = Marker(nil)
+var n: Int32 = take(nil)

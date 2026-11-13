@@ -1,0 +1,9 @@
+fun inc(x:Int32):Int32
+  return x + 1
+end
+
+fun apply(f:Fun<(Int32):Int32>, x:Int32):Int32
+  return f(x)
+end
+
+var n : Int32 = apply(inc, 41)

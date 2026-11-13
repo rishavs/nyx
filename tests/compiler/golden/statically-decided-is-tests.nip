@@ -1,0 +1,7 @@
+fun yes(x: Int32): Bool
+  return typeof x is Int32
+end
+
+fun no(x: Int32): Bool
+  return typeof x is Bool
+end

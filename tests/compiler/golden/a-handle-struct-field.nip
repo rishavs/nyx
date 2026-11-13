@@ -1,0 +1,7 @@
+type Holder
+  h: Handle<Int32>
+end
+
+var s: Store = Store(16)
+var p: Handle<Int32> = s.alloc<Int32>(1)
+var holder: Holder = Holder(p)

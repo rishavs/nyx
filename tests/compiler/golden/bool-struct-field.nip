@@ -1,0 +1,6 @@
+type Flags
+  on: Bool
+  count: Int32
+end
+
+var f : Flags = Flags(true, 3)

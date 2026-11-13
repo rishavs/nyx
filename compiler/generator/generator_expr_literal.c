@@ -3,10 +3,44 @@
 bool emit_expr_literals(const TypedProgram *program, const TypedNode *node,
                 TextBuffer *buffer, ErrorState *errors, bool *handled)
 {
+    char type_name[NIPPY_IDENTIFIER_MAX + 32];
     if (node->kind == TYPED_INTEGER_LITERAL) {
         *handled = true;
-        if (!buffer_appendf(buffer, "%d", node->integer_value)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        {
+            const TypedType *type = typed_program_type(program,
+                                                       node->type_index);
+
+            if (type != NULL &&
+                (type->kind == NIPPY_TYPE_INT32 ||
+                 type->kind == NIPPY_TYPE_BYTE)) {
+                if (!buffer_appendf(buffer, "%d", node->integer_value)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    return false;
+                }
+                return true;
+            }
+            if (type == NULL ||
+                !format_c_type(program, node->type_index, type_name,
+                               sizeof(type_name), errors) ||
+                !buffer_appendf(buffer, "((%s)%lluULL)", type_name,
+                                (unsigned long long)node->integer_value_u)) {
+                if (!errors->reported) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+    if (node->kind == TYPED_FLOAT_LITERAL) {
+        *handled = true;
+        if (!format_c_type(program, node->type_index, type_name,
+                           sizeof(type_name), errors) ||
+            !buffer_appendf(buffer, "((%s)%.17g)", type_name,
+                            node->float_value)) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
             return false;
         }
         return true;
@@ -21,7 +55,9 @@ bool emit_expr_literals(const TypedProgram *program, const TypedNode *node,
     }
     if (node->kind == TYPED_IDENTIFIER) {
         *handled = true;
-        const char *name = typed_program_symbol_text(program, node->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
 
         if (!valid_identifier(name)) {
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
@@ -87,10 +123,26 @@ bool emit_expr_literals(const TypedProgram *program, const TypedNode *node,
         return true;
     }
     if (node->kind == TYPED_SUM_PAYLOAD) {
+        const TypedType *payload_type = typed_program_type(program,
+                                                           node->type_index);
+
         *handled = true;
         if (node->integer_value < 0) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
+        }
+        if (payload_type != NULL && payload_type->kind == NIPPY_TYPE_NIL) {
+            /* Nil has no payload member in the union, only a tag; the value
+               of the narrowed alternative is the unit value itself. */
+            if (!buffer_append(buffer, "((void)(") ||
+                !emit_expression(program, node->left_child, buffer, errors) ||
+                !buffer_append(buffer, "), (nyx_nil)0)")) {
+                if (!errors->reported) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                }
+                return false;
+            }
+            return true;
         }
         if (!buffer_append(buffer, "(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||

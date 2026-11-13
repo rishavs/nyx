@@ -1,0 +1,5 @@
+fun is_seven(b: Byte): Bool
+  return b == 7
+end
+
+var ok: Bool = is_seven(7)

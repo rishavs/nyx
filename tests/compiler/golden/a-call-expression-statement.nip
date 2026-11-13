@@ -1,0 +1,6 @@
+var s: Store = Store(16)
+
+fun clear(): Nil
+  s.reset()
+  return nil
+end

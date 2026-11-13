@@ -154,8 +154,8 @@ bool is_sized_type(const TypedProgram *program, size_t type_index)
     if (type == NULL) {
         return false;
     }
-    return type->kind == NIPPY_TYPE_INT32 || type->kind == NIPPY_TYPE_BOOL ||
-           type->kind == NIPPY_TYPE_BYTE || type->kind == NIPPY_TYPE_NIL ||
+    return nippy_type_is_numeric(type->kind) ||
+           type->kind == NIPPY_TYPE_BOOL || type->kind == NIPPY_TYPE_NIL ||
            type->kind == NIPPY_TYPE_STRUCT ||
            type->kind == NIPPY_TYPE_HANDLE ||
            type->kind == NIPPY_TYPE_STRING ||
@@ -180,10 +180,11 @@ bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
     if (type == NULL || depth == 0) {
         return false;
     }
+    if (nippy_type_is_numeric(type->kind)) {
+        return true;
+    }
     switch (type->kind) {
-    case NIPPY_TYPE_INT32:
     case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_BYTE:
     case NIPPY_TYPE_NIL:
     case NIPPY_TYPE_STRING:
     case NIPPY_TYPE_FUNCTION:
@@ -643,11 +644,25 @@ static bool type_value_size_depth(const TypedProgram *program,
         return false;
     }
     switch (type->kind) {
+    case NIPPY_TYPE_INT8:
+    case NIPPY_TYPE_BYTE:
+        *out = 1;
+        return true;
+    case NIPPY_TYPE_INT16:
+    case NIPPY_TYPE_UINT16:
+        *out = 2;
+        return true;
     case NIPPY_TYPE_INT32:
+    case NIPPY_TYPE_UINT32:
+    case NIPPY_TYPE_FLOAT32:
         *out = 4;
         return true;
+    case NIPPY_TYPE_INT64:
+    case NIPPY_TYPE_UINT64:
+    case NIPPY_TYPE_FLOAT64:
+        *out = 8;
+        return true;
     case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_BYTE:
     case NIPPY_TYPE_NIL:
         *out = 1;
         return true;

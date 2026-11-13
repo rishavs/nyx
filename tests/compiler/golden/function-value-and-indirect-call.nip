@@ -1,0 +1,6 @@
+fun add(x:Int32, y:Int32):Int32
+  return x + y
+end
+
+var f : Fun<(Int32, Int32):Int32> = add
+var n : Int32 = f(2, 3)

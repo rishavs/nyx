@@ -14,6 +14,90 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define NIPPY_MAX_AST_DEPTH 1024
+
+static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
+{
+    size_t *depths;
+    size_t i;
+
+    if (ast->nodes.length > SIZE_MAX / sizeof(*depths)) {
+        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        return false;
+    }
+    depths = nippy_malloc(ast->nodes.length * sizeof(*depths));
+    if (depths == NULL && ast->nodes.length != 0) {
+        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        return false;
+    }
+
+    for (i = 0; i < ast->nodes.length; i++) {
+        const AstNode *node = ast_get_node(ast, i);
+        size_t depth = 1;
+        size_t j;
+        size_t refs[2] = {node->left_child, node->right_child};
+
+        for (j = 0; j < 2; j++) {
+            size_t child = refs[j];
+
+            if (child == AST_NO_NODE) {
+                continue;
+            }
+            if (child >= i) {
+                free(depths);
+                error_report_at(errors, node->pos,
+                                MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                                NIPPY_MAX_AST_DEPTH);
+                return false;
+            }
+            if (depths[child] >= depth) {
+                depth = depths[child] + 1;
+            }
+        }
+        for (j = 0; j < node->children_count; j++) {
+            const size_t *child = list_get(&ast->children,
+                                           node->children_start + j);
+
+            if (child == NULL || *child >= i) {
+                free(depths);
+                error_report_at(errors, node->pos,
+                                MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                                NIPPY_MAX_AST_DEPTH);
+                return false;
+            }
+            if (depths[*child] >= depth) {
+                depth = depths[*child] + 1;
+            }
+        }
+        for (j = 0; j < node->type_parameters_count; j++) {
+            const size_t *child = list_get(&ast->type_parameters,
+                                           node->type_parameters_start + j);
+
+            if (child == NULL || *child >= i) {
+                free(depths);
+                error_report_at(errors, node->pos,
+                                MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                                NIPPY_MAX_AST_DEPTH);
+                return false;
+            }
+            if (depths[*child] >= depth) {
+                depth = depths[*child] + 1;
+            }
+        }
+        depths[i] = depth;
+        if (depth > NIPPY_MAX_AST_DEPTH) {
+            free(depths);
+            error_report_at(errors, node->pos,
+                            MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                            NIPPY_MAX_AST_DEPTH);
+            return false;
+        }
+    }
+
+    free(depths);
+    return true;
+}
+
 static void report_lexer_errors(const LexerErrorList *errors, ErrorState *state)
 {
     size_t i;
@@ -22,12 +106,27 @@ static void report_lexer_errors(const LexerErrorList *errors, ErrorState *state)
         const LexerError *error = list_get(errors, i);
         if (error->kind == LEXER_INTEGER_OUT_OF_RANGE) {
             error_report_at(state, error->pos, MESSAGE_LEXER_INTEGER_OUT_OF_RANGE);
+        } else if (error->kind == LEXER_FLOAT_OUT_OF_RANGE) {
+            error_report_at(state, error->pos, MESSAGE_LEXER_FLOAT_OUT_OF_RANGE);
+        } else if (error->kind == LEXER_INVALID_DIGIT) {
+            error_report_at(state, error->pos, MESSAGE_LEXER_INVALID_DIGIT,
+                            error->character, error->base);
+        } else if (error->kind == LEXER_MISSING_DIGITS) {
+            error_report_at(state, error->pos, MESSAGE_LEXER_MISSING_DIGITS);
+        } else if (error->kind == LEXER_BAD_SEPARATOR) {
+            error_report_at(state, error->pos, MESSAGE_LEXER_BAD_SEPARATOR);
+        } else if (error->kind == LEXER_UPPERCASE_PREFIX) {
+            error_report_at(state, error->pos, MESSAGE_LEXER_UPPERCASE_PREFIX,
+                            error->character);
         } else if (error->kind == LEXER_IDENTIFIER_TOO_LONG) {
             error_report_at(state, error->pos, MESSAGE_LEXER_IDENTIFIER_TOO_LONG,
                             NIPPY_IDENTIFIER_MAX - 1);
         } else if (error->kind == LEXER_UNTERMINATED_STRING) {
             error_report_at(state, error->pos,
                             MESSAGE_LEXER_UNTERMINATED_STRING);
+        } else if (error->kind == LEXER_UNTERMINATED_COMMENT) {
+            error_report_at(state, error->pos,
+                            MESSAGE_LEXER_UNTERMINATED_COMMENT);
         } else if (error->kind == LEXER_STRING_NEWLINE) {
             error_report_at(state, error->pos,
                             MESSAGE_LEXER_STRING_NEWLINE);
@@ -182,6 +281,10 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
         goto failed;
     }
     ast_initialized = true;
+
+    if (!ast_depth_within_limit(&ast, &errors)) {
+        goto failed;
+    }
 
     /* source -> tokens -> syntax tree -> typed program. The tree has done its
        job once the checker returns, and freeing it here is what proves the

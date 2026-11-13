@@ -26,6 +26,20 @@ typedef struct {
 bool valid_header_name(const char *name);
 bool valid_line_name(const char *name);
 bool valid_identifier(const char *name);
+
+/* Every name the program chose (types, fields, variables, parameters,
+   functions) reaches the C output with this prefix. C has one global namespace
+   and the headers the output includes fill it with functions, typedefs, and
+   macros, so a program name such as `div`, `remove`, or `EOF` would collide
+   with them. A source name can never begin with `nyx_` (the checker rejects
+   it), so a prefixed name cannot collide with libc, a keyword, a macro, or a
+   name the generator invents. */
+#define NYX_USER_PREFIX "nyx_u_"
+#define USER_NAME_CAPACITY (NIPPY_IDENTIFIER_MAX + 16)
+/* The C spelling of the program name with symbol index `symbol_index`, written
+   into `out`. Returns `out`, or NULL when the symbol is missing or too long. */
+const char *user_c_name(const TypedProgram *program, size_t symbol_index,
+                        char *out, size_t size);
 void buffer_init(TextBuffer *buffer);
 void buffer_free(TextBuffer *buffer);
 bool buffer_reserve(TextBuffer *buffer, size_t required);
@@ -146,5 +160,8 @@ bool append_optional_union(TextBuffer *body, const TypedProgram *program,
 bool typed_calls_name(const TypedProgram *program, size_t node_index,
                       size_t symbol_index);
 bool program_uses_recursion(const TypedProgram *program);
+
+bool emit_conversion_runtime(TextBuffer *source, ErrorState *errors);
+bool program_uses_numeric_conversion(const TypedProgram *program);
 
 #endif

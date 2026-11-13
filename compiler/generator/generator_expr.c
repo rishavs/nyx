@@ -38,6 +38,8 @@ const char *binary_operator_text(NippyOperator op)
         return ">";
     case NIPPY_OPERATOR_GE:
         return ">=";
+    case NIPPY_OPERATOR_ADD:
+        return "+";
     case NIPPY_OPERATOR_SUB:
         return "-";
     case NIPPY_OPERATOR_MUL:

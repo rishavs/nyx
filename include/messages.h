@@ -12,6 +12,16 @@
 /* Lexer */
 #define MESSAGE_LEXER_INTEGER_OUT_OF_RANGE \
     "lexer: integer literal out of range"
+#define MESSAGE_LEXER_FLOAT_OUT_OF_RANGE \
+    "lexer: floating-point literal out of range"
+#define MESSAGE_LEXER_INVALID_DIGIT \
+    "lexer: invalid digit '%c' in a base-%u number"
+#define MESSAGE_LEXER_MISSING_DIGITS \
+    "lexer: expected digits after the base prefix"
+#define MESSAGE_LEXER_BAD_SEPARATOR \
+    "lexer: digit separator '_' must sit between two digits"
+#define MESSAGE_LEXER_UPPERCASE_PREFIX \
+    "lexer: base prefix '0%c' must be lowercase"
 #define MESSAGE_LEXER_IDENTIFIER_TOO_LONG \
     "lexer: identifier longer than %d bytes"
 #define MESSAGE_LEXER_UNEXPECTED_CHARACTER \
@@ -21,6 +31,8 @@
 #define MESSAGE_LEXER_OUT_OF_MEMORY "lexer: out of memory"
 #define MESSAGE_LEXER_UNTERMINATED_STRING \
     "lexer: unterminated string literal"
+#define MESSAGE_LEXER_UNTERMINATED_COMMENT \
+    "lexer: unterminated multiline comment"
 #define MESSAGE_LEXER_STRING_NEWLINE \
     "lexer: newline in string literal"
 #define MESSAGE_LEXER_INVALID_ESCAPE \
@@ -52,6 +64,10 @@
     "parser: expected '=' before the initialiser"
 #define MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE \
     "parser: out of memory while building syntax tree"
+#define MESSAGE_PARSER_NESTING_LIMIT \
+    "parser: nesting exceeds the limit of %d"
+#define MESSAGE_PARSER_TREE_DEPTH_LIMIT \
+    "parser: syntax tree depth exceeds the limit of %d"
 #define MESSAGE_PARSER_EXPECTED_TYPE_NAME_AFTER_TYPE \
     "parser: expected a type name after 'type'"
 #define MESSAGE_PARSER_EXPECTED_AT_LEAST_ONE_FIELD \
@@ -88,6 +104,8 @@
     "parser: expected 'in' after for bindings"
 #define MESSAGE_PARSER_EXPECTED_DO \
     "parser: expected 'do' after for iterable"
+#define MESSAGE_PARSER_EXPECTED_WHILE_DO \
+    "parser: expected 'do' after the while condition"
 #define MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END \
     "parser: expected a statement or 'end'"
 #define MESSAGE_PARSER_EXPECTED_THEN \
@@ -162,6 +180,8 @@
     "checker: out of memory while building the program"
 #define MESSAGE_CHECKER_MISSING_NAME_OR_TYPE \
     "checker: declaration is missing a name or type"
+#define MESSAGE_CHECKER_DUPLICATE_FIELD \
+    "checker: duplicate field '%s' in type '%s'"
 #define MESSAGE_CHECKER_TYPE_HAS_NO_FIELDS \
     "checker: type declaration has no fields"
 #define MESSAGE_CHECKER_UNKNOWN_TYPE \
@@ -196,6 +216,12 @@
     "checker: cannot redefine built-in type '%s'"
 #define MESSAGE_CHECKER_DUPLICATE_NAME \
     "checker: duplicate declaration of '%s'"
+#define MESSAGE_CHECKER_INTEGER_RANGE \
+    "checker: integer literal does not fit the target type"
+#define MESSAGE_CHECKER_FLOAT_RANGE \
+    "checker: floating-point literal does not fit the target type"
+#define MESSAGE_CHECKER_NUMERIC_AMBIGUOUS \
+    "checker: numeric literal fits more than one union alternative"
 #define MESSAGE_CHECKER_INDEX_BOUNDS \
     "checker: literal index %d is outside the fixed bound %zu"
 #define MESSAGE_CHECKER_NEGATIVE_CAPACITY \
@@ -216,6 +242,12 @@
     "checker: '%s' is reserved for generated C"
 #define MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT \
     "checker: '%s' is not a struct type"
+#define MESSAGE_CHECKER_CONVERSION_ARGS \
+    "checker: numeric conversion takes exactly one value argument"
+#define MESSAGE_CHECKER_CONVERSION_TYPE \
+    "checker: numeric conversion needs a numeric source value"
+#define MESSAGE_CHECKER_CONVERSION_RANGE \
+    "checker: constant does not fit the conversion target type"
 #define MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT \
     "checker: constructor for '%s' expects %zu argument(s), got %zu"
 #define MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG \
@@ -261,7 +293,7 @@
 #define MESSAGE_CHECKER_CONST_OVERFLOW \
     "checker: constant expression overflows Int32"
 #define MESSAGE_CHECKER_SHIFT_RANGE \
-    "checker: constant shift count must be in 0..31"
+    "checker: constant shift count is outside the operand width"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
 #define MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE \
@@ -362,8 +394,16 @@
     "checker: print is a statement and cannot be used as a value"
 #define MESSAGE_CHECKER_PRINT_NAMED \
     "checker: print arguments cannot be named"
-#define MESSAGE_CHECKER_PRINT_RESERVED \
-    "checker: 'print' is a reserved builtin"
+#define MESSAGE_CHECKER_BUILTIN_RESERVED \
+    "checker: '%s' is a reserved builtin"
+#define MESSAGE_CHECKER_BASE64_ARGUMENT \
+    "checker: base64 takes exactly one string literal"
+#define MESSAGE_CHECKER_BASE64_CHARACTER \
+    "checker: base64 literal has an invalid character at byte %zu"
+#define MESSAGE_CHECKER_BASE64_PADDING \
+    "checker: base64 literal has a bad length or misplaced '=' at byte %zu"
+#define MESSAGE_CHECKER_BASE64_CANONICAL \
+    "checker: base64 literal has non-zero padding bits at byte %zu"
 #define MESSAGE_CHECKER_FOR_ITERABLE \
     "checker: for loop requires a List, String, or Slice"
 #define MESSAGE_CHECKER_LIST_LVALUE \
@@ -448,6 +488,8 @@
     "checker: generic function '%s' must be called"
 #define MESSAGE_CHECKER_IS_TYPE_IS_UNION \
     "checker: a type test requires a single non-union type"
+#define MESSAGE_CHECKER_TOO_MANY_INSTANTIATIONS \
+    "checker: generic function '%s' pushes the program past %d instantiations"
 #define MESSAGE_CHECKER_RECURSIVE_TYPE \
     "checker: type '%s' is defined recursively"
 
@@ -480,6 +522,8 @@
     "analyser: string literal bytes are out of range"
 #define MESSAGE_ANALYSER_INVALID_ERROR \
     "analyser: node %zu has an invalid Error shape"
+#define MESSAGE_ANALYSER_INVALID_NUMERIC \
+    "analyser: node %zu has an invalid numeric shape"
 
 /* Generator */
 #define MESSAGE_GENERATOR_UNSUPPORTED_ROOT \
@@ -514,6 +558,8 @@
     "nippy: iterated collection changed length during for loop"
 #define MESSAGE_RUNTIME_RECURSION \
     "nippy: recursion depth exceeded"
+#define MESSAGE_RUNTIME_CONVERSION \
+    "nippy: numeric conversion out of range"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \
@@ -533,9 +579,13 @@
 #define MESSAGE_DRIVER_CC_FAILED \
     "the C compiler failed"
 #define MESSAGE_DRIVER_USAGE \
-    "usage: %s <source.nip> <output-binary>"
+    "usage: %s [--max-source-bytes N] <source.nip> <output-binary>"
+#define MESSAGE_DRIVER_SOURCE_LIMIT \
+    "driver: --max-source-bytes must be a positive integer"
 #define MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS \
     "could not allocate generated file paths"
+#define MESSAGE_DRIVER_OUTPUT_IS_SOURCE \
+    "driver: '%s' is the source file and would be overwritten"
 #define MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER \
     "%s: could not write generated header"
 #define MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE \

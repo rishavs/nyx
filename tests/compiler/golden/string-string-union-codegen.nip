@@ -1,0 +1,2 @@
+var u: String<8> | Nil = "hi"
+var ok: Bool = typeof u is String<8>

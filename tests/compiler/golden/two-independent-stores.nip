@@ -1,0 +1,6 @@
+var a: Store = Store(1)
+var b: Store = Store(1)
+var p: Handle<Int32> = a.alloc<Int32>(1)
+var q: Handle<Int32> = b.alloc<Int32>(2)
+var n: Int32 = p.read() + q.read()
+a.reset()

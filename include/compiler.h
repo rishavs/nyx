@@ -14,8 +14,8 @@ typedef struct {
     int error_header_capacity;
     int error_description_capacity;
     int error_filename_capacity;
-    /* Source-size limit in bytes. 0 selects 4096. Enforced by compiler_compile
-       and by the command-line driver's read. */
+    /* Source-size limit in bytes. 0 selects 4096. Enforced by
+       compiler_compile and by the command-line driver's read. */
     int max_source_bytes;
     /* Upper bound for String<N> capacities. 0 selects 4096. */
     int max_string_capacity;

@@ -134,7 +134,9 @@ bool parse_type_primary(
             }
             node.kind = AST_TYPE_FIXED_STRING;
             node.pos = pos;
-            node.integer_value = length_token->integer_value;
+            node.integer_value = length_token->integer_value_u > (uint64_t)INT_MAX
+                                   ? -1
+                                   : (int)length_token->integer_value_u;
             node.name_index = AST_NO_NODE;
             node.left_child = AST_NO_NODE;
             node.right_child = AST_NO_NODE;
@@ -191,7 +193,9 @@ bool parse_type_primary(
                 }
                 node.kind = AST_TYPE_FIXED_LIST;
                 node.pos = pos;
-                node.integer_value = capacity_token->integer_value;
+                node.integer_value = capacity_token->integer_value_u > (uint64_t)INT_MAX
+                                       ? -1
+                                       : (int)capacity_token->integer_value_u;
                 node.name_index = AST_NO_NODE;
                 node.left_child = element_type;
                 node.right_child = AST_NO_NODE;
@@ -281,7 +285,9 @@ bool parse_type_primary(
                                     MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY);
                     return false;
                 }
-                node.integer_value = capacity_token->integer_value;
+                node.integer_value = capacity_token->integer_value_u > (uint64_t)INT_MAX
+                                       ? -1
+                                       : (int)capacity_token->integer_value_u;
                 (*cursor)++;
                 separator = token_at(tokens, *cursor);
                 if (separator == NULL || separator->type != TOKEN_GT) {

@@ -1,0 +1,8 @@
+fun count<T>(x: T, n: Int32): T
+  if n == 0 then
+    return x
+  end
+  return count(x, n - 1)
+end
+
+var n: Int32 = count(1, 0)

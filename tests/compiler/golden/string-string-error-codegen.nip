@@ -1,0 +1,3 @@
+var e: Error = Error("E", "desc", "test.nip", 1, 2, 3)
+var l: Int32 = e.line()
+var h: String<32> = e.header()

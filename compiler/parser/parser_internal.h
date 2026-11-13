@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <limits.h>
 #include <string.h>
 
 /* An argument is either a positional expression or a named wrapper. */

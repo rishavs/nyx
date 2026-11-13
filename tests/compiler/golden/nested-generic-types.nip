@@ -1,0 +1,8 @@
+type Option<T> = T | Nil
+type Pair<A, B>
+  first: A
+  second: B
+end
+
+var o: Option<Int32> = 3
+var p = Pair(o, false)

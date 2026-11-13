@@ -6,12 +6,15 @@ bool emit_map_for(const TypedProgram *program, const TypedNode *node,
                           const char *effective_source, TextBuffer *source,
                           ErrorState *errors)
 {
-    const char *key_name = typed_program_symbol_text(program,
-                                                     node->name_index);
+    char key_name_text[USER_NAME_CAPACITY];
+    const char *key_name = user_c_name(program, node->name_index,
+                                  key_name_text, sizeof(key_name_text));
+    char value_name_text[USER_NAME_CAPACITY];
     const char *value_name =
         node->second_name_index == TYPED_NO_NODE
             ? NULL
-            : typed_program_symbol_text(program, node->second_name_index);
+            : user_c_name(program, node->second_name_index, value_name_text,
+                          sizeof(value_name_text));
     size_t key_type = *(const size_t *)list_get(&program->type_children,
                                                 iterable_type->first_child);
     size_t value_type = *(const size_t *)list_get(
@@ -309,12 +312,15 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             iterable_node == NULL
                 ? NULL
                 : typed_program_type(program, iterable_node->type_index);
-        const char *value_name = typed_program_symbol_text(
-            program, node->name_index);
+        char value_name_text[USER_NAME_CAPACITY];
+    const char *value_name = user_c_name(program, node->name_index,
+                                  value_name_text, sizeof(value_name_text));
+        char index_name_text[USER_NAME_CAPACITY];
         const char *index_name =
             node->second_name_index == TYPED_NO_NODE
                 ? NULL
-                : typed_program_symbol_text(program, node->second_name_index);
+                : user_c_name(program, node->second_name_index,
+                              index_name_text, sizeof(index_name_text));
         char iterable_name[NIPPY_IDENTIFIER_MAX + 32];
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
         size_t offset = node->pos.offset;
@@ -578,8 +584,9 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
     }
 
     if (node->kind == TYPED_LOCAL_DECLARATION) {
-        const char *name = typed_program_symbol_text(program,
-                                                     node->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
         char type_name[NIPPY_IDENTIFIER_MAX + 32];
 
         if (!valid_identifier(name) ||
@@ -617,8 +624,9 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
     }
 
     if (node->kind == TYPED_ASSIGNMENT) {
-        const char *name = typed_program_symbol_text(program,
-                                                     node->name_index);
+        char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
 
         if (!valid_identifier(name)) {
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
@@ -724,6 +732,7 @@ static bool emit_function_signature(const TypedProgram *program,
             size_t child = *(const size_t *)list_get(&program->children,
                                                      node->children_start + i);
             const TypedNode *parameter = typed_program_node(program, child);
+            char parameter_text[USER_NAME_CAPACITY];
             const char *parameter_name;
             char parameter_type[NIPPY_IDENTIFIER_MAX + 32];
 
@@ -736,8 +745,9 @@ static bool emit_function_signature(const TypedProgram *program,
                 }
                 return false;
             }
-            parameter_name = typed_program_symbol_text(program,
-                                                       parameter->name_index);
+            parameter_name = user_c_name(program, parameter->name_index,
+                                         parameter_text,
+                                         sizeof(parameter_text));
             if (!valid_identifier(parameter_name)) {
                 error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
                 return false;
@@ -767,11 +777,13 @@ static bool emit_function_call_args(const TypedProgram *program,
         size_t child = *(const size_t *)list_get(&program->children,
                                                  node->children_start + i);
         const TypedNode *parameter = typed_program_node(program, child);
+        char parameter_text[USER_NAME_CAPACITY];
         const char *parameter_name;
 
         if (parameter == NULL || parameter->kind != TYPED_PARAMETER ||
-            (parameter_name = typed_program_symbol_text(
-                 program, parameter->name_index)) == NULL) {
+            (parameter_name = user_c_name(program, parameter->name_index,
+                                          parameter_text,
+                                          sizeof(parameter_text))) == NULL) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
             return false;
         }
@@ -799,8 +811,9 @@ static bool emit_function_unused_params(const TypedProgram *program,
         size_t child = *(const size_t *)list_get(&program->children,
                                                  node->children_start + i);
         const TypedNode *parameter = typed_program_node(program, child);
-        const char *parameter_name = typed_program_symbol_text(
-            program, parameter->name_index);
+        char parameter_name_text[USER_NAME_CAPACITY];
+    const char *parameter_name = user_c_name(program, parameter->name_index,
+                                  parameter_name_text, sizeof(parameter_name_text));
 
         if (parameter_name == NULL ||
             !buffer_appendf(source, "    (void)%s;\n", parameter_name)) {
@@ -816,7 +829,9 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
                           const char *effective_source, TextBuffer *source,
                           ErrorState *errors)
 {
-    const char *name = typed_program_symbol_text(program, node->name_index);
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
     const TypedType *type = typed_program_type(program, node->type_index);
     const TypedFunctionSignature *signature;
     bool recursive;

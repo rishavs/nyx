@@ -1,0 +1,6 @@
+fun is_nil(x: Int32 | Nil): Bool
+  if typeof x is Nil then
+    return true
+  end
+  return false
+end

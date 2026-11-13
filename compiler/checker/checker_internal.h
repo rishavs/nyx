@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,10 @@
 
 #define NIPPY_MAX_TYPE_PARAMETERS 8
 #define NIPPY_TYPE_DEPTH 64
+/* The most distinct instantiations of generic functions in one program. It
+   stops a generic that instantiates itself with ever-growing types from
+   running away; it is a count and has nothing to do with nesting depth. */
+#define NIPPY_MAX_INSTANTIATIONS 4096
 
 typedef enum {
     TYPE_ENTRY_STRUCT,
@@ -302,5 +307,49 @@ bool type_contains_error(const TypedProgram *program, size_t type_index);
 
 bool check_type_value_size(CheckContext *ctx, size_t type_index,
                            SourcePos pos);
+
+bool numeric_type_from_name(const char *name, NippyType *out);
+
+/* base64("...") builtin: decodes its string-literal argument at compile time. */
+bool check_base64(CheckContext *ctx, const AstNode *node, size_t ast_index);
+/* The builtins that are called like functions and so cannot be redeclared. */
+bool is_builtin_function_name(const char *name);
+
+/* A numeric literal, possibly negated, read back out of the typed program.
+   Integers keep a sign and a 64-bit magnitude so every integer type's range is
+   decidable; floats keep the value with its sign. */
+typedef struct {
+    bool is_float;
+    bool negative;
+    uint64_t magnitude;
+    double real;
+} NumericConstant;
+
+/* Reads a literal or a negated literal. With `allow_converted`, also reads
+   through an explicit conversion that was folded at compile time: such a
+   constant already has its final type and must not be retyped by context. */
+bool numeric_constant_read(const TypedProgram *program, size_t node_index,
+                           bool allow_converted, NumericConstant *out);
+bool integer_constant_fits(NippyType kind, bool negative, uint64_t magnitude);
+bool float_constant_fits(NippyType kind, double value);
+NippyType unsigned_counterpart(NippyType kind);
+/* Converts a constant to `target`, truncating a float toward zero. Returns
+   false when the result is not representable in the target. */
+bool numeric_constant_convert(const NumericConstant *in, NippyType target,
+                              NumericConstant *out);
+/* Reports a range error at `pos` and returns false when `constant` does not
+   fit `kind`. */
+bool numeric_constant_check_range(CheckContext *ctx, SourcePos pos,
+                                  const NumericConstant *constant,
+                                  NippyType kind);
+/* Gives a contextual literal (or negated literal) its final numeric type. The
+   caller has already checked the range. */
+bool numeric_constant_retype(CheckContext *ctx, size_t node_index,
+                             size_t target_index, NippyType target_kind);
+/* Appends a synthesized literal node holding `value` as `kind`. A negative
+   integer becomes a negation of a literal typed as the unsigned counterpart. */
+bool numeric_constant_emit(CheckContext *ctx, const NumericConstant *value,
+                           NippyType kind, size_t target_index, SourcePos pos,
+                           size_t *out_index);
 
 #endif

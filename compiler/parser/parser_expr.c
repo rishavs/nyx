@@ -5,9 +5,12 @@ bool push_literal(Ast *ast, const Token *token, size_t *out_index)
 {
     AstNode node = {0};
 
-    node.kind = AST_INTEGER_LITERAL;
+    node.kind = token->type == TOKEN_FLOAT ? AST_FLOAT_LITERAL
+                                            : AST_INTEGER_LITERAL;
     node.pos = token->pos;
     node.integer_value = token->integer_value;
+    node.integer_value_u = token->integer_value_u;
+    node.float_value = token->float_value;
     node.name_index = AST_NO_NODE;
     node.left_child = AST_NO_NODE;
     node.right_child = AST_NO_NODE;
@@ -22,6 +25,7 @@ bool argument_looks_like_expression(const Token *token)
 {
     return token != NULL &&
            (token->type == TOKEN_INTEGER ||
+            token->type == TOKEN_FLOAT ||
             token->type == TOKEN_STRING ||
             token->type == TOKEN_IDENTIFIER ||
             token->type == TOKEN_KEYWORD_TRUE ||
@@ -121,7 +125,7 @@ bool parse_primary(
         return parse_record_literal(tokens, string_bytes, ast, cursor,
                                     out_index, errors);
     }
-    if (token->type == TOKEN_INTEGER) {
+    if (token->type == TOKEN_INTEGER || token->type == TOKEN_FLOAT) {
         if (!push_literal(ast, token, out_index)) {
             error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;

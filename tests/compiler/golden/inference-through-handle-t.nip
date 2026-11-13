@@ -1,0 +1,5 @@
+var s: Store = Store(1)
+fun read_it<T>(h: Handle<T>): T
+  return h.read()
+end
+var n: Int32 = read_it(s.alloc<Int32>(42))

@@ -1,0 +1,8 @@
+fun countdown(n:Int32):Int32
+  if n == 0 then
+    return 0
+  end
+  return countdown(n - 1)
+end
+
+var zero : Int32 = 0

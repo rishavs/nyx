@@ -1,0 +1,9 @@
+fun apply<T>(f: Fun<(T):T>, x: T): T
+  return f(x)
+end
+
+fun inc(x: Int32): Int32
+  return x + 1
+end
+
+var n: Int32 = apply(inc, 1)

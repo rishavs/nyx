@@ -1,0 +1,4 @@
+type MaybeHandle = Handle<Int32> | Nil
+var s: Store = Store(1)
+var h: Handle<Int32> = s.alloc<Int32>(1)
+var m: MaybeHandle = h

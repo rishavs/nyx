@@ -79,7 +79,12 @@ be moved or freed without walking its contents. string literals are the one
 variable-length token payload: decoded bytes live in `LexerResult.string_bytes`,
 and the token stores an offset and length into that pool. Escapes are decoded
 during scanning; NUL bytes, raw newlines, unterminated literals, and unknown
-escapes are lexer errors. Keyword recognition happens
+escapes are lexer errors. Numeric literals are scanned in one place: a decimal,
+`0x`, `0b`, or `0o` integer, or a float, with single `_` separators between
+digits. Integers are accumulated by hand with an exact 64-bit overflow check, so
+separators never reach a parser, and a malformed literal (a digit outside the
+base, a missing digit, a bad separator, an uppercase prefix) is reported once and
+skipped whole. Keyword recognition happens
 during scanning (`global`, `var`, `const`, `type`, `fun`, `return`, `if`,
 `then`, `elseif`, `else`, `while`, `for`, `typeof`, `is`, `match`, `with`,
 `in`, `do`, `break`, `continue`, `true`, `false`, `nil`, `end`); everything
@@ -146,9 +151,10 @@ whole construct has been parsed, which keeps each node's child run adjacent.
 Reads the syntax tree through a `const` pointer and writes a separate
 `TypedProgram`. It does the semantic work the later stages must not repeat:
 
-- resolves type expressions against built-ins (`Int32`, `Bool`, `Byte`, `Nil`,
-  `Text`, `String<N>`, `TextBuilder`, `List`, `Array`, `Slice`, `Store`,
-  `Handle`, `Error`), declared
+- resolves type expressions against built-ins (`Int8`, `Int16`, `Int32`,
+  `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Float32`, `Float64`, `Bool`,
+  `Byte`, `Nil`, `Text`, `String<N>`, `TextBuilder`, `List`, `Array`, `Slice`,
+  `Store`, `Handle`, `Error`), declared
   structs and aliases, generic applications, unions, and structural function
   types;
 - expands aliases under a type-parameter environment, instantiates generic
@@ -165,6 +171,9 @@ Reads the syntax tree through a `const` pointer and writes a separate
   the arguments;
 - checks function-call arity and argument types against the callee's function
   type, including calls through function-typed variables and parameters;
+- types the reserved `base64` builtin: it decodes its string-literal argument
+  with a strict RFC 4648 decoder (`checker_base64.c`) and emits a static `Text`
+  literal flagged `fixed_type`, so context never retypes it as a `String<N>`;
 - types the reserved `print` builtin as a statement with any number of
   arguments, contextualising string literals as `Text` and checking that each
   argument is printable;
@@ -210,7 +219,16 @@ Reads the syntax tree through a `const` pointer and writes a separate
   fixed type for the allocation element (no allocator-backed fields) and builds
   `Handle<T>` records; `Text`, `List`, and `TextBuilder` use their dedicated
   constructors;
-- types integer literals as `Byte` in Byte contexts and range-checks them;
+- types integer and floating literals contextually, range-checks integer
+  literals against the target width, and defaults wide integer literals to
+  `Int64`/`Uint64`;
+- supports same-type numeric arithmetic, comparison, equality, bitwise, shift,
+  and unary operators with no implicit numeric conversion;
+- implements explicit numeric conversion through `Int32(expr)` and the other
+  numeric type names. A constant argument is converted and range-checked in
+  the checker (`checker_numeric.c`) and recorded as a conversion whose source
+  type is its own target; any other value is range-checked at run time. A
+  literal in a union goes to the one numeric alternative that can hold it;
 - types string literals as fixed `String<N>` or static dynamic `Text` from
   context, checks fixed byte length against capacity, and rejects uncontextual
   literals and ambiguous union alternatives;
@@ -380,8 +398,10 @@ reports a diagnostic and returns false. There is no partial success.
   `Unknown Error`, produced by `error_unknown_if_none`.
 - `CompilerResult` either holds both generated sources or neither. On failure
   `c_source` and `h_source` are `NULL` and only `error_message` is set.
-- The driver refuses sources larger than 4096 bytes and sources containing a
-  NUL byte, and returns non-zero without writing a binary when it refuses.
+- The driver refuses sources larger than the configured limit (4096 bytes by
+  default) and sources containing a NUL byte. `--max-source-bytes N` raises the
+  CLI limit. A parser nesting guard and syntax-tree height check reject
+  recursive inputs before later compiler stages can exhaust the stack.
 
 ## Diagnostics
 
@@ -480,9 +500,12 @@ Each stage directory has one entry-point translation unit (`lexer.c`,
 Anything shared between those modules is declared in the directory's
 `*_internal.h`; it is compiler-internal and is not part of the public API.
 
+## Packaging
+
 ## Known gaps
 
-- No incremental compilation; `make` rebuilds every translation unit.
+- No incremental compilation of Nippy programs: each `nippy` run compiles the
+  whole program. (The repository's own `make` build is incremental.)
 - No concurrency story.
 - Program-level variables are not visible inside function bodies; only stores
   are. Local variables are block-scoped and cannot shadow parameters or other
@@ -524,4 +547,6 @@ Anything shared between those modules is declared in the directory's
   deallocation. Allocation failure aborts rather than returning a value.
 - Handles are opaque; index, store id, and generation are not exposed. `read`
   and `write` copy values; scoped access does not exist yet.
-- Byte supports equality only; arithmetic and Byte/Int32 conversion are absent.
+- Constant folding of arithmetic is implemented for `Int32` only; other
+  numeric widths use runtime wrapping and checks. Literal typing and constant
+  conversions are range-checked for every width.

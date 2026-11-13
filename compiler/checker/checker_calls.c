@@ -115,6 +115,80 @@ done:
     return ok;
 }
 
+bool check_numeric_conversion(CheckContext *ctx, const AstNode *node,
+                                     const char *name, NippyType target_kind,
+                                     size_t ast_index)
+{
+    size_t argument_ast;
+    size_t argument;
+    const TypedNode *argument_node;
+    const TypedType *argument_type;
+    size_t target_index;
+    TypedNode typed = {0};
+
+    if (node->right_child != AST_NO_NODE || node->children_count != 1) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_CONVERSION_ARGS);
+        return false;
+    }
+    argument_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                             node->children_start);
+    if (!check_expression(ctx, argument_ast, &argument)) {
+        return false;
+    }
+    argument_node = typed_program_node(ctx->program, argument);
+    argument_type = argument_node == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             argument_node->type_index);
+    if (argument_type == NULL ||
+        !nippy_type_is_numeric(argument_type->kind)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_CONVERSION_TYPE);
+        return false;
+    }
+    if (!add_builtin_type(ctx, target_kind, &target_index)) {
+        return false;
+    }
+    typed.kind = TYPED_NUMERIC_CONVERSION;
+    typed.type_index = target_index;
+    typed.auxiliary_type = argument_node->type_index;
+    typed.pos = node->pos;
+    {
+        /* A constant converts at compile time and must fit. The folded node
+           names its own target as the source type, which is how later stages
+           tell it needs no runtime check; it also keeps the explicit type, so
+           context never retypes it. */
+        NumericConstant source;
+        NumericConstant folded;
+
+        if (numeric_constant_read(ctx->program, argument, true, &source)) {
+            if (!numeric_constant_convert(&source, target_kind, &folded)) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_CONVERSION_RANGE);
+                return false;
+            }
+            if (!numeric_constant_emit(ctx, &folded, target_kind,
+                                       target_index, node->pos, &argument)) {
+                return false;
+            }
+            typed.auxiliary_type = target_index;
+        }
+    }
+    typed.name_index = typed_program_copy_symbol(ctx->program, name,
+                                                 strlen(name));
+    if (typed.name_index == TYPED_NO_NODE) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        return false;
+    }
+    typed.left_child = argument;
+    typed.right_child = TYPED_NO_NODE;
+    typed.children_start = 0;
+    typed.children_count = 0;
+    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+}
+
+
 bool check_call(CheckContext *ctx, const AstNode *node,
                        size_t ast_index)
 {
@@ -129,6 +203,17 @@ bool check_call(CheckContext *ctx, const AstNode *node,
     }
     if (strcmp(name, "print") == 0) {
         return check_print(ctx, node, ast_index);
+    }
+    if (strcmp(name, "base64") == 0) {
+        return check_base64(ctx, node, ast_index);
+    }
+    {
+        NippyType target_kind;
+
+        if (numeric_type_from_name(name, &target_kind)) {
+            return check_numeric_conversion(ctx, node, name, target_kind,
+                                            ast_index);
+        }
     }
     if (strcmp(name, "Error") == 0) {
         return check_error_constructor(ctx, node, ast_index);
@@ -204,8 +289,7 @@ bool check_call(CheckContext *ctx, const AstNode *node,
             return check_constructor(ctx, node, entry, ast_index);
         }
     }
-    if (strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0) {
+    if (strcmp(name, "Bool") == 0 || strcmp(name, "Nil") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT, name);
         return false;
@@ -312,9 +396,9 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
         if (!check_reserved_name(ctx, parameter->pos, parameter_name)) {
             goto done;
         }
-        if (strcmp(parameter_name, "print") == 0) {
+        if (is_builtin_function_name(parameter_name)) {
             error_report_at(ctx->errors, parameter->pos,
-                            MESSAGE_CHECKER_PRINT_RESERVED);
+                            MESSAGE_CHECKER_BUILTIN_RESERVED, parameter_name);
             goto done;
         }
         if (find_variable(&locals, parameter_name) != NULL) {
@@ -541,9 +625,10 @@ bool check_generic_call(CheckContext *ctx, const AstNode *node,
         size_t generated_name;
         char generated[32];
 
-        if (ctx->function_instantiations->length >= NIPPY_TYPE_DEPTH) {
-            error_report(ctx->errors, MESSAGE_CHECKER_RECURSIVE_TYPE,
-                         entry->name);
+        if (ctx->function_instantiations->length >=
+            NIPPY_MAX_INSTANTIATIONS) {
+            error_report(ctx->errors, MESSAGE_CHECKER_TOO_MANY_INSTANTIATIONS,
+                         entry->name, NIPPY_MAX_INSTANTIATIONS);
             goto done;
         }
         fresh.entry = function_index;

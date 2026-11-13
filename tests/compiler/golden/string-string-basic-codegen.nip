@@ -1,0 +1,3 @@
+var s: String<8> = "hi\n"
+var n: Int32 = s.byte_len()
+var ok: Bool = s == "hi\n"

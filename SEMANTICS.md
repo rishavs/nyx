@@ -17,15 +17,21 @@ A program is a sequence of items, read in source order:
   `const name [: Type] = expression`;
 - a global store declaration, `global name: Store = Store(bytes)`;
 - a function declaration, `fun name(parameters): Type ... end`;
-- an `if`, `match`, or `for` statement;
+- an `if`, `match`, `for`, or `while` statement;
 - an assignment, including indexed and field assignments;
 - an expression statement, which must be a call, such as `points.reset()`.
 
-`while` and the other block-only statements are only valid inside a function
-body or another block.
+`while` and the other block statements are valid at program level, inside a
+function body, or inside another block.
+
+Recursive syntax nesting is limited to 256 levels, and the parsed syntax tree
+is limited to a depth of 1024. Exceeding either limit is a compile-time error.
 
 Either type form may be generic: `type Name<T> = ...` or
 `type Name<T> ... end`.
+
+Comments are ignored between tokens. `--` starts a line comment, and `--[` …
+`]--` delimits a multiline comment.
 
 Declarations are processed in order, and a name must be declared before it is
 used. There is no forward reference and no preprocessor. A function may refer to
@@ -33,7 +39,8 @@ itself, because its own name is bound before its body is checked. A generic
 function's body is checked only when an instantiation is needed.
 
 A type, value, or function name may not be declared twice. Re-declaring a name
-is an error. Built-in type names (`Int32`, `Bool`, `Byte`, `Nil`, `Store`,
+is an error. Built-in type names (`Int8`, `Int16`, `Int32`, `Int64`, `Uint8`,
+`Uint16`, `Uint32`, `Uint64`, `Float32`, `Float64`, `Bool`, `Byte`, `Nil`, `Store`,
 `Handle`, `String`, `Text`, `TextBuilder`, `List`, `Array`, `Slice`, `Record`,
 `Table`, and `Error`) cannot be redefined. Type names, variable names,
 function names, and store names share one ordinary namespace because they become
@@ -73,11 +80,15 @@ same pattern rather than introducing C-style block braces.
 
 A type is a type expression. The implemented forms are:
 
-- **`Int32`** — the built-in signed 32-bit integer type. It maps to `int32_t` in
-  generated C.
+- **`Int8`, `Int16`, `Int32`, `Int64`** — signed integer types mapping to
+  `int8_t`, `int16_t`, `int32_t`, and `int64_t`.
+- **`Uint8`, `Uint16`, `Uint32`, `Uint64`** — unsigned integer types mapping to
+  `uint8_t`, `uint16_t`, `uint32_t`, and `uint64_t`. `Byte` is an alias for
+  `Uint8`.
+- **`Float32`, `Float64`** — IEEE floating-point types mapping to `float` and
+  `double`.
 - **`Bool`** — the built-in boolean type, with the values `true` and `false`. It
   maps to C `bool`.
-- **`Byte`** — the built-in unsigned 8-bit type, mapping to C `uint8_t`.
 - **`Nil`** — the built-in unit type, with the single value `nil`.
 - **`Store`** — a global byte arena. It is a declaration resource, not an
   ordinary passable value.
@@ -169,9 +180,8 @@ is `Fun<(Int32, Int32):Int32>`.
 
 Expressions are:
 
-- integer literals, string literals, list literals (`[a, b]`), boolean
-  literals (`true`, `false`), and
-  `nil`;
+- integer literals, floating-point literals, string literals, list literals
+  (`[a, b]`), boolean literals (`true`, `false`), and `nil`;
 - names of variables, parameters, and functions;
 - calls, `name(arguments)`;
 - struct constructors, written as calls whose name resolves to a struct type;
@@ -190,42 +200,95 @@ Operator precedence, tightest first:
 | Level | Operators | Operand types | Result |
 |---|---|---|---|
 | unary | `!` | `Bool` | `Bool` |
-| unary | `-`, `~` | `Int32` | `Int32` |
-| multiplicative | `*`, `/`, `%` | `Int32`, `Int32` | `Int32` |
-| additive | `+`, `-` | `Int32`, `Int32` | `Int32` |
-| shift | `<<`, `>>` | `Int32`, `Int32` | `Int32` |
-| relational | `<`, `<=`, `>`, `>=` | `Int32`, `Int32` | `Bool` |
-| equality | `==`, `!=` | same type: `Int32`, `Bool`, `Byte`, `Text`, or `String<N>` | `Bool` |
-| bitwise and | `&` | `Int32`, `Int32` | `Int32` |
-| bitwise xor | `^` | `Int32`, `Int32` | `Int32` |
-| bitwise or | `\|` | `Int32`, `Int32` | `Int32` |
-| logical and | `&&` | `Bool`, `Bool` | `Bool` |
-| logical or | `\|\|` | `Bool`, `Bool` | `Bool` |
+| unary | `-` | signed integer or float | same type |
+| unary | `~` | integer | same type |
+| multiplicative | `*`, `/` | same numeric type | same type |
+| multiplicative | `%` | same integer type | same type |
+| additive | `+`, `-` | same numeric type | same type |
+| shift | `<<`, `>>` | same integer type | same type |
+| relational | `<`, `<=`, `>`, `>=` | same numeric type | `Bool` |
+| equality | `==`, `!=` | same numeric type, `Bool`, `Text`, or `String<N>` | `Bool` |
+| bitwise | `&`, `^`, `\|` | same integer type | same type |
+| logical | `&&`, `\|\|` | `Bool`, `Bool` | `Bool` |
 
-Integer arithmetic wraps on `+`, `-`, `*`, and unary `-` for runtime values.
-Compile-time constant expressions are checked instead of wrapped: overflow,
-shift counts outside `0..31`, and division or modulo by a constant zero are
-rejected. `const` integer bindings participate in constant expressions, and the
-same evaluator handles `Store(bytes)` and constructor capacities. Division and
-modulo by a non-constant zero traps at runtime. `INT32_MIN / -1` is a runtime
-error and `INT32_MIN % -1` is `0`. For non-constant counts, `<<` and `>>` mask
-the shift count to 31.
+Integer arithmetic wraps on `+`, `-`, `*`, and unary `-` for signed types;
+unsigned types wrap modulo their width. The generated C does the arithmetic in
+unsigned types of at least 32 bits, so narrow operands never overflow C's
+promoted `int`. Unary `-` is not defined on unsigned types. Division and modulo
+trap on zero, and signed minimum divided by `-1` traps except that signed
+minimum modulo `-1` is `0`. Shifts mask a non-constant count to the operand
+width, and `>>` is a logical shift for every integer type. `~` yields a value of
+the operand's own type.
 
-All arithmetic is `Int32` only. `&`, `|`, `^`, and `~` are bitwise `Int32`.
+Compile-time constant expressions are currently modelled for `Int32`: `Int32`
+overflow, constant shift counts outside the operand width, and constant zero
+divisors are rejected. `const` integer bindings participate there, and the same
+evaluator handles `Store(bytes)` and constructor capacities. Constant folding
+for the other numeric widths is not implemented yet.
+
+Float arithmetic follows C `float`/`double` arithmetic; `%`, shifts, and bitwise
+operators require integers.
 
 All binary operators are left-associative. `&&` and `||` short-circuit in
 generated C. Addition wraps: generated C performs the addition in unsigned
 arithmetic and converts the result back to `int32_t`, so the language does not
 rely on signed overflow.
 
-An integer literal is a decimal digit sequence that must fit in a signed 32-bit
-`int`; an out-of-range literal is a lexer error rather than a wrap-around.
+Integer literals are decimal, or written in another base with a lowercase
+prefix: `0x` hexadecimal, `0b` binary, `0o` octal (`0xFF`, `0b1010`, `0o755`).
+A leading zero alone is not a prefix, so `010` is ten. Digits of any literal,
+including floats and exponents, may be grouped with single underscores between
+two digits: `1_000_000`, `0xFF_FF`, `0b1111_0000`, `1_000.5`, `1e1_0`. A radix
+literal is an integer only; `0x1.5` is an error, and so are an uppercase prefix
+(`0XFF`), a digit outside the base (`0b102`), a prefix with no digits (`0x`), and
+a misplaced underscore. A radix literal is typed and range-checked exactly like a
+decimal one, so `var x: Int8 = 0x80` is rejected just as `128` is; write `-0x80`
+or use an unsigned type.
 
-An integer literal is typed as `Byte` when the expected type is `Byte`, or when
-it is injected into a union that has `Byte` but no `Int32`. The literal must be
-in `0..255`. This is contextual literal typing, not an implicit conversion;
-`Byte` and `Int32` values do not convert into each other. `Byte` supports `==`
-and `!=` (including against integer literals) but no arithmetic yet.
+Integer literals may be up to 64 bits. A literal, or a negated literal such as
+`-5`, is typed by context and must fit the type it is given; a literal that does
+not fit is a compile-time error:
+
+- beside a numeric operand, it takes that operand's type, so `x + -1` and
+  `x < 200` type the literal from `x`;
+- where a type is expected (an annotation, an assignment, an argument, a
+  `return`, a field, a collection element), it takes that type;
+- in a union, it goes to the one numeric alternative of the right kind that can
+  hold it. An alternative of the literal's own default type wins. Two other
+  fitting alternatives, such as `Int8 | Int64`, are ambiguous and rejected, as
+  for strings, and a literal that fits none reports its range;
+- with no context it is `Int32`, or `Int64` / `Uint64` when it does not fit
+  `Int32`.
+
+Floating-point literals use decimal digits with a fractional part and/or an
+exponent (`1.5`, `2e3`, `1.5E-3`) and default to `Float64`. A float literal
+beyond `Float64`'s range is a lexer error; one beyond `Float32`'s range in a
+`Float32` context is a checker error. Underflow to a denormal or zero is
+accepted. An integer literal never becomes a float and a float literal never
+becomes an integer: `var f: Float64 = 1` is rejected, so write `1.0` or
+`Float64(1)`. `Byte` is an alias for `Uint8`; a literal typed as `Byte` must be
+in `0..255`. This is contextual literal typing, not an implicit conversion:
+different numeric types never convert into each other.
+
+Explicit numeric conversion uses type-call syntax with exactly one numeric
+argument: `Int8(expr)`, `Uint32(expr)`, `Float64(expr)`, and so on. The result
+has exactly the named type; context never retypes it, so `var x: Int64 =
+Int32(5)` is rejected.
+
+- A constant (a literal, a negated literal, or a conversion of one) converts at
+  compile time and must fit the target: `Int8(300)`, `Uint8(-1)`, and
+  `Float32(1e39)` are compile-time errors. A float constant truncates toward
+  zero first, so `Int32(2.9)` is `2`.
+- Any other value converts at run time. A conversion between integer types that
+  could lose a value is range-checked and traps with `nippy: numeric conversion
+  out of range`; one that cannot (such as `Int8` to `Int32`) is a plain C
+  conversion.
+- Float to integer truncates toward zero and traps when the truncated value is
+  out of range or the input is NaN or infinite, so `-128.9` converts to `Int8`
+  as `-128` and `-129.0` traps.
+- Integer to float rounds to nearest. `Float32` to `Float64` is exact.
+  `Float64` to `Float32` traps when a finite value is beyond `Float32`'s range;
+  infinities and NaN pass through.
 
 A string literal is a sequence of bytes between double quotes. The escapes are
 `\n`, `\t`, `\r`, `\\`, and `\"`; a raw newline, a NUL byte, or any other
@@ -245,6 +308,31 @@ type: `var s = "x"` is rejected.
 - A literal in a union is injected into the unique alternative that can hold it.
   Two fitting alternatives, such as `Text | String<8>`, are ambiguous and
   rejected.
+
+### `base64`
+
+`base64("...")` decodes a string literal at compile time and yields a static
+`Text` holding the decoded bytes. Its bytes live in read-only data and it needs
+no Store, so it is usable anywhere a `Text` is, including `store.copy`,
+`store.concat`, equality, `slice`, `for`, and unions with `Text`:
+
+```nippy
+var hello: Text = base64("SGVsbG8sIFdvcmxkIQ==")   // "Hello, World!"
+var raw: Text = base64("AAECgP8=")                  // bytes 0 1 2 128 255
+```
+
+- It takes exactly one argument, which must be a string literal.
+- The decoder is strict, so each byte string has one spelling: the standard
+  RFC 4648 alphabet (`A-Z a-z 0-9 + /`), `=` padding that completes the final
+  four-character group, and zero bits in the unused tail. The URL-safe alphabet
+  (`-` `_`), whitespace, unpadded input, and non-canonical padding such as
+  `"QR=="` are rejected, each with the byte offset of the problem.
+- The empty string decodes to an empty `Text`.
+- The result is always a `Text` and is never retyped by context: it does not
+  become a `String<N>`, and `String<N> == base64(...)` is rejected like any
+  `Text` against a `String<N>`.
+- Decoded bytes are arbitrary. They need not be UTF-8 and may contain NUL, which
+  `Text` allows because it carries a length.
 
 A name expression must resolve to a variable, parameter, or function. A type
 name is not a value and is rejected when used without a call. A non-generic
@@ -464,13 +552,19 @@ print("n =", n, "ok =", flag)
 - `print()` writes one newline.
 - `print` returns `Nil`.
 - `print` is reserved and cannot be declared, stored, passed, or used as a
-  value.
+  value. `base64` is reserved the same way.
 
 The builtin formats by the static argument type:
 
 ```text
+Int8/Int16   decimal
 Int32        decimal
-Byte         0..255 decimal
+Int64        decimal
+Uint8/16     decimal
+Uint32       decimal
+Uint64       decimal
+Float32      %g
+Float64      %g
 Bool         true / false
 Nil          nil
 String<N>    raw bytes
@@ -789,7 +883,7 @@ var last: Int32 | Nil = xs.pop()
 
 ### Element types
 
-Collection elements must be single items: `Int32`, `Bool`, `Byte`, `Nil`,
+Collection elements must be single items: the numeric types, `Bool`, `Nil`,
 structs, unions, handles, `Text`, `String<N>`, function types, and `Error`.
 
 - `Store` is not a value and is not listable.
@@ -1137,6 +1231,13 @@ type, and a body containing zero or more statements. Each parameter is
 `name : Type` and is in scope throughout the body. Parameters may have any value
 type. Parameter names within one function must be unique.
 
+Function value scope is closed by design. A function can access its parameters
+and its own locals, but cannot capture or read program-level `var` or `const`
+bindings. Values a function needs must be passed as arguments. Program-level
+stores are the sole exception and remain visible so functions can share
+explicitly allocated state. This keeps ordinary dependencies visible at each
+call site and makes stores the only deliberate shared mutable state.
+
 A function returning `Nil` returns `nil`:
 
 ```text
@@ -1149,7 +1250,7 @@ The statements are:
 
 - `return expression`;
 - `if condition then ... elseif condition then ... else ... end`;
-- `while condition ... end`;
+- `while condition do ... end`;
 - `for bindings in iterable do ... end`;
 - `match ... with ... end`;
 - a local `var` or `const` declaration;
@@ -1185,8 +1286,8 @@ overflowing the C stack.
 
 A function body may declare local variables, but cannot contain a bare nested
 block. It can assign its parameters, but it cannot refer to or assign
-program-level variables. It can
-refer to its parameters, to functions declared before it, and to itself. Because a function is bound before
+program-level variables. It can refer to its parameters, to functions declared
+before it, and to itself. Because a function is bound before
 its body is checked, direct recursion is accepted; mutual recursion is not,
 because the later function is not declared yet.
 
@@ -1264,8 +1365,10 @@ not in the parser or generator.
 The generated C is internal IR, not a stable interface, but its behaviour is the
 language's behaviour:
 
-- `Int32` becomes `int32_t`, `Bool` becomes `bool`, `Byte` becomes `uint8_t`,
-  and `Nil` becomes a one-byte `nyx_nil` typedef.
+- The integer types become `int8_t`, `int16_t`, `int32_t`, `int64_t`,
+  `uint8_t` (also `Byte`), `uint16_t`, `uint32_t`, and `uint64_t`; `Float32`
+  and `Float64` become `float` and `double`; `Bool` becomes `bool`; and `Nil`
+  becomes a one-byte `nyx_nil` typedef.
 - `Text` becomes a `nyx_string` descriptor with a static-data pointer, store
   id, byte offset, byte length, and generation. A static literal points at a
   generated read-only byte array. Arena-backed strings are allocated by the
@@ -1363,7 +1466,13 @@ If compilation fails with no diagnostic recorded, the message is exactly
   the implemented dynamic-memory model; there is no per-object free, no
   first-class store value, and no local store declaration yet.
 - Exposing handle fields (`index`, `store`, `generation`); handles are opaque.
-- Byte arithmetic, ordering, and conversion to/from Int32.
+- Compile-time folding of arithmetic for numeric widths other than `Int32`,
+  and `const` bindings of other numeric types inside constant expressions.
+- Runtime base64 encoding and decoding (`base64` is a compile-time literal
+  form only), hexadecimal byte-string literals, and long base64 blobs, since a
+  string literal cannot span lines.
+- `Float16`, and an implicit or literal conversion from an integer literal to a
+  float type; `Float64(1)` is the spelling today.
 - UTF-8 validation, codepoint indexing, and string ordering/search.
 - The `build ... as ... do` block syntax; `TextBuilder` is first-class now.
 - C string projection (`cstr`), foreign string adoption, and explicit

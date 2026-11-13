@@ -1,0 +1,10 @@
+type Point
+  x: Int32
+  y: Int32
+end
+
+fun identity<T>(x: T): T
+  return x
+end
+
+var p = identity(Point(1, 2))

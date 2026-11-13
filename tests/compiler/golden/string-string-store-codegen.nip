@@ -1,0 +1,3 @@
+var arena: Store = Store(8)
+var h: Handle<String<8>> = arena.alloc<String<8>>("hi")
+var s: String<8> = h.read()

@@ -225,7 +225,10 @@ bool push_if_narrowing(CheckContext *ctx, size_t condition_ast)
                              &tested)) {
         return false;
     }
-    if (!union_has_alternative(ctx->program, declared, tested, &tag)) {
+    /* Resolving the tested type can add a type, which can move the array. */
+    declared = typed_program_type(ctx->program, variable->type_index);
+    if (declared == NULL ||
+        !union_has_alternative(ctx->program, declared, tested, &tag)) {
         return true;
     }
     {
@@ -370,6 +373,10 @@ bool check_match(CheckContext *ctx, const AstNode *node,
     size_t head;
     const TypedNode *head_node;
     const TypedType *head_type;
+    /* The scrutinee's type never changes while the arms are checked, but the
+       pointers to it do move as nodes and types are added, so arms read this
+       index and fetch the pointers again where they need them. */
+    size_t head_type_index;
     size_t bool_type;
     size_t nil_type;
     size_t else_typed = TYPED_NO_NODE;
@@ -389,6 +396,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
     head_type = head_node == NULL
                     ? NULL
                     : typed_program_type(ctx->program, head_node->type_index);
+    head_type_index = head_node == NULL ? TYPED_NO_NODE : head_node->type_index;
     if (head_type == NULL ||
         !builtin_type(ctx, NIPPY_TYPE_BOOL, &bool_type) ||
         !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
@@ -427,6 +435,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             size_t tested;
             size_t tag = 0;
             size_t j;
+            bool head_is_union;
 
             if (!resolve_type_in_env(ctx, pattern_ast, ctx->env, "match",
                                      &tested)) {
@@ -435,7 +444,11 @@ bool check_match(CheckContext *ctx, const AstNode *node,
                 list_free(&body_types);
                 return false;
             }
-            if (head_type->kind == NIPPY_TYPE_UNION) {
+            /* Resolving the pattern can add a type and move the type array. */
+            head_type = typed_program_type(ctx->program, head_type_index);
+            head_is_union = head_type != NULL &&
+                            head_type->kind == NIPPY_TYPE_UNION;
+            if (head_is_union) {
                 if (!union_has_alternative(ctx->program, head_type, tested,
                                            &tag)) {
                     error_report_at(ctx->errors, node->pos,
@@ -445,8 +458,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
                     list_free(&body_types);
                     return false;
                 }
-            } else if (!same_type(ctx->program, head_node->type_index,
-                                  tested)) {
+            } else if (!same_type(ctx->program, head_type_index, tested)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_MATCH_PATTERN);
                 list_free(&conditions);
@@ -479,9 +491,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             test.type_index = bool_type;
             test.auxiliary_type = tested;
             test.left_child = head;
-            test.integer_value = head_type->kind == NIPPY_TYPE_UNION
-                                     ? (int)tag
-                                     : 1;
+            test.integer_value = head_is_union ? (int)tag : 1;
             test.pos = node->pos;
             if (!typed_program_push(ctx->program, &test, &condition)) {
                 error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
@@ -509,7 +519,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             }
             pattern_node = typed_program_node(ctx->program, pattern);
             if (pattern_node == NULL ||
-                !inject_into(ctx, pattern, head_node->type_index, &coerced)) {
+                !inject_into(ctx, pattern, head_type_index, &coerced)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_MATCH_PATTERN);
                 list_free(&conditions);
@@ -618,7 +628,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
                 }
             }
         } else if (!type_match &&
-                   same_type(ctx->program, head_node->type_index,
+                   same_type(ctx->program, head_type_index,
                              bool_type)) {
             bool seen_true = false;
             bool seen_false = false;
@@ -638,7 +648,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             }
             exhaustive = seen_true && seen_false;
         } else if (!type_match &&
-                   same_type(ctx->program, head_node->type_index,
+                   same_type(ctx->program, head_type_index,
                              nil_type)) {
             exhaustive = true;
         } else if (type_match && head_type->kind != NIPPY_TYPE_UNION) {

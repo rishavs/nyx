@@ -11,9 +11,17 @@ bool is_printable_type_depth(const TypedProgram *program,
         return false;
     }
     switch (type->kind) {
+    case NIPPY_TYPE_INT8:
+    case NIPPY_TYPE_INT16:
     case NIPPY_TYPE_INT32:
-    case NIPPY_TYPE_BOOL:
+    case NIPPY_TYPE_INT64:
     case NIPPY_TYPE_BYTE:
+    case NIPPY_TYPE_UINT16:
+    case NIPPY_TYPE_UINT32:
+    case NIPPY_TYPE_UINT64:
+    case NIPPY_TYPE_FLOAT32:
+    case NIPPY_TYPE_FLOAT64:
+    case NIPPY_TYPE_BOOL:
     case NIPPY_TYPE_NIL:
     case NIPPY_TYPE_STRING:
     case NIPPY_TYPE_DYNAMIC_STRING:

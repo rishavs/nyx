@@ -54,7 +54,9 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
                              ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, declaration_node);
-    const char *name = typed_program_symbol_text(program, type->name_index);
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, type->name_index,
+                                  name_text, sizeof(name_text));
     size_t i;
 
     if (node == NULL || node->kind != TYPED_TYPE_DECLARATION ||
@@ -76,6 +78,7 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
         size_t child = *(const size_t *)list_get(&program->children,
                                                  node->children_start + i);
         const TypedNode *field = typed_program_node(program, child);
+        char field_text[USER_NAME_CAPACITY];
         const char *field_name;
         char field_type_name[NIPPY_IDENTIFIER_MAX + 32];
 
@@ -87,7 +90,8 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
                            sizeof(field_type_name), errors)) {
             return false;
         }
-        field_name = typed_program_symbol_text(program, field->name_index);
+        field_name = user_c_name(program, field->name_index, field_text,
+                                 sizeof(field_text));
         if (!valid_identifier(field_name)) {
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
             return false;
@@ -331,7 +335,8 @@ bool emit_type_definitions(const TypedProgram *program,
                     header,
                     "typedef struct {\n"
                     "    uint32_t store;\n"
-                    "    size_t offset;\n"
+                    "    size_t offset; /* the parent list's state */\n"
+                    "    size_t start;  /* index of the first element */\n"
                     "    size_t length;\n"
                     "    uint64_t generation;\n"
                     "} nyx_slice;\n\n")) {

@@ -1,0 +1,9 @@
+fun choose(flag:Bool):Int32
+  if flag then
+    return 1
+  else
+    return 0
+  end
+end
+
+var n : Int32 = choose(!(1 == 2) && (2 < 3) || false)

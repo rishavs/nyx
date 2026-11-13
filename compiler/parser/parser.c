@@ -1,5 +1,61 @@
 #include "parser_internal.h"
 
+#define NIPPY_MAX_PARSE_NESTING 256
+
+static bool token_opens_nesting(TokenType type)
+{
+    return type == TOKEN_LPAREN || type == TOKEN_LBRACKET ||
+           type == TOKEN_LBRACE || type == TOKEN_KEYWORD_IF ||
+           type == TOKEN_KEYWORD_WHILE || type == TOKEN_KEYWORD_FOR ||
+           type == TOKEN_KEYWORD_MATCH || type == TOKEN_KEYWORD_FUN ||
+           type == TOKEN_KEYWORD_TYPE;
+}
+
+static bool token_closes_nesting(TokenType type)
+{
+    return type == TOKEN_RPAREN || type == TOKEN_RBRACKET ||
+           type == TOKEN_RBRACE || type == TOKEN_KEYWORD_END;
+}
+
+static bool check_parse_nesting(const TokenList *tokens, ErrorState *errors)
+{
+    size_t depth = 0;
+    size_t unary_depth = 0;
+    size_t i;
+
+    for (i = 0; i < tokens->length; i++) {
+        const Token *token = list_get(tokens, i);
+
+        if (token_opens_nesting(token->type)) {
+            depth++;
+            if (depth > NIPPY_MAX_PARSE_NESTING) {
+                error_report_at(errors, token->pos,
+                                MESSAGE_PARSER_NESTING_LIMIT,
+                                NIPPY_MAX_PARSE_NESTING);
+                return false;
+            }
+        } else if (token_closes_nesting(token->type)) {
+            if (depth > 0) {
+                depth--;
+            }
+        }
+
+        if (token->type == TOKEN_MINUS || token->type == TOKEN_BANG ||
+            token->type == TOKEN_TILDE) {
+            unary_depth++;
+            if (unary_depth > NIPPY_MAX_PARSE_NESTING) {
+                error_report_at(errors, token->pos,
+                                MESSAGE_PARSER_NESTING_LIMIT,
+                                NIPPY_MAX_PARSE_NESTING);
+                return false;
+            }
+        } else {
+            unary_depth = 0;
+        }
+    }
+    return true;
+}
+
 
 const Token *token_at(const TokenList *tokens, size_t index)
 {
@@ -60,6 +116,10 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t cursor = 0;
 
     ast_init(ast);
+
+    if (!check_parse_nesting(tokens, errors)) {
+        return false;
+    }
 
     token = token_at(tokens, cursor);
     if (token == NULL || token->type == TOKEN_EOF) {
@@ -142,6 +202,18 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
 
             if (!parse_for(tokens, string_bytes, ast, &cursor, &statement,
                            errors)) {
+                return false;
+            }
+            if (!list_push(&ast->roots, &statement)) {
+                error_report(errors,
+                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                return false;
+            }
+        } else if (token->type == TOKEN_KEYWORD_WHILE) {
+            size_t statement;
+
+            if (!parse_while(tokens, string_bytes, ast, &cursor, &statement,
+                             errors)) {
                 return false;
             }
             if (!list_push(&ast->roots, &statement)) {

@@ -5,8 +5,9 @@ bool emit_expr_access(const TypedProgram *program, const TypedNode *node,
 {
     if (node->kind == TYPED_MEMBER_ACCESS) {
         *handled = true;
-        const char *field = typed_program_symbol_text(program,
-                                                      node->name_index);
+        char field_text[USER_NAME_CAPACITY];
+    const char *field = user_c_name(program, node->name_index,
+                                  field_text, sizeof(field_text));
 
         if (!valid_identifier(field) ||
             !buffer_append(buffer, "(") ||

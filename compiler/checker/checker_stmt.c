@@ -140,7 +140,7 @@ bool check_for_binding(CheckContext *ctx, const char *name,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
+        is_builtin_type_name(name) || is_builtin_function_name(name)) {
         error_report_at(ctx->errors, pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name == NULL ? "" : name);
         return false;
@@ -393,7 +393,7 @@ bool check_local_declaration(CheckContext *ctx, const AstNode *node,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
+        is_builtin_type_name(name) || is_builtin_function_name(name)) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_DUPLICATE_NAME, name);
         return false;
@@ -690,9 +690,9 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
                         name);
         return false;
     }
-    if (strcmp(name, "print") == 0) {
+    if (is_builtin_function_name(name)) {
         error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_PRINT_RESERVED);
+                        MESSAGE_CHECKER_BUILTIN_RESERVED, name);
         return false;
     }
     if (node->right_child == AST_NO_NODE) {
@@ -782,9 +782,9 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         if (!check_reserved_name(ctx, parameter->pos, parameter_name)) {
             goto done;
         }
-        if (strcmp(parameter_name, "print") == 0) {
+        if (is_builtin_function_name(parameter_name)) {
             error_report_at(ctx->errors, parameter->pos,
-                            MESSAGE_CHECKER_PRINT_RESERVED);
+                            MESSAGE_CHECKER_BUILTIN_RESERVED, parameter_name);
             goto done;
         }
         if (find_variable(ctx->locals, parameter_name) != NULL ||

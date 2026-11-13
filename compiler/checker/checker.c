@@ -28,6 +28,7 @@ bool check_expression(CheckContext *ctx, size_t ast_index,
 
         switch (node->kind) {
         case AST_INTEGER_LITERAL:
+        case AST_FLOAT_LITERAL:
             ok = check_literal(ctx, node, ast_index);
             break;
         case AST_BOOL_LITERAL:
@@ -289,6 +290,22 @@ bool push_injection(CheckContext *ctx, size_t value, size_t target,
 }
 
 
+/* A string literal takes the type its context gives it. The result of
+   base64() has its type fixed and must stay a Text. */
+static bool is_contextual_string(const CheckContext *ctx,
+                                 const TypedNode *node)
+{
+    (void)ctx;
+    return node->kind == TYPED_STRING_LITERAL && !node->fixed_type;
+}
+
+
+/* A pointer into the typed program (a node or a type) is only valid until the
+   next thing is added to it: the array can move. Everything below that calls
+   something that adds nodes or types (inject_into itself, push_injection,
+   builtin_type, numeric_constant_retype) therefore reads what it needs first
+   and fetches the pointers again afterwards. `make test-poison` finds a
+   mistake here at once. */
 bool inject_into(CheckContext *ctx, size_t value, size_t target,
                         size_t *out_value)
 {
@@ -305,6 +322,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
         size_t key_type;
         size_t value_type;
         size_t entries = value_node->children_count / 2;
+        size_t literal_start = value_node->children_start;
         size_t children_start;
         List values;
         size_t i;
@@ -328,11 +346,9 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
         list_init(&values, sizeof(size_t));
         for (i = 0; i < entries; i++) {
             size_t key = *(const size_t *)list_get(
-                &ctx->program->children,
-                value_node->children_start + i * 2);
+                &ctx->program->children, literal_start + i * 2);
             size_t item = *(const size_t *)list_get(
-                &ctx->program->children,
-                value_node->children_start + i * 2 + 1);
+                &ctx->program->children, literal_start + i * 2 + 1);
             size_t coerced_key;
             size_t coerced_value;
             const TypedNode *key_node;
@@ -384,6 +400,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
                 return false;
             }
         }
+        value_node = (TypedNode *)typed_program_node(ctx->program, value);
         value_node->type_index = target;
         value_node->children_start = children_start;
         value_node->children_count = values.length;
@@ -406,6 +423,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
             const TypedType *fixed = target_type;
             size_t element_type;
             size_t element_count = value_node->children_count;
+            size_t literal_start = value_node->children_start;
             size_t children_start = ctx->program->children.length;
             size_t i;
 
@@ -422,8 +440,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
                 &ctx->program->type_children, fixed->first_child);
             for (i = 0; i < element_count; i++) {
                 size_t child = *(const size_t *)list_get(
-                    &ctx->program->children,
-                    value_node->children_start + i);
+                    &ctx->program->children, literal_start + i);
                 size_t coerced;
 
                 if (!inject_into(ctx, child, element_type, &coerced) ||
@@ -435,6 +452,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
                     return false;
                 }
             }
+            value_node = (TypedNode *)typed_program_node(ctx->program, value);
             value_node->type_index = target;
             value_node->children_start = children_start;
             *out_value = value;
@@ -446,25 +464,27 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
         return true;
     }
 
-    /* Integer literals are contextual Bytes. This is literal typing, not a
-       conversion from an Int32 value. */
-    if (target_type->kind == NIPPY_TYPE_BYTE) {
-        if (value_node->kind != TYPED_INTEGER_LITERAL) {
+    /* A literal, or a negated literal, takes the numeric type it is assigned
+       to. This is literal typing, not a conversion: the result of an explicit
+       conversion keeps the type it was given. */
+    if (nippy_type_is_numeric(target_type->kind)) {
+        NumericConstant constant;
+
+        if (!numeric_constant_read(ctx->program, value, false, &constant) ||
+            constant.is_float != nippy_type_is_float(target_type->kind)) {
             return false;
         }
-        if (value_node->integer_value < 0 || value_node->integer_value > 255) {
-            error_report_at(ctx->errors, value_node->pos,
-                            MESSAGE_CHECKER_BYTE_RANGE,
-                            value_node->integer_value);
+        if (!numeric_constant_check_range(ctx, value_node->pos, &constant,
+                                          target_type->kind) ||
+            !numeric_constant_retype(ctx, value, target, target_type->kind)) {
             return false;
         }
-        value_node->type_index = target;
         *out_value = value;
         return true;
     }
 
     if (target_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        if (value_node->kind != TYPED_STRING_LITERAL) {
+        if (!is_contextual_string(ctx, value_node)) {
             return false;
         }
         value_node->type_index = target;
@@ -473,7 +493,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
     }
 
     if (target_type->kind == NIPPY_TYPE_STRING) {
-        if (value_node->kind != TYPED_STRING_LITERAL) {
+        if (!is_contextual_string(ctx, value_node)) {
             return false;
         }
         if (value_node->string_length > target_type->fixed_length) {
@@ -491,7 +511,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
     if (target_type->kind != NIPPY_TYPE_UNION) {
         return false;
     }
-    if (value_node->kind == TYPED_STRING_LITERAL) {
+    if (is_contextual_string(ctx, value_node)) {
         size_t fitting = TYPED_NO_NODE;
         size_t fitting_count = 0;
         size_t first_string = TYPED_NO_NODE;
@@ -549,23 +569,70 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
                               value_node->type_index, &tag)) {
         return push_injection(ctx, value, target, tag, out_value);
     }
-    if (value_node->kind == TYPED_INTEGER_LITERAL) {
-        size_t byte_type;
+    {
+        /* A numeric literal in a union goes to the one alternative that can
+           hold it. Two fitting alternatives are ambiguous, as for strings; an
+           alternative of the right kind that is too small reports its range. */
+        NumericConstant constant;
 
-        if (!builtin_type(ctx, NIPPY_TYPE_BYTE, &byte_type)) {
-            return false;
-        }
-        if (union_has_alternative(ctx->program, target_type, byte_type,
-                                  &tag)) {
-            if (value_node->integer_value < 0 ||
-                value_node->integer_value > 255) {
+        if (numeric_constant_read(ctx->program, value, false, &constant)) {
+            size_t fitting = TYPED_NO_NODE;
+            size_t fitting_count = 0;
+            NippyType fitting_kind = NIPPY_TYPE_UNKNOWN;
+            NippyType first_kind = NIPPY_TYPE_UNKNOWN;
+            size_t i;
+
+            for (i = 0; i < target_type->child_count; i++) {
+                size_t alternative = *(const size_t *)list_get(
+                    &ctx->program->type_children,
+                    target_type->first_child + i);
+                const TypedType *alternative_type = typed_program_type(
+                    ctx->program, alternative);
+
+                if (alternative_type == NULL ||
+                    !nippy_type_is_numeric(alternative_type->kind) ||
+                    constant.is_float !=
+                        nippy_type_is_float(alternative_type->kind)) {
+                    continue;
+                }
+                if (first_kind == NIPPY_TYPE_UNKNOWN) {
+                    first_kind = alternative_type->kind;
+                }
+                if (constant.is_float
+                        ? float_constant_fits(alternative_type->kind,
+                                              constant.real)
+                        : integer_constant_fits(alternative_type->kind,
+                                                constant.negative,
+                                                constant.magnitude)) {
+                    fitting = alternative;
+                    fitting_kind = alternative_type->kind;
+                    fitting_count++;
+                }
+            }
+            if (fitting_count > 1) {
                 error_report_at(ctx->errors, value_node->pos,
-                                MESSAGE_CHECKER_BYTE_RANGE,
-                                value_node->integer_value);
+                                MESSAGE_CHECKER_NUMERIC_AMBIGUOUS);
                 return false;
             }
-            value_node->type_index = byte_type;
-            return push_injection(ctx, value, target, tag, out_value);
+            if (fitting_count == 1) {
+                if (!numeric_constant_retype(ctx, value, fitting,
+                                             fitting_kind)) {
+                    return false;
+                }
+                /* Retyping can add a type, which may move the type array. */
+                target_type = typed_program_type(ctx->program, target);
+                if (target_type == NULL ||
+                    !union_has_alternative(ctx->program, target_type, fitting,
+                                           &tag)) {
+                    return false;
+                }
+                return push_injection(ctx, value, target, tag, out_value);
+            }
+            if (first_kind != NIPPY_TYPE_UNKNOWN) {
+                (void)numeric_constant_check_range(ctx, value_node->pos,
+                                                   &constant, first_kind);
+                return false;
+            }
         }
     }
     return false;
@@ -660,6 +727,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             break;
         case AST_IF:
         case AST_MATCH:
+        case AST_WHILE:
             checked = check_statement(&ctx, ast_root, TYPED_NO_NODE,
                                       &(size_t){0});
             break;

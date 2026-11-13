@@ -21,6 +21,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool uses_slice;
     bool uses_print;
     bool uses_recursion;
+    bool uses_conversion;
     bool uses_map;
     bool uses_table;
     bool uses_arith_helpers;
@@ -57,6 +58,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     uses_slice = program_uses_slice(program);
     uses_print = program_uses_print(program);
     uses_recursion = program_uses_recursion(program);
+    uses_conversion = program_uses_numeric_conversion(program);
     uses_arith_helpers =
         program_uses_binary_operator(program, NIPPY_OPERATOR_DIV) ||
         program_uses_binary_operator(program, NIPPY_OPERATOR_MOD) ||
@@ -154,6 +156,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                    node->kind == TYPED_RECORD_SET ||
                    node->kind == TYPED_TABLE_SET ||
                    node->kind == TYPED_FOR ||
+                   node->kind == TYPED_WHILE ||
                    node->kind == TYPED_IF) {
             /* An assignment changes the printed value instead of replacing the
                program-value entry point. */
@@ -190,11 +193,17 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     if (store_count > 0 || program_uses_string(program) ||
         uses_dynamic_string || uses_list || uses_slice || uses_print ||
-        uses_map || uses_arith_helpers || uses_recursion) {
+        uses_map || uses_arith_helpers || uses_recursion ||
+        uses_conversion) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
                            "#include <string.h>\n\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            goto done;
+        }
+        if (uses_conversion &&
+            !buffer_append(&source, "#include <float.h>\n\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
@@ -208,7 +217,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (uses_dynamic_string || uses_list || uses_slice || uses_arith_helpers) {
+    if (uses_dynamic_string || uses_list || uses_slice || uses_arith_helpers ||
+        uses_conversion) {
         if (!buffer_append(&source,
                            "#if defined(__GNUC__) || defined(__clang__)\n"
                            "#define NIPPY_UNUSED __attribute__((unused))\n"
@@ -219,8 +229,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             goto done;
         }
     }
-    if (uses_arith_helpers &&
+    if ((uses_arith_helpers || uses_conversion) &&
         !emit_arithmetic_runtime(&source, errors)) {
+        goto done;
+    }
+    if (uses_conversion && !emit_conversion_runtime(&source, errors)) {
         goto done;
     }
     if (store_count > 0 &&
@@ -298,6 +311,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                  node->kind == TYPED_RECORD_SET ||
                  node->kind == TYPED_TABLE_SET ||
                  node->kind == TYPED_FOR ||
+                 node->kind == TYPED_WHILE ||
                  node->kind == TYPED_IF) &&
                 !emit_statement(program, root, 1, effective_source, &source,
                                 errors)) {
@@ -330,7 +344,9 @@ bool emit_var_to_main(const TypedProgram *program, const TypedNode *node,
                              const char *effective_source, TextBuffer *source,
                              ErrorState *errors)
 {
-    const char *name = typed_program_symbol_text(program, node->name_index);
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, node->name_index,
+                                  name_text, sizeof(name_text));
     char type_name[NIPPY_IDENTIFIER_MAX + 32];
 
     if (!valid_identifier(name) ||
@@ -361,7 +377,9 @@ bool append_print_program(const TypedProgram *program,
                                  const char *effective_source,
                                  TextBuffer *source, ErrorState *errors)
 {
-    const char *name = typed_program_symbol_text(program, var->name_index);
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = user_c_name(program, var->name_index,
+                                  name_text, sizeof(name_text));
 
     if (!valid_identifier(name)) {
         error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);

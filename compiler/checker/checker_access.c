@@ -484,7 +484,10 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_SLICE_READONLY);
         return false;
     }
-    if (!check_fixed_index_bounds(ctx, target_right_child,
+    /* The bounds check reads the index as a syntax node, so it needs the
+       target's AST child; `target_right_child` is a typed-node index and numbers
+       a different array. */
+    if (!check_fixed_index_bounds(ctx, target->right_child,
                                   receiver->type_index)) {
         return false;
     }

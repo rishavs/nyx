@@ -20,8 +20,8 @@ bool same_type_depth(const TypedProgram *program, size_t a, size_t b,
     if (left == NULL || right == NULL || left->kind != right->kind) {
         return false;
     }
-    if (left->kind == NIPPY_TYPE_INT32 || left->kind == NIPPY_TYPE_BOOL ||
-        left->kind == NIPPY_TYPE_BYTE || left->kind == NIPPY_TYPE_NIL ||
+    if (nippy_type_is_numeric(left->kind) ||
+        left->kind == NIPPY_TYPE_BOOL || left->kind == NIPPY_TYPE_NIL ||
         left->kind == NIPPY_TYPE_STORE ||
         left->kind == NIPPY_TYPE_DYNAMIC_STRING ||
         left->kind == NIPPY_TYPE_TEXT_BUILDER) {
@@ -201,8 +201,24 @@ int type_rank(NippyType kind)
         return 15;
     case NIPPY_TYPE_ERROR:
         return 16;
+    case NIPPY_TYPE_INT8:
+        return 19;
+    case NIPPY_TYPE_INT16:
+        return 20;
+    case NIPPY_TYPE_INT64:
+        return 21;
+    case NIPPY_TYPE_UINT16:
+        return 22;
+    case NIPPY_TYPE_UINT32:
+        return 23;
+    case NIPPY_TYPE_UINT64:
+        return 24;
+    case NIPPY_TYPE_FLOAT32:
+        return 25;
+    case NIPPY_TYPE_FLOAT64:
+        return 26;
     default:
-        return 17;
+        return 27;
     }
 }
 

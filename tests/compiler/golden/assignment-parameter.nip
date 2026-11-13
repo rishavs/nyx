@@ -1,0 +1,6 @@
+fun bump(x: Int32): Int32
+  x = x + 1
+  return x
+end
+
+var n: Int32 = bump(1)

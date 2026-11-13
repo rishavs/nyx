@@ -331,18 +331,41 @@ bool check_is(CheckContext *ctx, const AstNode *node, size_t ast_index)
 bool check_literal(CheckContext *ctx, const AstNode *node,
                           size_t ast_index)
 {
-    size_t int32_type;
+    NippyType kind = NIPPY_TYPE_INT32;
+    size_t literal_type;
     TypedNode typed = {0};
 
-    if (!add_type_record(ctx, NIPPY_TYPE_INT32, TYPED_NO_NODE, TYPED_NO_NODE,
-                         &int32_type)) {
+    if (node->kind == AST_FLOAT_LITERAL) {
+        if (!add_type_record(ctx, NIPPY_TYPE_FLOAT64, TYPED_NO_NODE,
+                             TYPED_NO_NODE, &literal_type)) {
+            return false;
+        }
+        typed.kind = TYPED_FLOAT_LITERAL;
+        typed.type_index = literal_type;
+        typed.pos = node->pos;
+        typed.float_value = node->float_value;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = TYPED_NO_NODE;
+        typed.right_child = TYPED_NO_NODE;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    }
+    if (node->integer_value_u > (uint64_t)INT32_MAX) {
+        kind = node->integer_value_u > (uint64_t)INT64_MAX
+                   ? NIPPY_TYPE_UINT64
+                   : NIPPY_TYPE_INT64;
+    }
+    if (!add_type_record(ctx, kind, TYPED_NO_NODE, TYPED_NO_NODE,
+                         &literal_type)) {
         return false;
     }
 
     typed.kind = TYPED_INTEGER_LITERAL;
-    typed.type_index = int32_type;
+    typed.type_index = literal_type;
     typed.pos = node->pos;
     typed.integer_value = node->integer_value;
+    typed.integer_value_u = node->integer_value_u;
     typed.name_index = TYPED_NO_NODE;
     typed.left_child = TYPED_NO_NODE;
     typed.right_child = TYPED_NO_NODE;
@@ -586,41 +609,86 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
     }
 
 
-    /* A Byte can be compared with an integer literal: the literal is typed as
-       a Byte in that context. A Byte variable is never implicitly compared with
-       an Int32 variable. */
-    if (node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE) {
-        if (left_type->kind == NIPPY_TYPE_BYTE &&
-            right_node->kind == TYPED_INTEGER_LITERAL) {
-            size_t coerced;
+    /* Numeric literals are typed by context: an untyped literal adopts the
+       type of the other numeric operand. Two integer literals use the widest
+       default that can hold them. */
+    if (nippy_type_is_numeric(left_type->kind) ||
+        nippy_type_is_numeric(right_type->kind)) {
+        /* A negated literal is still a literal: `x + -1` types the 1 from x. */
+        NumericConstant left_constant;
+        NumericConstant right_constant_value;
+        bool left_literal = numeric_constant_read(ctx->program, left, false,
+                                                  &left_constant);
+        bool right_literal = numeric_constant_read(
+            ctx->program, right, false, &right_constant_value);
 
-            if (!inject_into(ctx, right, left_node->type_index, &coerced)) {
+        if (left_literal && right_literal && !left_constant.is_float &&
+            !right_constant_value.is_float) {
+            NippyType common = NIPPY_TYPE_INT32;
+            size_t common_type;
+            size_t coerced_left;
+            size_t coerced_right;
+
+            if (left_type->kind == NIPPY_TYPE_UINT64 ||
+                right_type->kind == NIPPY_TYPE_UINT64) {
+                common = NIPPY_TYPE_UINT64;
+            } else if (left_type->kind == NIPPY_TYPE_INT64 ||
+                       right_type->kind == NIPPY_TYPE_INT64) {
+                common = NIPPY_TYPE_INT64;
+            }
+            if (!add_builtin_type(ctx, common, &common_type) ||
+                !inject_into(ctx, left, common_type, &coerced_left) ||
+                !inject_into(ctx, right, common_type, &coerced_right)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_OPERATOR_TYPE,
                                 operator_text(node->op));
                 return false;
             }
-            right = coerced;
-            right_node = typed_program_node(ctx->program, right);
-            right_type = typed_program_type(ctx->program,
-                                            right_node->type_index);
-        } else if (right_type->kind == NIPPY_TYPE_BYTE &&
-                   left_node->kind == TYPED_INTEGER_LITERAL) {
+            left = coerced_left;
+            right = coerced_right;
+        } else if (left_literal && !right_literal &&
+                   nippy_type_is_numeric(right_type->kind)) {
             size_t coerced;
+            size_t reported = ctx->errors->length;
 
             if (!inject_into(ctx, left, right_node->type_index, &coerced)) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_OPERATOR_TYPE,
-                                operator_text(node->op));
+                /* A range error is already reported; a kind mismatch such as
+                   an integer variable beside a float literal is not. */
+                if (ctx->errors->length == reported) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_OPERATOR_TYPE,
+                                    operator_text(node->op));
+                }
                 return false;
             }
             left = coerced;
-            left_node = typed_program_node(ctx->program, left);
-            left_type = typed_program_type(ctx->program,
-                                           left_node->type_index);
-        } else if ((left_type->kind == NIPPY_TYPE_STRING ||
-                    left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
-                   right_node->kind == TYPED_STRING_LITERAL) {
+        } else if (right_literal && !left_literal &&
+                   nippy_type_is_numeric(left_type->kind)) {
+            size_t coerced;
+            size_t reported = ctx->errors->length;
+
+            if (!inject_into(ctx, right, left_node->type_index, &coerced)) {
+                if (ctx->errors->length == reported) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_OPERATOR_TYPE,
+                                    operator_text(node->op));
+                }
+                return false;
+            }
+            right = coerced;
+        }
+        left_node = typed_program_node(ctx->program, left);
+        right_node = typed_program_node(ctx->program, right);
+        left_type = typed_program_type(ctx->program, left_node->type_index);
+        right_type = typed_program_type(ctx->program,
+                                        right_node->type_index);
+    }
+
+    if (node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE) {
+        if ((left_type->kind == NIPPY_TYPE_STRING ||
+             left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
+            right_node->kind == TYPED_STRING_LITERAL &&
+            !right_node->fixed_type) {
             size_t coerced;
 
             if (!inject_into(ctx, right, left_node->type_index, &coerced)) {
@@ -632,7 +700,8 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
                                             right_node->type_index);
         } else if ((right_type->kind == NIPPY_TYPE_STRING ||
                     right_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
-                   left_node->kind == TYPED_STRING_LITERAL) {
+                   left_node->kind == TYPED_STRING_LITERAL &&
+                   !left_node->fixed_type) {
             size_t coerced;
 
             if (!inject_into(ctx, left, right_node->type_index, &coerced)) {
@@ -655,31 +724,37 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
     case NIPPY_OPERATOR_SUB:
     case NIPPY_OPERATOR_MUL:
     case NIPPY_OPERATOR_DIV:
+        operands_ok = same_type(ctx->program, left_node->type_index,
+                                right_node->type_index) &&
+                      nippy_type_is_numeric(left_type->kind);
+        result_type = operands_ok ? left_type->kind : NIPPY_TYPE_UNKNOWN;
+        break;
     case NIPPY_OPERATOR_MOD:
     case NIPPY_OPERATOR_BIT_AND:
     case NIPPY_OPERATOR_BIT_OR:
     case NIPPY_OPERATOR_BIT_XOR:
     case NIPPY_OPERATOR_SHL:
     case NIPPY_OPERATOR_SHR:
-        operands_ok = left_type->kind == NIPPY_TYPE_INT32 &&
-                      right_type->kind == NIPPY_TYPE_INT32;
-        result_type = NIPPY_TYPE_INT32;
+        operands_ok = same_type(ctx->program, left_node->type_index,
+                                right_node->type_index) &&
+                      nippy_type_is_integer(left_type->kind);
+        result_type = operands_ok ? left_type->kind : NIPPY_TYPE_UNKNOWN;
         break;
     case NIPPY_OPERATOR_LT:
     case NIPPY_OPERATOR_LE:
     case NIPPY_OPERATOR_GT:
     case NIPPY_OPERATOR_GE:
-        operands_ok = left_type->kind == NIPPY_TYPE_INT32 &&
-                      right_type->kind == NIPPY_TYPE_INT32;
+        operands_ok = same_type(ctx->program, left_node->type_index,
+                                right_node->type_index) &&
+                      nippy_type_is_numeric(left_type->kind);
         result_type = NIPPY_TYPE_BOOL;
         break;
     case NIPPY_OPERATOR_EQ:
     case NIPPY_OPERATOR_NE:
         operands_ok = same_type(ctx->program, left_node->type_index,
                                 right_node->type_index) &&
-                      (left_type->kind == NIPPY_TYPE_INT32 ||
+                      (nippy_type_is_numeric(left_type->kind) ||
                        left_type->kind == NIPPY_TYPE_BOOL ||
-                       left_type->kind == NIPPY_TYPE_BYTE ||
                        left_type->kind == NIPPY_TYPE_STRING ||
                        left_type->kind == NIPPY_TYPE_DYNAMIC_STRING);
         result_type = NIPPY_TYPE_BOOL;
@@ -711,10 +786,14 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
         if (right_constant &&
             (node->op == NIPPY_OPERATOR_SHL ||
              node->op == NIPPY_OPERATOR_SHR) &&
-            (right_value < 0 || right_value > 31)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_SHIFT_RANGE);
-            return false;
+            nippy_type_is_integer(left_type->kind)) {
+            unsigned width = nippy_type_bit_width(left_type->kind);
+
+            if (right_value < 0 || (unsigned)right_value >= width) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_SHIFT_RANGE);
+                return false;
+            }
         }
         if (right_constant &&
             (node->op == NIPPY_OPERATOR_DIV ||
@@ -726,7 +805,7 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
             return false;
         }
     }
-    {
+    if (result_type == NIPPY_TYPE_INT32) {
         bool constant = false;
         int value;
 
@@ -762,6 +841,7 @@ bool check_unary(CheckContext *ctx, const AstNode *node,
     size_t operand;
     const TypedNode *operand_node;
     const TypedType *operand_type;
+    NippyType result_kind;
     size_t result_type;
     TypedNode typed = {0};
 
@@ -779,18 +859,43 @@ bool check_unary(CheckContext *ctx, const AstNode *node,
                        ? NULL
                        : typed_program_type(ctx->program,
                                             operand_node->type_index);
-    if (operand_type == NULL ||
-        (node->op == NIPPY_OPERATOR_NOT
-             ? operand_type->kind != NIPPY_TYPE_BOOL
-             : operand_type->kind != NIPPY_TYPE_INT32)) {
+    if (operand_type == NULL) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_OPERATOR_TYPE,
                         operator_text(node->op));
         return false;
     }
-    if (!add_builtin_type(ctx,
-                          node->op == NIPPY_OPERATOR_NOT ? NIPPY_TYPE_BOOL
-                                                         : NIPPY_TYPE_INT32,
-                          &result_type)) {
+    if (node->op == NIPPY_OPERATOR_NOT) {
+        if (operand_type->kind != NIPPY_TYPE_BOOL) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_OPERATOR_TYPE,
+                            operator_text(node->op));
+            return false;
+        }
+        result_kind = NIPPY_TYPE_BOOL;
+    } else if (node->op == NIPPY_OPERATOR_BIT_NOT) {
+        if (!nippy_type_is_integer(operand_type->kind)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_OPERATOR_TYPE,
+                            operator_text(node->op));
+            return false;
+        }
+        result_kind = operand_type->kind;
+    } else {
+        if (nippy_type_is_signed_integer(operand_type->kind) ||
+            nippy_type_is_float(operand_type->kind)) {
+            result_kind = operand_type->kind;
+        } else if (operand_node->kind == TYPED_INTEGER_LITERAL &&
+                   operand_type->kind == NIPPY_TYPE_UINT64 &&
+                   operand_node->integer_value_u <= (1ULL << 63)) {
+            result_kind = NIPPY_TYPE_INT64;
+        } else {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_OPERATOR_TYPE,
+                            operator_text(node->op));
+            return false;
+        }
+    }
+    if (!add_builtin_type(ctx, result_kind, &result_type)) {
         return false;
     }
     typed.kind = TYPED_UNARY;

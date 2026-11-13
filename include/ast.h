@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define AST_NO_NODE ((size_t)-1)
 
@@ -28,6 +29,7 @@ typedef enum {
     AST_BREAK,
     AST_CONTINUE,
     AST_INTEGER_LITERAL,
+    AST_FLOAT_LITERAL,
     AST_BOOL_LITERAL,
     AST_IDENTIFIER,
     AST_CALL,
@@ -75,6 +77,8 @@ typedef struct {
     AstNodeKind kind;
     SourcePos pos;
     int integer_value;
+    uint64_t integer_value_u;
+    double float_value;
     NippyOperator op;
     size_t name_index;
     /* AST_FOR: the value binding when an index binding is present. */

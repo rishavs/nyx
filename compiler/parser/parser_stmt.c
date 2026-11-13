@@ -474,6 +474,13 @@ bool parse_while(
     if (!parse_expression(tokens, string_bytes, ast, cursor, &condition, errors)) {
         return false;
     }
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_DO) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_WHILE_DO);
+        return false;
+    }
+    (*cursor)++;
     if (!parse_block(tokens, string_bytes, ast, cursor, &body, errors)) {
         return false;
     }

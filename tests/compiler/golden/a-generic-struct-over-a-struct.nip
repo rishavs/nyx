@@ -1,0 +1,11 @@
+type Point
+  x: Int32
+  y: Int32
+end
+
+type Pair<A, B>
+  first: A
+  second: B
+end
+
+var p = Pair(Point(1, 2), true)

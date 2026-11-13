@@ -8,7 +8,7 @@ C-shaped language with Lua spelling. Braces appear only in record literals.
 This compiler accepts a sequence of top-level declarations and statements:
 struct type declarations, aliases, and unions; variable and `const`
 declarations; global stores; function declarations, including generic ones;
-assignments; `if`, `match`, and `for` statements; and call statements. It
+assignments; `if`, `match`, `for`, and `while` statements; and call statements. It
 implements stores and checked handles, fixed and dynamic strings, string
 builders, arrays/lists/slices, records/tables, errors, printing, generics,
 unions and narrowing. A single `Int32` variable declaration additionally emits
@@ -21,11 +21,12 @@ configuration, then returns owned C and header source strings. `main.c` is the
 command-line driver; it writes those strings and invokes `cc` to build the
 requested executable.
 
-A program is a sequence of top-level declarations and statements. Whitespace and newlines only
-separate tokens: indentation is not syntax, there are no semicolons, and the same
-program can be written on one line or many. Names are emitted into C unchanged,
-so C11 keywords, names used by the generated code (`main`, `int32_t`, `printf`,
-and similar), and names beginning with `nyx_` are reserved and rejected. A
+A program is a sequence of top-level declarations and statements. Whitespace,
+newlines, and comments only separate tokens: indentation is not syntax, there
+are no semicolons, and the same program can be written on one line or many.
+`--` starts a line comment; `--[` and `]--` delimit a multiline comment. User
+identifiers are mangled in generated C, while the reserved `nyx_` prefix is
+rejected. A
 struct type declaration is:
 
 ```
@@ -68,10 +69,11 @@ variables: they must be passed into functions explicitly.
 Struct values are built with `Name(...)`: arguments may be positional or named,
 but not mixed. Named arguments may appear in any order, and every field must be
 supplied. When a variable omits its type, the initialiser's type is used; either
-the left or right side must supply it. `Int32`, `Bool`, `Byte`, `Nil`,
-`Store`, `Handle<T>`, `Text`, `String<N>`, `TextBuilder`, `List<T>`,
-`Array<T,N>`, `Slice<T>`, `Record<K,V,N>`, `Table<K,V>`, and `Error` are the
-built-in types, and a struct field
+the left or right side must supply it. The numeric types are `Int8`, `Int16`,
+`Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Float32`, and
+`Float64`; `Byte` is an alias for `Uint8`. `Bool`, `Nil`, `Store`, `Handle<T>`,
+`Text`, `String<N>`, `TextBuilder`, `List<T>`, `Array<T,N>`, `Slice<T>`,
+`Record<K,V,N>`, `Table<K,V>`, and `Error` are also built in, and a struct field
 may have any non-function value type. Struct and `Error` fields are read with
 `.`; struct fields of variables/parameters are writable. Anything invalid is rejected with a diagnostic that names the
 stage that refused it. Source-level diagnostics are prefixed with the source
@@ -104,17 +106,41 @@ var add : Fun<(Int32, Int32):Int32> = adder
 var sum2 : Int32 = apply(add, 1, 2)
 ```
 
-Expressions include integer, boolean, string, `nil`, list, and record
-literals; names; calls and member calls; struct constructors; indexing and
+Expressions include integer, floating-point, boolean, string, `nil`, list, and
+record literals; names; calls and member calls; struct constructors; indexing and
 member access; arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`); bitwise (`&`,
 `|`, `^`, `~`, `<<`, `>>`); comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`);
 logical operators (`!`, `&&`, `||`); `typeof x is T` tests; `if` and `match`
 expressions; and grouped expressions.
 
-Constant expressions are evaluated at compile time. Literal arithmetic that
-overflows `Int32`, a constant shift count outside `0..31`, and division or
-modulo by a constant zero are compile errors. `const` integer bindings are
-usable in these expressions, and the same evaluator checks `Store(bytes)` and
+Integer literals are contextually typed: they take the type of the other
+numeric operand or the expected type, and their value must fit that type.
+Floating-point literals default to `Float64` and are contextually typed as
+`Float32` where needed. There is no implicit conversion between numeric types.
+
+Integer literals may be written in hexadecimal, binary, or octal (`0xFF`,
+`0b1010`, `0o755`), and any numeric literal may group its digits with single
+underscores (`1_000_000`, `0xFF_FF`, `1_000.5`). `base64("SGk=")` decodes a
+string literal at compile time into a static `Text` of the decoded bytes.
+
+Explicit conversions use type-call syntax:
+
+```nippy
+var n: Int8 = Int8(a)         // traps at run time if a does not fit
+var f: Float64 = Float64(3)   // 3.0
+var i: Int32 = Int32(2.9)     // 2
+var bad: Int8 = Int8(300)     // compile error: the constant does not fit
+```
+
+A constant converts at compile time and must fit the target type. Any other
+integer conversion that could lose a value is range-checked at run time and
+traps deterministically, as does a float-to-integer conversion whose truncated
+value is out of range or NaN/infinite. Widening conversions cannot fail.
+
+Compile-time constant expressions are evaluated for `Int32`: literal arithmetic
+that overflows `Int32`, a constant shift count outside the operand width, and
+division or modulo by a constant zero are compile errors. `const` integer
+bindings are usable there, and the same evaluator checks `Store(bytes)` and
 constructor capacities.
 `Bool` is the built-in boolean type; `true` and `false` are its literals. `Nil`
 is the unit type; `nil` is its only value.
@@ -243,8 +269,14 @@ print([1, 2, 3])
 Pretty output for values:
 
 ```text
+Int8/16     42
 Int32       42
-Byte        200
+Int64       42
+Uint8/16    200
+Uint32      200
+Uint64      200
+Float32     1.5
+Float64     1.5
 Bool        true
 Nil         nil
 String<N>   ada
@@ -381,8 +413,9 @@ points.reset()
   capacity for reuse.
 - A literal negative `Store(bytes)` size is a compile-time error.
 - Stores grow by doubling, so the declared size is an initial reservation.
-- `Byte` maps to `uint8_t`; integer literals are typed as `Byte` where a Byte is
-  expected, and must be in `0..255`. Byte supports `==` and `!=` only.
+- `Byte` is an alias for `Uint8` and maps to `uint8_t`. Integer literals are
+  typed as `Byte` where a Byte is expected and must be in `0..255`; Byte values
+  support the same integer operators as other integer types.
 - Stores are global and non-first-class: function bodies can name them, but a
   store cannot be passed, returned, copied, or stored in a field.
 - Stores also create builders, dynamic lists, and dynamic tables: `s.builder(bytes)`,
@@ -434,9 +467,11 @@ name = "hi"
 
 Assignment is a statement, not an expression. There is no `+=`, no chained
 assignment, and no assignment to stores, functions, or type names. Variables,
-list elements, and writable struct fields are assignable at program level, but
-program-level variables are not assignable inside functions; functions can
-assign their own parameters. Inside `if typeof x is T then`, assigning to `x`
+list elements, and writable struct fields are assignable at program level.
+Function scope is closed by design: functions can assign their parameters and
+locals, but program-level `var` and `const` bindings are not in scope. Stores
+remain visible as the explicit shared-state exception. Inside
+`if typeof x is T then`, assigning to `x`
 invalidates the narrowing for later statements.
 
 `const` is deep for inline values. A `const` struct, `Array`, `Record`, or
@@ -770,7 +805,7 @@ fun classify(x:Int32):Int32
 end
 
 fun firstPositive(x:Int32):Int32
-  while true
+  while true do
     if x > 0 then
       break
     end
@@ -785,8 +820,10 @@ apply to the innermost loop (`while` or `for`). Every function must return on
 every path. A `while true` with no `break` counts as not falling through, so a
 function that ends in such a loop is accepted. Statements after `return`,
 `break`, or `continue` are unreachable and rejected. Functions may call earlier
-functions and themselves, but a function body cannot see ordinary program-level
-variables yet; stores remain visible. Function bodies support local variables,
+functions and themselves. Function value scope is closed by design: a function
+can access its arguments and locals, but not program-level `var` or `const`
+bindings. Stores are the exception and remain visible for explicitly shared
+state. Function bodies support local variables,
 block-scoped `if`/`while`/`for`/`match` blocks, assignment, field access, and
 list indexing.
 
@@ -823,6 +860,13 @@ To compile a program by hand, pass the Nippy source path and output binary path:
 
 ```sh
 ./bin/nippy path/to/source.nip bin/program
+```
+
+The default source limit is 4096 bytes. Raise it for a larger program with
+`--max-source-bytes`, for example:
+
+```sh
+./bin/nippy --max-source-bytes 1048576 path/to/source.nip bin/program
 ```
 
 The compiler writes the generated C source beside the binary as

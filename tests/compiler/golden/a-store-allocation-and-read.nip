@@ -1,0 +1,3 @@
+var s: Store = Store(16)
+var p: Handle<Int32> = s.alloc<Int32>(1)
+var n: Int32 = p.read()
