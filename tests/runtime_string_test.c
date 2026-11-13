@@ -20,10 +20,10 @@ TestResult test_runtime_string_ops(void)
 TestResult test_runtime_string_bounds(void)
 {
     const char *source =
-        "fun bad(s: String<4>): Byte\n"
-        "  return s.byte_at(5)\n"
+        "fun bad(s: String<4>, i: Int32): Byte\n"
+        "  return s.byte_at(i)\n"
         "end\n"
-        "var b: Byte = bad(\"abc\")\n";
+        "var b: Byte = bad(\"abc\", 5)\n";
 
     return run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS,
                                  "string bounds");

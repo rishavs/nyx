@@ -33,10 +33,10 @@ TestResult test_runtime_dynamic_list(void)
 TestResult test_runtime_list_bounds(void)
 {
     const char *source =
-        "fun at(xs: Array<Int32, 1>): Int32\n"
-        "  return xs[1]\n"
+        "fun at(xs: Array<Int32, 1>, i: Int32): Int32\n"
+        "  return xs[i]\n"
         "end\n"
-        "var n: Int32 = at([1])\n";
+        "var n: Int32 = at([1], 1)\n";
 
     return run_generated_failure(source, MESSAGE_RUNTIME_LIST_BOUNDS,
                                  "fixed list bounds");
@@ -477,6 +477,102 @@ TestResult test_runtime_table_for(void)
     return run_generated(source, "6 6\n", "Table iteration");
 }
 
+TestResult test_runtime_list_get(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun run(): Nil\n"
+        "  var xs: List<Int32> = arena.list<Int32>(2)\n"
+        "  xs.push(10)\n"
+        "  var a: Int32 | Nil = xs.get(0)\n"
+        "  var b: Int32 | Nil = xs.get(3)\n"
+        "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
+        "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+
+    return run_generated(source, "10\nnil\n", "list get");
+}
+
+
+TestResult test_runtime_fixed_list_get(void)
+{
+    const char *source =
+        "fun run(): Nil\n"
+        "  var xs: Array<Int32, 2> = [10, 20]\n"
+        "  var i: Int32 = 2\n"
+        "  var a: Int32 | Nil = xs.get(1)\n"
+        "  var b: Int32 | Nil = xs.get(i)\n"
+        "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
+        "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+
+    return run_generated(source, "20\nnil\n", "fixed list get");
+}
+
+
+TestResult test_runtime_slice_get(void)
+{
+    const char *source =
+        "global arena: Store = Store(64)\n"
+        "fun run(): Nil\n"
+        "  var xs: List<Int32> = arena.list<Int32>(3)\n"
+        "  xs.push(10)\n"
+        "  xs.push(20)\n"
+        "  xs.push(30)\n"
+        "  var s: Slice<Int32> = xs.slice(1, 2)\n"
+        "  var a: Int32 | Nil = s.get(0)\n"
+        "  var b: Int32 | Nil = s.get(2)\n"
+        "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
+        "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+
+    return run_generated(source, "20\nnil\n", "slice get");
+}
+
+
+TestResult test_runtime_table_get(void)
+{
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "fun run(): Nil\n"
+        "  var t: Table<String<8>, Int32> = "
+        "arena.table<String<8>, Int32>(2)\n"
+        "  t[\"a\"] = 7\n"
+        "  var a: Int32 | Nil = t.get(\"a\")\n"
+        "  var b: Int32 | Nil = t.get(\"b\")\n"
+        "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
+        "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+
+    return run_generated(source, "7\nnil\n", "table get");
+}
+
+TestResult test_runtime_union_list_get(void)
+{
+    const char *source =
+        "global arena: Store = Store(128)\n"
+        "fun run(): Nil\n"
+        "  var xs: List<Int32 | Nil> = arena.list<Int32 | Nil>(2)\n"
+        "  xs.push(1)\n"
+        "  var a: Int32 | Nil = xs.get(0)\n"
+        "  var b: Int32 | Nil = xs.get(1)\n"
+        "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
+        "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
+        "  return nil\n"
+        "end\n"
+        "run()\n";
+
+    return run_generated(source, "1\nnil\n", "union list get");
+}
+
 const TestCase runtime_collection_test_tests[] = {
     {"runtime: fixed list", test_runtime_fixed_list},
     {"runtime: zero-length fixed list", test_runtime_fixed_list_zero},
@@ -500,6 +596,11 @@ const TestCase runtime_collection_test_tests[] = {
     {"runtime: list unions/functions", test_runtime_list_union_and_function},
     {"runtime: function list pop", test_runtime_function_list_pop},
     {"runtime: union list pop", test_runtime_union_list_pop},
+    {"runtime: list get", test_runtime_list_get},
+    {"runtime: fixed list get", test_runtime_fixed_list_get},
+    {"runtime: slice get", test_runtime_slice_get},
+    {"runtime: table get", test_runtime_table_get},
+    {"runtime: union list get", test_runtime_union_list_get},
     {"runtime: list slice", test_runtime_slice},
     {"runtime: stale slice", test_runtime_slice_stale},
     {"runtime: empty list pop", test_runtime_list_pop_empty},

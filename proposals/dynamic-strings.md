@@ -11,9 +11,10 @@ Implemented in the current compiler:
 - bare `Text` as a dynamic, immutable descriptor;
 - static dynamic string literals with no allocation;
 - `byte_len`, `byte_at`, `slice`, and content equality;
-- `store.concat`, `store.copy`, and `store.string` (fixed to dynamic);
+- `store.concat`, `store.copy`, and `store.text` (fixed to dynamic);
 - dynamic strings as parameters, returns, struct fields, union alternatives,
-  `Handle<Text>` elements, and assignment values;
+  and assignment values; `Handle<Text>` is rejected because `Text` is not a
+  fixed type;
 - `TextBuilder` with `append`, `append_byte`, `byte_len`, and `finish`;
 - runtime store-id, generation, and bounds checks.
 
@@ -31,7 +32,7 @@ today.
 
 ## Summary
 
-Nippy currently has only fixed-capacity inline strings:
+Before this proposal, Nippy had only fixed-capacity inline strings:
 
 ```nippy
 var name: String<16> = "nyx"
@@ -344,5 +345,5 @@ a possible future ergonomic wrapper.
 5. Do we allow embedded NUL with a separate C-interop caveat?
 6. Is UTF-8 validation ever performed, or is it always byte-oriented?
 7. How much capacity slack should a builder reserve, and is it observable?
-8. Should `Text` be allowed as a `Handle<Text>` allocation element? It is
-   sized; the answer affects copying and lifetime notation.
+8. ~~Should `Text` be allowed as a `Handle<Text>` allocation element?~~
+   Resolved: no. `Text` is allocator-backed and is not a fixed type.

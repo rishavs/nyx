@@ -13,15 +13,35 @@ Accepted direction:
 - `scope frame = Store(...) do ... end` creates a lexical arena.
 - Handles from a program-level store can be passed and returned freely.
 - Handles from a scoped store are region-bound and cannot escape.
-- Functions that allocate into a scoped store take `borrow Store`.
-- Scoped helpers may return values in the caller's region.
-- Region propagation through aggregates, `borrow Store`, and buffers/slices are
-  part of the useful feature, not later polish.
+- `reset()` is removed. Scope exit is the only reset. Keeping it sound would need
+  epoch and effect tracking across calls, and removing it makes the per-value
+  generation counters dead weight in safe code (see
+  [Runtime checks after the static guarantee](#runtime-checks-after-the-static-guarantee)).
+- A region is a **lexical depth integer**: program-level stores are depth 0 and
+  every `scope` adds one. The whole checker is one judgment,
+  `outlives(dest, src)`, applied uniformly to assignment, `return`, and `alloc`
+  (see [Regions are depth integers](#regions-are-depth-integers)).
+- Functions use **one elision rule instead of region annotations**: a call's
+  result region is the deepest region among its region-carrying arguments (see
+  [Function boundaries](#function-boundaries-the-elision-rule)).
+- Functions that allocate into a scoped store take an ordinary `Store`
+  parameter. There is **no `borrow` keyword**: `Store` is already non-copyable and
+  cannot be returned or stored, so a `Store` parameter is borrow-only by
+  construction.
+- Region propagation through aggregates, `Store` parameters, and buffers/slices
+  are part of the useful feature, not later polish.
+- Arena slots cannot contain handles in the first version. This keeps regions
+  flowing only through variables and structs, never through memory. A later
+  extension lets a slot hold handles of its own store.
+- A `scope` inside a loop compiles to a hoisted, recycled buffer, so per-iteration
+  reuse costs what `reset()` did, without its hazard.
 - There is no separate persistent store type, mode, or keyword.
 
-Current compiler status: it has block-scoped locals, but still has `reset()`,
-no `scope`, no regions, no `borrow Store`, and no arena-backed dynamic strings.
-This document is the target design, not a description of implemented behavior.
+Current compiler status: it has block-scoped locals and arena-backed `Text`,
+`TextBuilder`, `List`, and `Slice`, but still has `reset()`, no `scope`, no
+regions, and no `Store` parameters. Every stale-use check is a runtime check
+today. This document is the target design, not a description of implemented
+behavior.
 
 ## Summary
 
@@ -46,8 +66,9 @@ The intended result:
 - every safe Nippy handle points to a live slot of the correct type;
 - every read/write is in bounds by construction;
 - use-after-reset is a compile-time error, not a runtime panic;
-- the existing generation and bounds checks remain as defensive assertions for
-  C interop and compiler bugs.
+- bounds checks remain, and the generation check becomes a defensive assertion
+  for C interop and compiler bugs that safe code can drop (see
+  [Runtime checks after the static guarantee](#runtime-checks-after-the-static-guarantee)).
 
 This proposal does **not** require move semantics, owner backpointers, or
 one-owner handles. Those are separate features for aliasing and exclusive
@@ -92,12 +113,10 @@ program where a scoped handle can be used after its arena has died.
 
 - Per-object `free`.
 - Unique ownership or one-owner handles.
-- General-purpose local variables and nested blocks. This proposal needs a
-  limited form of block-scoped bindings; see “Prerequisites”.
-- A general borrow checker.
+- General-purpose borrow checking beyond store regions.
 - Concurrent access to a shared arena.
-- A dynamic `Text` implementation. Strings are fixed/inline today; a future
-  arena-backed string would carry the same scope region.
+- Extending the existing dynamic `Text` implementation. This proposal only
+  makes its lifetime lexical; `Text` already exists and is runtime-checked.
 
 ## Programs this model does not serve
 
@@ -288,12 +307,15 @@ The scope binding is the prerequisite, not `scope` itself, so implementation
 phase 1 is complete. Three other pieces move from “later” to practical
 prerequisites after the worked examples below:
 
-1. **`borrow Store` parameters.** Parsers, formatters, and allocator helpers must
-   be able to allocate into a caller’s arena.
-2. **Region-polymorphic returns.** A helper that allocates a `Text` or AST in
-   the caller’s arena must return a value tied to that arena’s region.
+1. **`Store` parameters.** Parsers, formatters, and allocator helpers must
+   be able to allocate into a caller’s arena. No new keyword is needed; see
+   [Store parameters](#store-parameters).
+2. **Region-carrying returns.** A helper that allocates a `Text` or AST in
+   the caller’s arena must return a value tied to that arena’s region. The
+   [elision rule](#function-boundaries-the-elision-rule) provides this without
+   region annotations.
 3. **Region propagation through aggregates.** `Context`, AST nodes, records, and
-   game state naturally contain handles and borrows.
+   game state naturally contain handles and store parameters.
 
 A demo can avoid these by allocating only at the `scope` site. Real programs
 cannot. Treat them as part of the useful feature, not as optional polish.
@@ -324,7 +346,60 @@ It may not be:
 - returned from the block or function;
 - stored in a program-level variable;
 - stored in a struct or union that outlives the block;
-- passed by value to a function that could store or return it.
+- returned or stored by a callee past the caller's region; the
+  [elision rule](#function-boundaries-the-elision-rule) makes passing it by value
+  to a function safe.
+
+### Regions are depth integers
+
+The `'frame` notation above is explanatory. The checker does not need named
+region variables, subtyping between regions, or a region environment. A region is
+an integer, the lexical nesting depth of the store that owns the slot:
+
+```text
+program-level store   -> depth 0   ('static)
+scope at depth k      -> depth k+1 for the stores it declares
+```
+
+Three quantities are compared, and all of them are depths:
+
+- the **region of a value** is the deepest depth among the handles, `Text`,
+  `List`, `Slice`, `TextBuilder`, and table descriptors it contains (`0` if it
+  contains none);
+- the **region of a variable** is the depth of the block that binds it
+  (program-level variables are `0`);
+- the **region of a store** is the depth at which it was declared.
+
+One judgment covers every escape rule:
+
+```text
+outlives(dest, src)  :=  src <= dest
+```
+
+It is the only check, applied at three sites:
+
+| Site | `dest` | Rejected when |
+|---|---|---|
+| `x = v` or `var x = v` | depth of the block that binds `x` | `region(v)` is deeper than `x`'s depth |
+| `return v` | the caller's region (`0` for a function with no region-carrying parameters; see [Function boundaries](#function-boundaries-the-elision-rule)) | `region(v)` is deeper than that |
+| `xs.push(v)`, `xs[i] = v`, `t[k] = v`, and any other write that stores a region-carrying `v` into a container | depth of the container | `region(v)` is deeper than the container |
+
+For example, `a = b` in the nested-scope example below fails because `b` has
+depth 2 and `a` was bound at depth 1. The three rules listed under
+[Escape rules](#escape-rules) are this one comparison.
+
+This is a small local check: one integer per expression and per binding, no
+fixpoint, no flow sensitivity. It is the same rule at every site, which is the
+point of the Cohesive pillar, and it needs no inference beyond "take the deepest
+depth of the operands". The computation is bottom-up over the typed program, so
+it fits the forward-only pipeline: it belongs in the analyser, which already
+receives the typed program, and it must not require re-walking the syntax tree.
+
+The checker can compute `region(v)` from types alone only if the type says whether
+a value may carry a region. A struct is region-carrying when any field is. A
+union is region-carrying when any alternative is. `Int32`, `Bool`, `Byte`, `Nil`,
+`String<N>`, `Error`, and function types are never region-carrying, so ordinary
+data costs nothing.
 
 ### Scope exit
 
@@ -362,6 +437,24 @@ end
 
 Each iteration gets a fresh arena and fresh handles.
 
+#### Loop recycling
+
+A `scope` whose body repeats compiles to a **hoisted, recycled buffer**: the
+generator allocates the buffer once before the loop and rewinds it at each scope
+exit, instead of calling `malloc`/`free` per iteration. This is sound only
+because of the region rules: nothing with the scope's depth can survive the
+iteration, so no value can observe the rewind. It gives per-iteration reuse the
+cost `reset()` had, without the use-after-reset hazard.
+
+Consequences:
+
+- the recycling is a code-generation decision, not a language feature; the source
+  still reads as "a fresh arena per iteration";
+- the buffer keeps its grown capacity between iterations, so steady-state loops
+  stop allocating after the largest iteration;
+- a `scope` inside a function that is itself called from a loop is not hoisted;
+  each call initializes and frees its own store.
+
 ### Copying
 
 Scoped handles are copyable **inside** the scope. Two copies refer to the same
@@ -386,8 +479,10 @@ The new rule is region compatibility:
 
 > The destination must not outlive the value's region.
 
-A value's region is the shortest-lived region among the handles and borrows it
-contains. For direct handles, that is the scope of the store that allocated it.
+A value's region is the shortest-lived region among the handles and store
+parameters it contains, which in depth terms is the **deepest** depth. For direct
+handles, that is the depth of the store that allocated it. See
+[Regions are depth integers](#regions-are-depth-integers).
 
 ```nippy
 var root: Store = Store(4096)
@@ -420,10 +515,9 @@ are released at scope exit, regardless of which variables still point at them.
 Overwriting a handle variable simply drops that reference; it does not free the
 slot.
 
-A variable holding `borrow Handle<T>` or a `borrow Store` is a borrow binding,
-not an owning handle. Reassigning the binding itself is rejected; writing
-through the borrowed value is a separate operation. An `access` binding is fixed
-to the slot captured at block entry.
+A `Store` parameter is a borrow-only capability, not an owning binding.
+Reassigning the parameter itself is rejected; allocating through it is a separate
+operation. An `access` binding is fixed to the slot captured at block entry.
 
 ### Nested scopes
 
@@ -516,23 +610,35 @@ rule is not enforced.
 
 ## Escape rules
 
-The checker needs one new judgement: **does a value contain a handle from a
-region that does not outlive the destination?**
+The checker needs one judgement: **does a value contain a region that is deeper
+than its destination?** That is `outlives(dest, src)` from
+[Regions are depth integers](#regions-are-depth-integers), applied at each site
+where a value is stored:
 
-The general rule is that the destination's region must outlive the handle:
-
-1. A scoped handle may be assigned to a binding in the same scope or a nested
-   scope.
-2. It may not be assigned to a binding whose region is shorter-lived.
-3. It may be returned only when the caller supplies the region, through a
-   caller-provided arena or an equivalent region relationship.
-4. It may be a field of a value only when that value's region is no longer-lived
-   than the handle's region.
-5. It may be passed by value only when the parameter's region relationship
-   permits it; otherwise the function must take a borrow.
+1. **Assignment and initialization.** A scoped handle may be assigned to a binding
+   in the same scope or a nested scope. It may not be assigned to a binding whose
+   depth is shallower.
+2. **Return.** A value may be returned only if its depth does not exceed the
+   function's incoming region (see
+   [Function boundaries](#function-boundaries-the-elision-rule)). A value built
+   from the function's own `scope` is always deeper, so it is always rejected.
+3. **Aggregates.** A field of a value is stored into that value, so the
+   aggregate's depth is the deepest of its fields. Rule 1 and rule 2 then apply to
+   the aggregate as a whole.
+4. **Container writes.** `push`, indexed assignment, and table insertion check
+   `region(v)` against the depth of the container, so a `List<Text>` in an outer
+   scope cannot receive a `Text` from an inner scope. `s.alloc<T>(v)` is a write
+   of the same kind, but in the first version it is trivially satisfied, because
+   arena slots cannot hold handles (see
+   [Slots that hold handles](#slots-that-hold-handles)). `s.copy`, `s.concat`,
+   and `s.text` copy bytes and yield a fresh value in `s`'s region, so they retain
+   nothing from their arguments.
+5. **Calls.** A scoped value may be passed by value. The callee cannot store it
+   anywhere deeper than the caller's region, and the result's region is derived
+   from the arguments by the elision rule.
 
 A function with its own local scope cannot return a handle allocated in that
-scope. A function such as `parse_json(arena: borrow Store, ...)` can return a
+scope. A function such as `parse_json(arena: Store, ...)` can return a
 handle in the caller's region.
 
 Examples of rejected programs:
@@ -540,7 +646,7 @@ Examples of rejected programs:
 ```nippy
 fun leak(): Handle<Point>
   scope frame = Store(16) do
-    return frame.alloc<Point>(Point(1, 2))
+    return frame.alloc<Point>(Point(1, 2))   // depth 1 into a depth-0 return
   end
 end
 ```
@@ -552,9 +658,11 @@ end
 
 var global_holder: Holder = ...
 scope frame = Store(16) do
-  global_holder = Holder(frame.alloc<Point>(Point(1, 2)))
+  global_holder = Holder(frame.alloc<Point>(Point(1, 2)))   // depth 1 into depth 0
 end
 ```
+
+Accepted, because the callee cannot let the value outlive the call:
 
 ```nippy
 fun consume(p: Handle<Point>): Nil
@@ -563,66 +671,107 @@ end
 
 scope frame = Store(16) do
   var p: Handle<Point> = frame.alloc<Point>(Point(1, 2))
-  consume(p)          // rejected until borrow parameters exist
+  consume(p)          // allowed: consume cannot store p past the call
 end
 ```
-
-The first implementation may reject **all** function calls that take a scoped
-handle, including calls that would be safe. That is acceptable: scoped handles
-are primarily for direct use inside the scope.
 
 ## Functions
 
 Persistent/global handles can be passed and returned freely because their
-region is `'static` (the whole program).
+region is `'static` (depth 0).
 
 Scoped handles need a rule. The invariant is:
 
 > A scoped handle cannot escape its region.
 
-Passing a scoped handle by value to a function with no region relationship is
-rejected because the callee could store it or return it. A function whose
-signature ties a value to the caller’s region — for example through a
-`borrow Store` parameter — may accept and return values in that region.
+### Function boundaries: the elision rule
 
-A separate borrow parameter is useful for read/write access without transfer:
+Region annotations on function signatures are not needed. One rule, in two
+halves, plays the role that lifetime elision plays in Rust, but with a single
+region instead of one per parameter.
+
+**Inside the callee**, every region-carrying value that arrives through a
+parameter has the same region, `ρ`, which outlives every `scope` the callee
+opens. `ρ` is deeper than `'static` and shallower than any scope inside the body.
+Consequently:
+
+- the callee may return a value of depth `0` (static) or `ρ`, and nothing deeper;
+- the callee may not store a parameter-derived value into a program-level
+  variable, because `ρ` is deeper than depth 0;
+- the callee may allocate into a `Store` parameter, whose region is also `ρ`.
+
+**At the call site**, the region of the call's result is the **deepest region
+among the call's region-carrying arguments**. A call with no region-carrying
+arguments yields a depth-0 result.
+
+So this needs no annotation:
 
 ```nippy
-fun inspect(p: borrow Handle<Point>): Int32
-  ...
-end
+fun parse_json(arena: Store, src: Text): Handle<Json> | Error
 ```
 
-The callee cannot return or store the borrow, and the borrow lives no longer
-than the caller's scope. That is a small borrow rule, not a general ownership
-system.
+If `arena` is the `doc` scope's store and `src` is a `doc`-region `Text`, the
+result is in the `doc` region. If the caller also passes a shallower value, the
+result is still the deepest argument's region: the rule is **conservative**. When
+that is too coarse, the escape hatch is the one the language already has: copy the
+value explicitly into the outer store (`outer.copy(t)`, or an `alloc` into the
+outer store), which produces an outer-region value.
 
-### Store capabilities
+**Call-site side condition.** Treating every parameter as one region `ρ` hides
+the relative depth of two arguments from the callee, so the callee could write a
+deeper value into a shallower container (`push` an inner-scope `Text` into an
+outer `List<Text>`) and the callee's own check would pass. The caller therefore
+checks one more thing: **every region-carrying argument must outlive (be no
+deeper than) every `List` or `Table` argument whose element type is
+region-carrying.** `Store` arguments are exempt in the first version, because no
+store operation retains a region-carrying argument: `copy`, `concat`, and `text`
+copy bytes, and `alloc` rejects handles. This is what keeps the cross-region
+copy in the worked examples (`bump_path(file_arena, stats, fields.path)`) legal.
+Lifting the slot restriction re-opens the `Store` case; see
+[Slots that hold handles](#slots-that-hold-handles).
+
+Why a single region is enough: values reach the callee only through its
+parameters, so a returned value is derived from some parameter or from a depth-0
+global. Treating all parameters as one region over-approximates what the callee
+may return, which can reject a safe program but cannot accept an unsafe one. The
+side condition above covers the other direction, where the callee writes one
+parameter into another.
+
+The conservative direction has one cost: a function that returns a depth-0 value
+unrelated to its arguments still reports the arguments' deepest region at the call
+site. If this matters in practice, a function with no region-carrying parameters
+already yields depth 0, and a split of the function is the workaround.
+
+### Store parameters
 
 A function cannot allocate into a caller’s scoped arena by accident. It needs a
-capability parameter:
+`Store` parameter:
 
 ```nippy
-fun parse_request(arena: borrow Store, raw: Text): Request
-  var path: Text = string_copy(borrow arena, ...)
+fun parse_request(arena: Store, raw: Text): Request
+  var path: Text = arena.copy(raw)
   return Request("GET", path, raw)
 end
 ```
 
-`borrow Store` is a scoped capability, not a first-class store value:
+There is **no `borrow` keyword**. `Store` is already a non-copyable resource that
+cannot be returned, stored in a field, or held in a union. Allowing it as a
+parameter type is therefore borrow-only by construction: the callee can allocate
+through it for the duration of the call and can do nothing else with it.
 
-- it is valid only for the caller’s scope;
-- it cannot be stored or returned;
-- allocations through it belong to that scope;
-- helpers may return handles or strings tied to the capability’s region.
+- it is valid only for the call;
+- it cannot be stored, returned, or reassigned;
+- allocations through it belong to the caller's region (`ρ` in the callee);
+- helpers may return handles or strings tied to that region, by the elision
+  rule.
 
-This implies **region-polymorphic functions**: the return region is derived from
-the arena parameter. Returning a scoped value from a helper is safe when the
-caller’s scope outlives the use.
+This is also what removes the need for a separate borrowed-handle parameter form:
+a scoped handle passed by value cannot be stored or returned past the caller's
+region, so a plain `Handle<T>` parameter is already safe to receive.
 
-Without store capabilities and region-polymorphic returns, every parser,
-formatter, and allocator must be inlined at the `scope` site. That is workable
-for a demo, not for real APIs.
+Without `Store` parameters and region-carrying returns, every parser, formatter,
+and allocator must be inlined at the `scope` site. That is workable for a demo,
+not for real APIs.
 
 ## Aggregates and generics
 
@@ -632,7 +781,9 @@ the main area where region inference can become expensive.
 A minimal implementation can forbid scoped handles in aggregates, but the
 worked examples show that this is too restrictive for real code:
 
-- a server `Context` carries a request and an arena capability;
+- a server `Context` carries a request and handles into the request arena (the
+  arena itself is passed as a `Store` parameter, because a `Store` cannot be a
+  field);
 - a JSON AST is a recursive graph of handles and arena-backed strings;
 - a log analyzer’s `Stats` contains handles to path-count records;
 - a game `World` contains entity handles.
@@ -643,7 +794,36 @@ aggregate whose region would outlive the scope.
 
 The first implementation can still start with a narrower rule for direct
 bindings, but it should be designed so aggregate propagation is a natural
-extension rather than a rewrite.
+extension rather than a rewrite. In depth terms the extension is small: a struct
+or union is region-carrying when any field or alternative is, and its region is
+the deepest of its fields (see
+[Regions are depth integers](#regions-are-depth-integers)).
+
+### Slots that hold handles
+
+In the first version an arena slot cannot contain a handle: `alloc<T>` requires a
+fixed `T`, and `Handle`, `Text`, `List`, and the other descriptors are not fixed.
+Keep that rule. It is what makes the analysis cheap, because **regions flow only
+through variables and structs, never through memory**: there is no way to launder
+a deep handle through a slot into a shallower variable.
+
+The cost is an applicability gap. An arena cannot hold a linked structure such as
+a tree, a graph, or the JSON AST in the worked examples.
+
+The restriction can be lifted later without a new mechanism: **a slot in store `s`
+may hold handles of `s` itself** (or of a shallower store). This falls out of the
+same `outlives` check on `alloc`: `s.alloc<Node>(Node(1, child))` is legal when
+`region(child)` is no deeper than `s`. Because the check is at the write, every
+handle reachable from a slot is no deeper than the slot, and nothing needs to be
+tracked through memory.
+
+This extension re-opens one hole, which the first version avoids by exemption: a
+callee that sees a `Store` parameter and a handle parameter as the same region
+`ρ` cannot tell whether the handle outlives the store. The call-site side
+condition in [Function boundaries](#function-boundaries-the-elision-rule) then
+has to apply to `Store` arguments that receive region-carrying values, without
+breaking the byte-copying operations (`copy`, `concat`, `text`) that retain
+nothing. Resolving that is part of the extension, not of the first version.
 
 ## Memory-safety argument
 
@@ -658,8 +838,9 @@ For a scoped handle `h` in region `'a`:
 5. Handles are not nullable and have no default value.
 6. Growth preserves offsets, so growth cannot invalidate `h`.
 
-Therefore every safe scoped handle use is valid. The existing generation and
-bounds checks are assertions that should never fire in safe code.
+Therefore every safe scoped handle use is valid. The generation check is an
+assertion that should never fire in safe code, and bounds checks remain for
+dynamic indexing.
 
 ### What is and is not guaranteed
 
@@ -704,6 +885,25 @@ So the honest summary is:
 > Scoped arenas can give a memory-safe language subset with compile-time handle
 > lifetime checks, not a Rust-equivalent ownership system.
 
+### Runtime checks after the static guarantee
+
+Removing `reset()` changes what the runtime checks are for. A **generation** exists
+only to detect that a store was reset after a descriptor was created. Once scope
+exit is the only reset and regions guarantee no descriptor outlives its scope, the
+generation field is dead weight in safe code:
+
+- `Handle`, `Text`, `List`, `Slice`, and `TextBuilder` descriptors can drop their
+  generation field, which makes them smaller and removes a compare from every
+  access;
+- bounds checks stay, because dynamic indexing is still a runtime property;
+- a store-id check stays only for the C/FFI boundary and as a compiler-bug
+  assertion, and can be compiled out of a release build once the analyser is
+  trusted (see the open question on release builds).
+
+This is a rule 13 payoff of the design, not a goal of it: the lower overhead is a
+consequence of moving the invalidation event from a runtime counter to a
+lexical scope.
+
 ## Runtime representation and code generation
 
 A scoped store can be emitted as a C local:
@@ -739,10 +939,12 @@ The implementation can keep two internal handle shapes behind one surface type.
 Runtime checks remain:
 
 - store identity;
-- generation (defense against C/FFI and compiler bugs);
-- bounds.
+- bounds;
+- store identity and generation, only as defense against C/FFI and compiler bugs;
+  safe code can drop them (see
+  [Runtime checks after the static guarantee](#runtime-checks-after-the-static-guarantee)).
 
-They are not part of the safe-language safety argument once the region rules
+None of them is part of the safe-language safety argument once the region rules
 hold.
 
 ## Relationship to current global stores
@@ -803,7 +1005,7 @@ function boundaries:
   caller-owned region/capability.
 
 That is a substantial API restriction. Without pointer-like store capabilities
-or region-polymorphic functions, “scoped only” pushes allocation to the caller.
+or the elision rule, “scoped only” pushes allocation to the caller.
 
 A root scope is the honest way to have program-lifetime data without a separate
 persistent concept. If the language truly needs no long-lived dynamic data,
@@ -849,14 +1051,14 @@ The subtlety is visibility across function boundaries:
 - If a function is lexically outside the root scope, it cannot name the root
   store directly.
 - Root-region handles can still be passed to it if the root region is treated as
-  `'static` (it outlives every call), or passed as `borrow Handle`.
-- A function that must allocate into the root arena needs a `borrow Store`
-  capability or a globally visible root capability.
+  `'static` (it outlives every call), or passed by value under the elision rule.
+- A function that must allocate into the root arena needs a `Store` parameter
+  or a globally visible root capability.
 
 So there are two spellings:
 
 1. **Root scope with a `'static` region.** Handles can be passed and returned
-   freely. Functions that allocate receive `borrow Store` or a root capability.
+   freely. Functions that allocate receive a `Store` parameter or a root capability.
    This is behaviourally a persistent arena.
 2. **Root scope as an ordinary lexical block.** Its name and handles do not
    escape the block; functions need explicit region parameters. This is not a
@@ -904,10 +1106,10 @@ what makes a program-level store useful for data that functions allocate and
 return.
 
 Scoped stores are visible only inside their block. A function that must allocate
-into a scoped store receives `borrow Store`:
+into a scoped store receives a `Store` parameter:
 
 ```nippy
-fun parse_request(arena: borrow Store, raw: Text): Request
+fun parse_request(arena: Store, raw: Text): Request
   ...
 end
 ```
@@ -919,7 +1121,7 @@ Scoped handles follow the region/escape rules. Program-level handles are
 
 A root scope can express program lifetime, but it creates an avoidable visibility
 problem: functions declared outside the root scope cannot name the root store, so
-every allocating function needs a `borrow Store` parameter or a special root
+every allocating function needs a `Store` parameter or a special root
 capability. A program-level store is the same lifetime with the visibility rule
 Nippy already has, and no extra concept.
 
@@ -943,8 +1145,9 @@ really is process-lifetime.
 
 ```text
 Store declaration  -> program lifetime at top level, block region in scope
-borrow Store       -> capability to allocate in a scoped store
-borrow Handle      -> scoped view of a slot
+Store parameter    -> borrow-only capability to allocate in a caller's store
+                      (no new keyword; Store is already non-copyable)
+region             -> an integer depth, compared by one outlives judgment
 ```
 
 “Persistent arena” survives only as an adjective for a program-level store. It
@@ -953,8 +1156,8 @@ is not a separate tier.
 ## Worked examples and findings
 
 These examples are target code under the proposal, not current compiler syntax.
-They assume block-scoped locals, arena-backed `Text`, field access, `borrow
-Store`, and region-polymorphic helpers.
+They assume block-scoped locals, arena-backed `Text`, field access, `Store`
+parameters, and helpers whose result region follows the elision rule.
 
 ### 1. CLI log analyzer
 
@@ -969,8 +1172,8 @@ fun analyze(path: Text): Nil
 
     while has_line(file)
       scope line_arena = Store(4096) do
-        var line: Text = read_line(file, borrow line_arena)
-        var fields: LineFields = parse_log_line(borrow line_arena, line)
+        var line: Text = read_line(file, line_arena)
+        var fields: LineFields = parse_log_line(line_arena, line)
 
         var s: Stats = stats.read()
         s.total = s.total + 1
@@ -979,7 +1182,7 @@ fun analyze(path: Text): Nil
         end
         stats.write(s)
 
-        bump_path(borrow file_arena, stats, fields.path)
+        bump_path(file_arena, stats, fields.path)
       end
     end
 
@@ -990,7 +1193,7 @@ fun analyze(path: Text): Nil
 end
 ```
 
-`bump_path` copies `fields.path` into `file_arena` with `string_copy`; storing the
+`bump_path` copies `fields.path` into `file_arena` with `file_arena.copy`; storing the
 line-scoped string directly in `Stats` is a compile-time escape error.
 
 Finding: nested file/record scopes are natural, and the explicit copy between
@@ -1004,13 +1207,13 @@ helper that allocates into the caller’s arena and returns a handle tied to it.
 ```nippy
 fun load_config(path: Text): Nil
   scope doc = Store(256 * 1024) do
-    var source: Text = read_text_file(borrow doc, path)
-    var parsed: Handle<Json> | Error = parse_json(borrow doc, source)
+    var source: Text = read_text_file(doc, path)
+    var parsed: Handle<Json> | Error = parse_json(doc, source)
 
     if parsed.is<Error>() then
       print_error(parsed)
     elseif parsed.is<Handle<Json>>() then
-      var cfg: Config = decode_config(borrow doc, parsed)
+      var cfg: Config = decode_config(doc, parsed)
       run(cfg)
     end
   end
@@ -1035,11 +1238,12 @@ end
 To return a document, the caller must supply the arena:
 
 ```nippy
-fun load_document(arena: borrow Store, path: Text): Handle<Json> | Error
+fun load_document(arena: Store, path: Text): Handle<Json> | Error
 ```
 
-Finding: recursive ASTs make region-polymorphic returns and aggregate
-propagation unavoidable. Errors remain inline `Error` values, so failure paths
+Finding: recursive ASTs make region-carrying returns and aggregate
+propagation unavoidable, and they need slots that hold handles of their own
+store (see [Slots that hold handles](#slots-that-hold-handles)). Errors remain inline `Error` values, so failure paths
 do not allocate.
 
 ### 3. Batch image processor
@@ -1050,9 +1254,9 @@ output. C decoding/encoding functions operate on arena-backed buffers.
 ```nippy
 fun process_image(input: Text, output: Text): Nil
   scope image_arena = Store(8 * 1024 * 1024) do
-    var encoded: Buffer = read_file(borrow image_arena, input)
-    var img: Image = decode_image(borrow image_arena, encoded)
-    var thumb: Image = resize_image(borrow image_arena, img, 320, 320)
+    var encoded: Buffer = read_file(image_arena, input)
+    var img: Image = decode_image(image_arena, encoded)
+    var thumb: Image = resize_image(image_arena, img, 320, 320)
     write_png(output, thumb)
   end
   return nil
@@ -1070,15 +1274,17 @@ buffers.
 
 ### Findings that changed this proposal
 
-1. **Store capabilities are required.** Parsers, formatters, and allocators must
-   allocate into a caller’s arena and return values tied to it.
-2. **Region-polymorphic returns are required.** Helpers returning `Text`,
-   `Handle<Json>`, or a record in the caller’s region are the normal shape.
+1. **Store parameters are required.** Parsers, formatters, and allocators must
+   allocate into a caller’s arena and return values tied to it. No `borrow`
+   keyword is needed.
+2. **Region-carrying returns are required, but annotations are not.** Helpers
+   returning `Text`, `Handle<Json>`, or a record in the caller’s region are the
+   normal shape, and the single-region elision rule covers them.
 3. **Aggregate propagation is required.** `Context`, AST nodes, stats records,
-   and game state contain scoped handles or arena borrows.
+   and game state contain scoped handles.
 4. **Nested scopes are the normal usage.** file/line, document, request,
    image/frame are naturally two-level or more.
-5. **Cross-region movement is explicit.** `string_copy(borrow outer, ...)` and
+5. **Cross-region movement is explicit.** `outer.copy(...)` and
    allocating a new node in the outer arena are the safe escape hatches; moving
    a handle itself is rejected.
 6. **Persistent arenas are optional for these workloads.** Logs, JSON documents,
@@ -1135,28 +1341,35 @@ separate proposal.
 
 1. Add block-scoped `var` bindings (prerequisite). **Implemented.**
 2. Add `scope frame = Store(bytes) do ... end` parsing and AST/Typed nodes.
-3. Add a region field to handle types, inferred from the allocating scope.
-4. Add `borrow Store` capability parameters and region-polymorphic returns.
+3. Compute a region depth for every region-carrying expression and binding in
+   the analyser. Regions are integers, not part of the surface type.
+4. Add the single `outlives(dest, src)` check at assignment, `return`, and
+   container writes. Reject calls that pass a scoped value, until phase 6.
 5. Propagate regions through structs, unions, aliases, and generics.
-6. Add escape checking for scoped handles:
-   - outer assignment;
-   - return;
-   - aggregate escape;
-   - function argument by value.
-7. Emit scoped stores as C locals with init/free.
-8. Add cleanup labels/stack so `return`, `break`, and `continue` unwind nested
+6. Allow `Store` parameters and implement the elision rule, including the
+   call-site side condition for `List`/`Table` arguments.
+7. Remove `reset()` and the per-value generation field; keep bounds checks.
+8. Emit scoped stores as C locals with init/free.
+9. Add cleanup labels/stack so `return`, `break`, and `continue` unwind nested
    scopes in reverse order.
-9. Add runtime store representation for scoped handles.
-10. Add buffer/slice allocation for real workloads.
-11. Add tests for legal nesting, escape rejection, early exits, growth, OOM,
-    and caller-provided arenas.
+10. Hoist and recycle the buffer of a `scope` inside a loop.
+11. Add runtime store representation for scoped handles.
+12. Add buffer/slice allocation for real workloads.
+13. Lift the slot restriction so a slot may hold handles of its own store.
+14. Add tests for legal nesting, escape rejection, early exits, growth, OOM,
+    caller-provided arenas, the call-site side condition, and loop recycling.
 
 ## Open questions
 
 1. Keyword and syntax: `scope`, `region`, or `arena`.
-2. Are block-scoped locals introduced generally, or only inside `scope`?
-3. How is `borrow Store` written and inferred in function signatures?
-4. How are caller-provided regions expressed in generic functions and APIs?
+2. ~~Are block-scoped locals introduced generally, or only inside `scope`?~~
+   Resolved: block-scoped locals are a general language feature.
+3. ~~How is `borrow Store` written and inferred in function signatures?~~
+   Resolved: a plain `Store` parameter; there is no `borrow` keyword.
+4. ~~How are caller-provided regions expressed in generic functions and APIs?~~
+   Resolved for the first version: they are not. The single-region elision rule
+   derives the result region from the arguments. Revisit if the conservative
+   result rejects real programs.
 5. Confirm that program-level `var root: Store` is the only root-lifetime
    spelling, rather than also allowing a top-level `scope`.
 6. What is the C/FFI boundary rule for arena-backed buffers and handles?
@@ -1165,3 +1378,8 @@ separate proposal.
 8. What is the first buffer/slice API: `Buffer`, `Slice<Byte>`, or both?
 9. Are scope/binding names shadowed in nested scopes, or rejected as
    duplicates?
+10. Is the elision rule too coarse for real APIs? A function with two scoped
+    parameters returns the deeper of the two, so a result tied only to the
+    shallower one must be copied explicitly.
+11. How does the call-site side condition extend once slots can hold handles of
+    their own store, without rejecting `copy`/`concat`/`text`?

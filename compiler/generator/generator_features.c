@@ -191,3 +191,18 @@ bool program_uses_print(const TypedProgram *program)
     }
     return false;
 }
+
+bool program_uses_recursion(const TypedProgram *program)
+{
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+
+        if (node != NULL && node->kind == TYPED_FUNCTION_DECLARATION &&
+            typed_calls_name(program, node->left_child, node->name_index)) {
+            return true;
+        }
+    }
+    return false;
+}

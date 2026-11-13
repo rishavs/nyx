@@ -17,7 +17,12 @@ A program is a sequence of items, read in source order:
   `const name [: Type] = expression`;
 - a global store declaration, `global name: Store = Store(bytes)`;
 - a function declaration, `fun name(parameters): Type ... end`;
+- an `if`, `match`, or `for` statement;
+- an assignment, including indexed and field assignments;
 - an expression statement, which must be a call, such as `points.reset()`.
+
+`while` and the other block-only statements are only valid inside a function
+body or another block.
 
 Either type form may be generic: `type Name<T> = ...` or
 `type Name<T> ... end`.
@@ -28,9 +33,11 @@ itself, because its own name is bound before its body is checked. A generic
 function's body is checked only when an instantiation is needed.
 
 A type, value, or function name may not be declared twice. Re-declaring a name
-is an error. `Int32`, `Bool`, and `Nil` are built in and cannot be redefined.
-Type names, variable names, and function names share one ordinary namespace
-because they become C identifiers.
+is an error. Built-in type names (`Int32`, `Bool`, `Byte`, `Nil`, `Store`,
+`Handle`, `String`, `Text`, `TextBuilder`, `List`, `Array`, `Slice`, `Record`,
+`Table`, and `Error`) cannot be redefined. Type names, variable names,
+function names, and store names share one ordinary namespace because they become
+C identifiers.
 
 A declared name must also survive emission into C. The checker rejects a name
 that is a C11 keyword, a C identifier the generated code uses (such as `main`,
@@ -52,14 +59,15 @@ spread across many lines with arbitrary spacing between tokens.
 ## Syntax shape
 
 The surface syntax belongs to the Lua/Luau family. Blocks are delimited by
-keywords and closed with `end`; there are no braces or semicolons; `if` uses
-`then`, `elseif`, `else`, and `end`; and types are attached to names with `:`.
+keywords and closed with `end`; there are no braces for blocks and no
+semicolons; `if` uses `then`, `elseif`, `else`, and `end`; and types are
+attached to names with `:`. Braces are used only for record literals.
 
 Nippy is not a Lua dialect: a function declaration is `fun`, a value declaration
 is `var`, blocks are not expressions, and the function type is written
 `Fun<(Int32):Bool>` rather than Luau's `(Int32) -> Bool`. The shape is Lua-like
 so that adding constructs such as loops, blocks, and declarations follows the
-same pattern rather than introducing C-style braces.
+same pattern rather than introducing C-style block braces.
 
 ## Types
 
@@ -118,6 +126,11 @@ alternatives and collection elements.
 
 Collections are `Array<T,N>`, `List<T>`, `Slice<T>`, `TextBuilder`,
 `Record<K,V,N>`, and `Table<K,V>`.
+A by-value type is capped at 64 KiB. This covers structs, fixed `Array<T,N>`,
+`Record<K,V,N>`, `String<N>`, `Error`, and unions. A larger type is rejected;
+put the data in a Store instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`,
+and `Handle` are descriptors and their payload does not count.
+
 `alloc<...>` and `Handle<...>` require a fixed type; they reject allocator-backed
 values directly and transitively through structs/unions. `List`, `Text`, and
 `TextBuilder` use their dedicated constructors. A collection cannot be an
@@ -169,7 +182,7 @@ Expressions are:
 - fixed-string methods: `s.byte_len()`, `s.byte_at(i)`;
 - Error methods: `e.header()`, `e.description()`, `e.filename()`, `e.line()`,
   `e.col()`, `e.pos()`;
-- arithmetic, comparison, equality, and logical operators;
+- arithmetic, bitwise, comparison, equality, and logical operators;
 - grouped expressions, `( expression )`.
 
 Operator precedence, tightest first:
@@ -189,10 +202,15 @@ Operator precedence, tightest first:
 | logical and | `&&` | `Bool`, `Bool` | `Bool` |
 | logical or | `\|\|` | `Bool`, `Bool` | `Bool` |
 
-Integer arithmetic wraps on `+`, `-`, `*`, and unary `-`. Division and modulo
-by a literal `0` is a compile-time error. A non-literal divisor is checked at
-runtime and traps if it is zero. `INT32_MIN / -1` is a runtime error and
-`INT32_MIN % -1` is `0`. `<<` and `>>` mask the shift count to 31.
+Integer arithmetic wraps on `+`, `-`, `*`, and unary `-` for runtime values.
+Compile-time constant expressions are checked instead of wrapped: overflow,
+shift counts outside `0..31`, and division or modulo by a constant zero are
+rejected. `const` integer bindings participate in constant expressions, and the
+same evaluator handles `Store(bytes)` and constructor capacities. Division and
+modulo by a non-constant zero traps at runtime. `INT32_MIN / -1` is a runtime
+error and `INT32_MIN % -1` is `0`. For non-constant counts, `<<` and `>>` mask
+the shift count to 31.
+
 All arithmetic is `Int32` only. `&`, `|`, `^`, and `~` are bitwise `Int32`.
 
 All binary operators are left-associative. `&&` and `||` short-circuit in
@@ -422,6 +440,11 @@ Program-level consts are not visible inside functions unless passed as
 arguments. `Store` still uses `global`, not `const`. A program-level variable
 may refer to variables and functions declared before it.
 
+Constness is deep for inline storage. A `const` struct, `Array`, `Record`, or
+`String<N>` cannot be mutated through a field, index, `push`, or `pop`. `List`,
+`Table`, `Text`, `TextBuilder`, and `Slice` are descriptors; a `const` binding to
+one still permits mutation of the shared store-backed value.
+
 Program-level variables are local to the generated `main` (or to
 `nyx_program_value` when the program is a single `Int32` variable). They are
 therefore not visible inside function bodies yet.
@@ -458,6 +481,8 @@ union        active payload only
 Array        [element, ...]
 List         [element, ...]
 Slice        [element, ...]
+Record       {key: value, ...}
+Table        {key: value, ...}
 TextBuilder  current bytes
 Handle       <handle store=N offset=N generation=N>
 Function     <function>
@@ -471,7 +496,7 @@ pretty-print depth limit defaults to 16 and is configurable through
 
 ## For loops
 
-A `for` statement iterates a list, slice, or string:
+A `for` statement iterates a list, slice, string, Record, or Table:
 
 ```nippy
 for value in iterable do
@@ -486,7 +511,9 @@ end
 - `List<T>` and `Array<T,N>` yield `T`.
 - `Slice<T>` yields `T`.
 - `String<N>` and `Text` yield `Byte`.
-- The index, when present, is `Int32` and starts at `0`.
+- A Record or Table with two bindings yields its key and value; with one
+  binding it yields the key.
+- The index binding, when present for a sequence, is `Int32` and starts at `0`.
 - The iterable expression is evaluated exactly once.
 - The length is captured before the first iteration.
 - The loop bindings are scoped to the loop body and may not shadow an existing
@@ -494,10 +521,14 @@ end
 - `break` and `continue` apply to the innermost loop.
 - `return` inside the loop returns from the enclosing function.
 
+A direct `xs.push` or `xs.pop` on the iterated list inside the loop body is
+rejected at compile time. The checker only rejects the locally decidable direct
+case; indirect mutation through another function or alias remains.
+
 Iterating a list checks its length before each read and again after each body
-execution. If `push` or `pop` changes the length, the program fails with a
-deterministic runtime error instead of visiting a shifted range. Dynamic list
-reads still check store id, generation, and bounds; string byte reads do the
+execution. If `push` or `pop` changes the length indirectly, the program fails
+with a deterministic runtime error instead of visiting a shifted range. Dynamic
+list reads still check store id, generation, and bounds; string byte reads do the
 same.
 
 Iteration is by byte for strings; UTF-8 codepoint iteration is not implemented.
@@ -505,7 +536,8 @@ Iteration is by byte for strings; UTF-8 codepoint iteration is not implemented.
 
 ## Local variables and blocks
 
-Function bodies and `if`/`while` blocks may declare locals:
+Function bodies and every block (`if`/`elseif`/`else`, `while`, `for`, and
+`match` arms) may declare locals:
 
 ```nippy
 fun sum_three(): Int32
@@ -522,7 +554,7 @@ end
 - A local declaration has the same `var name [: Type] = expression` shape as a
   program-level declaration.
 - Locals are scoped to the block that declares them, including `if`/`elseif`/
-  `else` and `while` bodies.
+  `else`, `while`, `for`, and `match` bodies.
 - A local may not reuse a name already visible in the current function,
   including parameters, or any function/type/store/builtin name. Shadowing is
   currently rejected.
@@ -573,9 +605,9 @@ end
 - The target must be a variable, parameter, list index, or writable struct
   field in scope. Stores, functions, type names, `Error` fields, and arbitrary
   expressions are not assignable.
-- Program-level variables are assignable at program level. Function bodies can
-  assign their parameters, but cannot assign program-level variables because
-  those names are not visible inside functions.
+- Variables, list elements, and writable struct fields are assignable at
+  program level. Function bodies can assign their parameters, but cannot assign
+  program-level variables because those names are not visible inside functions.
 - The right-hand side is checked against the target's **declared** type. It may
   be identical, a union alternative injected into a union target, or a literal
   typed by context (`Byte`, `String<N>`). There is no general implicit
@@ -622,13 +654,15 @@ global points: Store = Store(4096)
   `global` declaration of any other type is rejected. The older `var ...: Store`
   spelling is still accepted for compatibility, but `global` is canonical.
 - `Store(bytes)` takes a constant `Int32` expression, interpreted as bytes
-  (literals and `+`). `Store(0)` is allowed.
+  (literals and `+`). `Store(0)` is allowed; a literal negative byte size is a
+  compile-time error.
 - Stores are visible inside function bodies. This is the one exception to the
   rule that functions cannot see program-level variables: a store is a
   resource, not ordinary storage.
 - Stores are not first-class: they cannot be passed, returned, stored in a
   field, used as a union alternative, or used as a value. Only `s.alloc`,
-  `s.reset`, `s.concat`, `s.copy`, `s.text`, and `s.builder` take a store.
+  `s.reset`, `s.concat`, `s.copy`, `s.text`, `s.builder`, `s.list`, and
+  `s.table` take a store.
 - The declared size is an initial reservation, not a cap. Stores grow by
   doubling as needed. `reset()` keeps the grown capacity.
 - Stores are freed at program exit.
@@ -705,6 +739,10 @@ var last: Int32 | Nil = xs.pop()
   the length and leaves the removed slot allocated inline.
 - `xs[i]` reads; `xs[i] = value` writes. The index is `Int32` and checked
   against the current length.
+- A literal index that is negative or at least `N` is a compile-time error,
+  because an Array's length can never exceed `N`.
+- `xs.get(i)` returns `T | Nil`; an out-of-range index returns `nil` instead of
+  trapping.
 - `len()` returns the current length, which may be less than `N`.
 - `Array<T,0>` is represented with a one-element dummy C array; `len()` is `0`;
   `push` and every index are out of bounds.
@@ -733,11 +771,13 @@ var last: Int32 | Nil = xs.pop()
 ```
 
 - `store.list<T>(capacity)` allocates the list state and initial buffer.
-  Capacity may be `0`; negative capacity is a runtime error.
+  Capacity may be `0`; a literal negative capacity is a compile-time error.
 - `push(value)` adds one element and grows the buffer by doubling when needed.
   Old buffers remain in the store until reset.
 - `pop()` removes the last element and returns `T | Nil`.
 - `xs[i]` reads and `xs[i] = value` writes; both are bounds-checked.
+- `xs.get(i)` returns `T | Nil`; an out-of-range index returns `nil` instead of
+  trapping.
 - `len()` returns the current length.
 - Dynamic lists are mutable. Copying a `List<T>` copies the descriptor and all
   copies alias the same list state, like `TextBuilder`.
@@ -795,11 +835,13 @@ var t: Table<String<8>, Int32> =
   arena.table<String<8>, Int32>(4)
 ```
 
-- Created with `arena.table<K,V>(capacity)`.
+- Created with `arena.table<K,V>(capacity)`. A literal negative capacity is a
+  compile-time error.
 - Grows by rehashing.
 - Copies alias the same arena state.
 - `reset()` invalidates it.
-- Same operations as Record.
+- Same operations as Record, plus `t.get(key): V | Nil`, which returns `nil`
+  for a missing key instead of trapping.
 
 Both use FNV-1a hashing and linear probing. They print as
 `{key: value, ...}`; hash order is unspecified. Iteration:
@@ -859,7 +901,8 @@ var first: Int32 = s[0]  // 20
 
 - `list.slice(start, length)` checks bounds and returns a `Slice<T>`.
 - `slice.slice(start, length)` returns a subview.
-- `Slice<T>` has `len()` and `[]` reads. It has no mutation operations.
+- `Slice<T>` has `len()`, `[]` reads, and `s.get(i): T | Nil`. It has no
+  mutation operations.
 - The view stores `{store, offset, length, generation}`. It does not allocate
   or own storage.
 - Parent `set`/`xs[i] =` writes are visible through the view.
@@ -899,7 +942,8 @@ var same: Bool = joined == "hello world"
 - The descriptor is copied by value. Strings are immutable; slicing and copying
   cannot mutate an existing string.
 - `byte_len()` is the byte length, not a codepoint count.
-- `byte_at(i)` is bounds-checked and returns a `Byte`.
+- `byte_at(i)` is bounds-checked and returns a `Byte`. A literal index that is
+  negative or at least `N` is a compile-time error.
 - `slice(start, length)` is a zero-copy view with the same backing store and
   generation. A slice is not independently NUL-terminated; only the original
   static/arena text has a terminator at its own end. C projection is not
@@ -945,7 +989,8 @@ var s: Text = b.finish()
 ```
 
 - `arena.builder(capacity)` allocates a builder state and an initial buffer in
-  the store. Capacity may be `0`.
+  the store. Capacity may be `0`; a literal negative capacity is a compile-time
+  error.
 - `append(s)` appends a dynamic `Text` (or a literal typed as one).
 - `append_byte(b)` appends one `Byte`.
 - `byte_len()` returns the current length.
@@ -980,8 +1025,10 @@ var same: Bool = name == "nyx"
 
 - `N` is a byte capacity in `0..max_string_capacity`. The default maximum is
   4096; `CompilerConfig.max_string_capacity` can raise or lower it up to the
-  hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `String<0>` can hold only the
-  empty string.
+  hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). The by-value size cap still
+  applies: a `String<N>` over 64 KiB must live behind a `Handle`, not in a
+  local, field, parameter, or return value. `String<0>` can hold only the empty
+  string.
 - The value carries `N + 1` inline bytes and a length. The byte at
   `data[length]` is NUL, so the layout is directly usable from C; capacity bytes
   after the terminator are zero padding.
@@ -1039,6 +1086,11 @@ The compiler can fill in the source position:
 ```nippy
 var e: Error = Error.throw("E_CONCAT", "concat failed")
 ```
+
+A call statement whose result type contains `Error` is rejected: the error would
+otherwise disappear. Bind the result, inspect it, or use `match` with an `else`
+to handle it. A result type contains `Error` recursively through unions,
+structs, handles, and collections.
 
 `Error.throw(header, description)` takes the two string fields and fills
 `filename`, `line`, `col`, and `pos` from the source file and the call site.
@@ -1098,6 +1150,10 @@ The statements are:
 - `return expression`;
 - `if condition then ... elseif condition then ... else ... end`;
 - `while condition ... end`;
+- `for bindings in iterable do ... end`;
+- `match ... with ... end`;
+- a local `var` or `const` declaration;
+- an assignment;
 - `break`;
 - `continue`;
 - a call expression used as a statement, whose value is discarded.
@@ -1110,13 +1166,22 @@ are allowed at program level and inside function bodies.
 optional. `elseif` chains are equivalent to nested `if` statements in the
 `else` branch.
 
-`break` and `continue` are only valid inside a `while` body. They apply to the
-innermost enclosing loop. `return` may appear anywhere in the body.
+`break` and `continue` are only valid inside a loop body (`while` or `for`).
+They apply to the innermost enclosing loop. `return` may appear anywhere in the
+body. A statement after `return`, `break`, or `continue` in the same block is
+unreachable and rejected.
 
 Every function must return on every path. A block returns if one of its
 statements returns before control can fall out of the block. An `if` returns
-only when it has an `else` and both branches return. A `while` never guarantees
-a return. A function whose body may reach its end is rejected.
+only when it has an `else` and both branches return. A `while true` with no
+`break` never falls through, so a function ending in one is accepted. Any other
+`while` or `for` never guarantees a return. A function whose body may reach its
+end is rejected.
+
+A function whose every return expression calls itself directly is rejected.
+Other direct self-recursion is guarded at runtime: exceeding a fixed depth traps
+with a deterministic `nippy: recursion depth exceeded` diagnostic instead of
+overflowing the C stack.
 
 A function body may declare local variables, but cannot contain a bare nested
 block. It can assign its parameters, but it cannot refer to or assign
@@ -1231,8 +1296,8 @@ language's behaviour:
 - Each non-generic function declaration becomes a C function with its source
   name. Each concrete instantiation of a generic function becomes a separate C
   function with a generated name.
-- `if`, `elseif`, `else`, `while`, `break`, and `continue` map directly to the
-  corresponding C statements. Conditions are C boolean expressions.
+- `if`, `elseif`, `else`, `while`, `for`, `break`, and `continue` map directly
+  to the corresponding C statements. Conditions are C boolean expressions.
 - Union injection becomes a compound literal with a tag and payload;
   `typeof x is T` becomes a tag comparison or, when the answer is static,
   `true`/`false`; narrowing reads the payload member directly.
@@ -1241,7 +1306,8 @@ language's behaviour:
 - Each value declaration becomes a local initialised by its expression. A
   single `Int32` variable declaration additionally emits `nyx_program_value()`,
   and `main` prints that value followed by a newline.
-- Every other program's `main` returns 0 after performing the initialisations.
+- Every other program's `main` returns 0 after performing the top-level
+  initialisations and statements.
 - Unused initialised variables get a `(void)name;` line so that the emitted C
   compiles without warnings. Unused parameters get the same treatment at the
   start of the function.
@@ -1309,6 +1375,6 @@ If compilation fails with no diagnostic recorded, the message is exactly
 - Concurrency and multithreading.
 - Modules and imports.
 - Whether a bare expression may be a whole program (today it is rejected: a
-  program is a sequence of declarations).
+  program is a sequence of items, and a bare expression is not an item).
 - Whether type resolution stays string comparison or becomes a real type table.
 - Exact wording and formatting of diagnostics beyond the prefix described above.

@@ -787,7 +787,7 @@ const TestCase checker_test_2_tests[] = {
     {"string: dynamic to fixed conversion", test_checker_dynamic_string},
     {"string: concat with a fixed string", test_checker_concat_type},
     {"string: copy with a fixed string", test_checker_copy_type},
-    {"string: store.string with a dynamic literal", test_checker_store_string_type},
+    {"string: store.text with a dynamic literal", test_checker_store_string_type},
     {"string: slice with a non-Int32 start", test_checker_slice_type},
     {"string: comparing fixed and dynamic strings",
      test_checker_dynamic_fixed_equality},

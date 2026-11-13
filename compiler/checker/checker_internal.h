@@ -47,6 +47,8 @@ typedef struct {
     char name[NIPPY_IDENTIFIER_MAX];
     size_t type_index;
     bool is_const;
+    bool has_constant;
+    int constant_value;
 } VariableEntry;
 
 typedef struct {
@@ -285,5 +287,20 @@ bool check_error_method(CheckContext *ctx, const AstNode *node, const char *meth
     size_t ast_index, bool *handled);
 bool check_store_method(CheckContext *ctx, const AstNode *node, const char *method,
     size_t ast_index, bool *handled);
+
+bool literal_int_value(const Ast *ast, size_t ast_index, int *out);
+bool check_negative_capacity(CheckContext *ctx, size_t capacity_ast);
+bool check_fixed_index_bounds(CheckContext *ctx, size_t index_ast,
+                              size_t receiver_type_index);
+
+bool const_int_eval(CheckContext *ctx, size_t ast_index, int *out,
+                    bool *is_constant);
+
+bool check_inline_const_mutation(CheckContext *ctx, size_t ast_index);
+
+bool type_contains_error(const TypedProgram *program, size_t type_index);
+
+bool check_type_value_size(CheckContext *ctx, size_t type_index,
+                           SourcePos pos);
 
 #endif

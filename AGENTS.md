@@ -88,8 +88,9 @@ numbered rules are the concrete consequences.
     as in Lua; declarations and statements end where the grammar ends, not at a
     line boundary.
 18. The surface syntax belongs to the Lua/Luau family: keyword-delimited blocks
-    with `end`, `then`/`elseif`/`else`, no braces or semicolons, and type
-    annotations attached with `:`. Prefer that shape when adding constructs.
+    with `end`, `then`/`elseif`/`else`, no braces for blocks or semicolons, and
+    type annotations attached with `:`. Braces are reserved for record
+    literals. Prefer that shape when adding constructs.
 
 ### Where the goals and the code disagree
 
@@ -100,7 +101,7 @@ the goal.
 |---|---|
 | Rule 8 — incremental compilation | Absent. `make` rebuilds every translation unit. |
 | Rule 10 — concurrency | Absent, and no design recorded yet. |
-| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, lists, and slices are runtime-checked for bounds and staleness; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
+| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
 
 ## Documentation map
 

@@ -244,13 +244,17 @@ TestResult test_runtime_for_mutation(void)
 {
     const char *source =
         "global arena: Store = Store(64)\n"
+        "fun extend(xs: List<Int32>): Nil\n"
+        "  xs.push(3)\n"
+        "  return nil\n"
+        "end\n"
         "fun sum(): Int32\n"
         "  var xs: List<Int32> = arena.list<Int32>(4)\n"
         "  xs.push(1)\n"
         "  xs.push(2)\n"
         "  var total: Int32 = 0\n"
         "  for x in xs do\n"
-        "    xs.push(3)\n"
+        "    extend(xs)\n"
         "    total = total + x\n"
         "  end\n"
         "  return total\n"
@@ -407,6 +411,45 @@ TestResult test_runtime_divide_by_zero(void)
                                  "runtime division by zero");
 }
 
+TestResult test_runtime_top_level_index_assignment(void)
+{
+    const char *source =
+        "var xs: Array<Int32, 2> = [1, 2]\n"
+        "xs[0] = 3\n"
+        "print(xs[0])\n";
+
+    return run_generated(source, "3\n", "top-level index assignment");
+}
+
+TestResult test_runtime_top_level_field_assignment(void)
+{
+    const char *source =
+        "type Point\n"
+        "  x: Int32\n"
+        "  y: Int32\n"
+        "end\n"
+        "var p: Point = Point(1, 2)\n"
+        "p.x = 3\n"
+        "print(p.x)\n";
+
+    return run_generated(source, "3\n", "top-level field assignment");
+}
+
+TestResult test_runtime_recursion_guard(void)
+{
+    const char *source =
+        "fun down(n: Int32): Int32\n"
+        "  if n == -1 then\n"
+        "    return 0\n"
+        "  end\n"
+        "  return down(n + 1)\n"
+        "end\n"
+        "var n: Int32 = down(1)\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_RECURSION,
+                                 "recursion depth guard");
+}
+
 const TestCase runtime_language_test_tests[] = {
     {"runtime: union narrowing", test_runtime_union_narrowing},
     {"runtime: generic instantiations", test_runtime_generic_instantiations},
@@ -419,10 +462,15 @@ const TestCase runtime_language_test_tests[] = {
     {"runtime: if/match expressions", test_runtime_if_match_expressions},
     {"runtime: const bindings", test_runtime_const},
     {"runtime: operators", test_runtime_operators},
+    {"runtime: recursion guard", test_runtime_recursion_guard},
     {"runtime: divide by zero", test_runtime_divide_by_zero},
     {"runtime: exhaustive match", test_runtime_exhaustive_match},
     {"runtime: nested structs", test_runtime_nested_structs},
     {"runtime: top-level assignment", test_runtime_assignment_top},
+    {"runtime: top-level index assignment",
+     test_runtime_top_level_index_assignment},
+    {"runtime: top-level field assignment",
+     test_runtime_top_level_field_assignment},
     {"runtime: parameter assignment", test_runtime_assignment_parameter},
     {"runtime: assignment narrowing", test_runtime_assignment_union_narrowing},
     {"runtime: assignment in a loop", test_runtime_assignment_loop},

@@ -585,14 +585,6 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
         return false;
     }
 
-    if ((node->op == NIPPY_OPERATOR_DIV || node->op == NIPPY_OPERATOR_MOD) &&
-        right_node->kind == TYPED_INTEGER_LITERAL &&
-        right_node->integer_value == 0) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_ZERO_DIVISOR,
-                        operator_text(node->op));
-        return false;
-    }
 
     /* A Byte can be compared with an integer literal: the literal is typed as
        a Byte in that context. A Byte variable is never implicitly compared with
@@ -707,6 +699,40 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_OPERATOR_TYPE,
                         operator_text(node->op));
         return false;
+    }
+    {
+        bool right_constant = false;
+        int right_value = 0;
+
+        if (!const_int_eval(ctx, node->right_child, &right_value,
+                            &right_constant)) {
+            return false;
+        }
+        if (right_constant &&
+            (node->op == NIPPY_OPERATOR_SHL ||
+             node->op == NIPPY_OPERATOR_SHR) &&
+            (right_value < 0 || right_value > 31)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_SHIFT_RANGE);
+            return false;
+        }
+        if (right_constant &&
+            (node->op == NIPPY_OPERATOR_DIV ||
+             node->op == NIPPY_OPERATOR_MOD) &&
+            right_value == 0) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ZERO_DIVISOR,
+                            operator_text(node->op));
+            return false;
+        }
+    }
+    {
+        bool constant = false;
+        int value;
+
+        if (!const_int_eval(ctx, ast_index, &value, &constant)) {
+            return false;
+        }
     }
 
     {

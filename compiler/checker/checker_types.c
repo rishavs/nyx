@@ -564,3 +564,221 @@ bool add_builtin_type(CheckContext *ctx, NippyType kind,
     return add_type_record(ctx, kind, TYPED_NO_NODE, TYPED_NO_NODE, out_index);
 }
 
+
+static bool type_contains_error_depth(const TypedProgram *program,
+                                      size_t type_index, unsigned depth)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
+
+    if (type == NULL || depth == 0) {
+        return false;
+    }
+    if (type->kind == NIPPY_TYPE_ERROR) {
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_STRUCT) {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+
+        if (declaration != NULL) {
+            for (i = 0; i < declaration->children_count; i++) {
+                size_t child = *(const size_t *)list_get(
+                    &program->children, declaration->children_start + i);
+                const TypedNode *field = typed_program_node(program, child);
+
+                if (field != NULL && field->kind == TYPED_FIELD &&
+                    type_contains_error_depth(program, field->type_index,
+                                              depth - 1)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    if (type->kind == NIPPY_TYPE_UNION ||
+        type->kind == NIPPY_TYPE_HANDLE ||
+        type->kind == NIPPY_TYPE_LIST ||
+        type->kind == NIPPY_TYPE_FIXED_LIST ||
+        type->kind == NIPPY_TYPE_SLICE ||
+        type->kind == NIPPY_TYPE_RECORD ||
+        type->kind == NIPPY_TYPE_TABLE) {
+        for (i = 0; i < type->child_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->type_children, type->first_child + i);
+
+            if (type_contains_error_depth(program, child, depth - 1)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+
+bool type_contains_error(const TypedProgram *program, size_t type_index)
+{
+    return type_contains_error_depth(program, type_index, NIPPY_TYPE_DEPTH);
+}
+
+static bool add_value_size(size_t *total, size_t amount)
+{
+    if (*total > (size_t)-1 - amount) {
+        *total = NIPPY_MAX_VALUE_BYTES + 1;
+        return false;
+    }
+    *total += amount;
+    return true;
+}
+
+
+static bool type_value_size_depth(const TypedProgram *program,
+                                  size_t type_index, unsigned depth,
+                                  size_t *out)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
+
+    if (type == NULL || depth == 0) {
+        return false;
+    }
+    switch (type->kind) {
+    case NIPPY_TYPE_INT32:
+        *out = 4;
+        return true;
+    case NIPPY_TYPE_BOOL:
+    case NIPPY_TYPE_BYTE:
+    case NIPPY_TYPE_NIL:
+        *out = 1;
+        return true;
+    case NIPPY_TYPE_STRING:
+        *out = type->fixed_length + 5;
+        return true;
+    case NIPPY_TYPE_ERROR:
+        *out = (size_t)program->error_header_capacity +
+               (size_t)program->error_description_capacity +
+               (size_t)program->error_filename_capacity + 3 + 12;
+        return true;
+    case NIPPY_TYPE_FIXED_LIST: {
+        size_t element;
+
+        if (type->child_count != 1 ||
+            !type_value_size_depth(program,
+                                   *(const size_t *)list_get(
+                                       &program->type_children,
+                                       type->first_child),
+                                   depth - 1, &element)) {
+            return false;
+        }
+        if (type->fixed_length != 0 &&
+            element > ((size_t)-1) / type->fixed_length) {
+            *out = NIPPY_MAX_VALUE_BYTES + 1;
+            return true;
+        }
+        *out = (type->fixed_length == 0 ? 1 : type->fixed_length) * element;
+        return true;
+    }
+    case NIPPY_TYPE_RECORD: {
+        size_t key;
+        size_t value;
+        size_t capacity = type->fixed_length + 1;
+
+        if (type->child_count != 2 ||
+            !type_value_size_depth(program,
+                                   *(const size_t *)list_get(
+                                       &program->type_children,
+                                       type->first_child),
+                                   depth - 1, &key) ||
+            !type_value_size_depth(program,
+                                   *(const size_t *)list_get(
+                                       &program->type_children,
+                                       type->first_child + 1),
+                                   depth - 1, &value)) {
+            return false;
+        }
+        *out = 0;
+        if (!add_value_size(out, key + value + 1) ||
+            (capacity != 0 && *out > ((size_t)-1) / capacity)) {
+            *out = NIPPY_MAX_VALUE_BYTES + 1;
+            return true;
+        }
+        *out *= capacity;
+        return true;
+    }
+    case NIPPY_TYPE_UNION: {
+        size_t largest = 0;
+
+        for (i = 0; i < type->child_count; i++) {
+            size_t alternative;
+
+            if (!type_value_size_depth(
+                    program,
+                    *(const size_t *)list_get(
+                        &program->type_children, type->first_child + i),
+                    depth - 1, &alternative)) {
+                return false;
+            }
+            if (alternative > largest) {
+                largest = alternative;
+            }
+        }
+        *out = largest;
+        add_value_size(out, 8);
+        return true;
+    }
+    case NIPPY_TYPE_STRUCT: {
+        const TypedNode *declaration = typed_program_node(
+            program, type->declaration_node);
+        size_t total = 0;
+
+        if (declaration != NULL) {
+            for (i = 0; i < declaration->children_count; i++) {
+                size_t child = *(const size_t *)list_get(
+                    &program->children, declaration->children_start + i);
+                const TypedNode *field = typed_program_node(program, child);
+                size_t field_size;
+
+                if (field != NULL && field->kind == TYPED_FIELD) {
+                    if (!type_value_size_depth(program, field->type_index,
+                                               depth - 1, &field_size)) {
+                        return false;
+                    }
+                    add_value_size(&total, field_size);
+                }
+            }
+        }
+        *out = total;
+        return true;
+    }
+    case NIPPY_TYPE_HANDLE:
+    case NIPPY_TYPE_DYNAMIC_STRING:
+    case NIPPY_TYPE_TEXT_BUILDER:
+    case NIPPY_TYPE_LIST:
+    case NIPPY_TYPE_SLICE:
+    case NIPPY_TYPE_TABLE:
+        *out = 32;
+        return true;
+    case NIPPY_TYPE_FUNCTION:
+        *out = 16;
+        return true;
+    default:
+        return false;
+    }
+}
+
+
+bool check_type_value_size(CheckContext *ctx, size_t type_index,
+                           SourcePos pos)
+{
+    size_t size;
+
+    if (!type_value_size_depth(ctx->program, type_index, 32, &size)) {
+        return true;
+    }
+    if (size <= NIPPY_MAX_VALUE_BYTES) {
+        return true;
+    }
+    error_report_at(ctx->errors, pos, MESSAGE_CHECKER_VALUE_TOO_LARGE, size,
+                    (size_t)NIPPY_MAX_VALUE_BYTES);
+    return false;
+}

@@ -13,6 +13,8 @@ extern const TestCase checker_test_2_tests[];
 extern const size_t checker_test_2_test_count;
 extern const TestCase checker_test_3_tests[];
 extern const size_t checker_test_3_test_count;
+extern const TestCase bounds_test_tests[];
+extern const size_t bounds_test_test_count;
 extern const TestCase compiler_api_test_tests[];
 extern const size_t compiler_api_test_test_count;
 extern const TestCase misc_test_tests[];
@@ -31,6 +33,7 @@ int main(void)
         {"checker_test_1", checker_test_1_tests, checker_test_1_test_count},
         {"checker_test_2", checker_test_2_tests, checker_test_2_test_count},
         {"checker_test_3", checker_test_3_tests, checker_test_3_test_count},
+        {"bounds_test", bounds_test_tests, bounds_test_test_count},
         {"compiler_api_test", compiler_api_test_tests, compiler_api_test_test_count},
         {"misc_test", misc_test_tests, misc_test_test_count},
         {"analyser_test", analyser_test_tests, analyser_test_test_count},

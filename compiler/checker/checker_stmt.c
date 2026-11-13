@@ -110,6 +110,12 @@ bool check_expression_statement(CheckContext *ctx, size_t ast_index,
         ctx->in_expression_statement = previous;
     }
     expression_node = typed_program_node(ctx->program, expression);
+    if (expression_node != NULL &&
+        type_contains_error(ctx->program, expression_node->type_index)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_DISCARDED_ERROR);
+        return false;
+    }
     typed.kind = TYPED_EXPRESSION_STATEMENT;
     typed.type_index = expression_node == NULL
                            ? TYPED_NO_NODE
@@ -134,19 +140,15 @@ bool check_for_binding(CheckContext *ctx, const char *name,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
-        strcmp(name, "String") == 0 ||
-        strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
-        strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
-        strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Error") == 0) {
+        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
         error_report_at(ctx->errors, pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name == NULL ? "" : name);
         return false;
     }
     if (!check_reserved_name(ctx, pos, name)) {
+        return false;
+    }
+    if (!check_type_value_size(ctx, type_index, pos)) {
         return false;
     }
     memset(&entry, 0, sizeof(entry));
@@ -157,6 +159,45 @@ bool check_for_binding(CheckContext *ctx, const char *name,
         return false;
     }
     return true;
+}
+
+
+static bool mutates_iterated_list(const Ast *ast, size_t ast_index,
+                                  size_t symbol_index)
+{
+    const AstNode *node = ast_get_node(ast, ast_index);
+    size_t i;
+
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == AST_MEMBER_CALL) {
+        const AstNode *receiver = ast_get_node(ast, node->left_child);
+        const char *method = ast_symbol_text(ast, node->name_index);
+
+        if (receiver != NULL && receiver->kind == AST_IDENTIFIER &&
+            receiver->name_index == symbol_index && method != NULL &&
+            (strcmp(method, "push") == 0 || strcmp(method, "pop") == 0)) {
+            return true;
+        }
+    }
+    if (node->left_child != AST_NO_NODE &&
+        mutates_iterated_list(ast, node->left_child, symbol_index)) {
+        return true;
+    }
+    if (node->right_child != AST_NO_NODE &&
+        mutates_iterated_list(ast, node->right_child, symbol_index)) {
+        return true;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &ast->children, node->children_start + i);
+
+        if (mutates_iterated_list(ast, child, symbol_index)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 
@@ -180,6 +221,7 @@ bool check_for(CheckContext *ctx, const AstNode *node,
     size_t second_symbol = TYPED_NO_NODE;
     size_t nil_type;
     bool is_map = false;
+    bool is_list = false;
     TypedNode typed = {0};
 
     if (first == NULL ||
@@ -211,6 +253,8 @@ bool check_for(CheckContext *ctx, const AstNode *node,
     } else if (iterable_type->kind == NIPPY_TYPE_LIST ||
                iterable_type->kind == NIPPY_TYPE_FIXED_LIST ||
                iterable_type->kind == NIPPY_TYPE_SLICE) {
+        is_list = iterable_type->kind == NIPPY_TYPE_LIST ||
+                  iterable_type->kind == NIPPY_TYPE_FIXED_LIST;
         if (iterable_type->child_count != 1) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_FOR_ITERABLE);
@@ -231,6 +275,18 @@ bool check_for(CheckContext *ctx, const AstNode *node,
     if (!builtin_type(ctx, NIPPY_TYPE_INT32, &index_type) ||
         !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
         return false;
+    }
+    {
+        const AstNode *iterable_ast = ast_get_node(ctx->ast, node->left_child);
+
+        if (is_list && iterable_ast != NULL &&
+            iterable_ast->kind == AST_IDENTIFIER &&
+            mutates_iterated_list(ctx->ast, node->right_child,
+                                  iterable_ast->name_index)) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_FOR_MUTATION);
+            return false;
+        }
     }
     scope_start = ctx->locals->length;
     if (is_map) {
@@ -337,14 +393,7 @@ bool check_local_declaration(CheckContext *ctx, const AstNode *node,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
-        strcmp(name, "String") == 0 ||
-        strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
-        strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
-        strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Error") == 0) {
+        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_DUPLICATE_NAME, name);
         return false;
@@ -424,6 +473,9 @@ bool check_local_declaration(CheckContext *ctx, const AstNode *node,
     } else {
         variable_type = initialiser_node->type_index;
     }
+    if (!check_type_value_size(ctx, variable_type, node->pos)) {
+        return false;
+    }
     typed.kind = TYPED_LOCAL_DECLARATION;
     typed.type_index = variable_type;
     typed.pos = node->pos;
@@ -444,6 +496,25 @@ bool check_local_declaration(CheckContext *ctx, const AstNode *node,
     memcpy(entry.name, name, strlen(name) + 1);
     entry.type_index = variable_type;
     entry.is_const = node->is_const;
+    {
+        const TypedType *type = typed_program_type(ctx->program,
+                                                   variable_type);
+
+        if (node->is_const && type != NULL &&
+            type->kind == NIPPY_TYPE_INT32) {
+            bool is_constant = false;
+            int value;
+
+            if (!const_int_eval(ctx, node->left_child, &value,
+                                &is_constant)) {
+                return false;
+            }
+            if (is_constant) {
+                entry.has_constant = true;
+                entry.constant_value = value;
+            }
+        }
+    }
     if (!list_push(ctx->locals, &entry)) {
         error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
@@ -479,6 +550,17 @@ bool check_block(CheckContext *ctx, size_t ast_index,
         if (!check_statement(ctx, child, return_type, &statement)) {
             goto done;
         }
+        if (i + 1 < node->children_count &&
+            typed_statement_terminates(ctx->program, statement)) {
+            size_t next_child = *(const size_t *)list_get(
+                &ctx->ast->children, node->children_start + i + 1);
+            const AstNode *next = ast_get_node(ctx->ast, next_child);
+
+            error_report_at(ctx->errors,
+                            next == NULL ? node->pos : next->pos,
+                            MESSAGE_CHECKER_UNREACHABLE_CODE);
+            goto done;
+        }
         if (!list_push(&statements, &statement)) {
             error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
@@ -511,6 +593,72 @@ done:
 }
 
 
+static bool ast_contains_call_to(const Ast *ast, size_t ast_index,
+                                size_t symbol_index)
+{
+    const AstNode *node = ast_get_node(ast, ast_index);
+    size_t i;
+
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == AST_CALL && node->name_index == symbol_index) {
+        return true;
+    }
+    if (node->left_child != AST_NO_NODE &&
+        ast_contains_call_to(ast, node->left_child, symbol_index)) {
+        return true;
+    }
+    if (node->right_child != AST_NO_NODE &&
+        ast_contains_call_to(ast, node->right_child, symbol_index)) {
+        return true;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &ast->children, node->children_start + i);
+
+        if (ast_contains_call_to(ast, child, symbol_index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+static void ast_scan_returns(const Ast *ast, size_t ast_index,
+                             size_t symbol_index, bool *has_return,
+                             bool *has_safe_return)
+{
+    const AstNode *node = ast_get_node(ast, ast_index);
+    size_t i;
+
+    if (node == NULL) {
+        return;
+    }
+    if (node->kind == AST_RETURN) {
+        *has_return = true;
+        if (!ast_contains_call_to(ast, node->left_child, symbol_index)) {
+            *has_safe_return = true;
+        }
+    }
+    if (node->left_child != AST_NO_NODE) {
+        ast_scan_returns(ast, node->left_child, symbol_index, has_return,
+                         has_safe_return);
+    }
+    if (node->right_child != AST_NO_NODE) {
+        ast_scan_returns(ast, node->right_child, symbol_index, has_return,
+                         has_safe_return);
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &ast->children, node->children_start + i);
+
+        ast_scan_returns(ast, child, symbol_index, has_return,
+                         has_safe_return);
+    }
+}
+
+
 bool check_function_declaration(CheckContext *ctx, const AstNode *node,
                                        size_t ast_index)
 {
@@ -537,18 +685,7 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         find_function(ctx->functions, name) != NULL ||
         find_variable(ctx->globals, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
-        strcmp(name, "String") == 0 ||
-        strcmp(name, "Text") == 0 ||
-        strcmp(name, "TextBuilder") == 0 ||
-        strcmp(name, "List") == 0 ||
-        strcmp(name, "Array") == 0 ||
-        strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Record") == 0 ||
-        strcmp(name, "Table") == 0 ||
-        strcmp(name, "Error") == 0) {
+        is_builtin_type_name(name)) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);
         return false;
@@ -645,6 +782,11 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         if (!check_reserved_name(ctx, parameter->pos, parameter_name)) {
             goto done;
         }
+        if (strcmp(parameter_name, "print") == 0) {
+            error_report_at(ctx->errors, parameter->pos,
+                            MESSAGE_CHECKER_PRINT_RESERVED);
+            goto done;
+        }
         if (find_variable(ctx->locals, parameter_name) != NULL ||
             find_store(ctx->stores, parameter_name) != NULL) {
             error_report_at(ctx->errors, parameter->pos,
@@ -665,6 +807,9 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
                                 MESSAGE_CHECKER_STORE_TYPE);
                 goto done;
             }
+        }
+        if (!check_type_value_size(ctx, parameter_type, parameter->pos)) {
+            goto done;
         }
 
         typed_parameter.kind = TYPED_PARAMETER;
@@ -711,6 +856,9 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
             goto done;
         }
     }
+    if (!check_type_value_size(ctx, return_type, node->pos)) {
+        goto done;
+    }
     if (!add_function_type(ctx, &parameter_types, return_type, &function_type)) {
         goto done;
     }
@@ -743,6 +891,18 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_FUNCTION_MAY_NOT_RETURN, name);
         goto done;
+    }
+    {
+        bool has_return = false;
+        bool has_safe_return = false;
+
+        ast_scan_returns(ctx->ast, node->left_child, node->name_index,
+                         &has_return, &has_safe_return);
+        if (has_return && !has_safe_return) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ALWAYS_RECURSIVE, name);
+            goto done;
+        }
     }
 
     typed.kind = TYPED_FUNCTION_DECLARATION;

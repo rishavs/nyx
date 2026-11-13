@@ -11,7 +11,8 @@
      - Offsets in diagnostics are byte offsets into the source; line and column
        are 1-based.
      - The shape follows the Lua/Luau family: keyword-delimited blocks ending in
-       "end", no braces or semicolons, and type annotations written with ":".
+       "end", no braces for blocks, no semicolons, and type annotations written
+       with ":". Braces delimit record literals only.
 *)
 
 (* ---- program ---- *)
@@ -19,6 +20,9 @@
 program            = item, { item }, end-of-input ;
 
 item               = declaration
+                   | if-statement
+                   | match-statement
+                   | for-statement
                    | assignment-statement
                    | expression-statement ;
 
@@ -126,11 +130,16 @@ primary-type       = "String", "<", integer-literal, ">"
                    | function-type
                    | "(", type, ")" ;
 
+type-arguments     = type, { ",", type } ;
+
+function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")",
+                     ":", type, ">" ;
+
 type-name          = identifier ;
                      (* "Int32", "Bool", "Byte", "Nil", "Text",
-                        "TextBuilder", "List", "Array", "Slice", "Store",
-                        "Handle", "Error", a declared struct or alias, or a
-                        type parameter in scope.
+                        "TextBuilder", "List", "Array", "Slice", "Record",
+                        "Table", "String", "Store", "Handle", "Error", a
+                        declared struct or alias, or a type parameter in scope.
                         Bare "Text" is the dynamic arena/static-backed type.
                         List<T> is dynamic; Array<T,N> is fixed-capacity with a
                         runtime length. Slice<T> is a read-only view of a
@@ -241,13 +250,12 @@ boolean-literal    = "true" | "false" ;
 nil-literal        = "nil" ;
 
 identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
-                     (* at most 31 characters. "var", "type", "fun", "return",
-                        "if", "then", "elseif", "else", "while", "for",
-                        "const", "in",
-                        "do", "break", "continue", "true", "false", "nil", and
-                        "end" are
-                        keywords and are not identifiers. Longer names are a
-                        lexer error *)
+                     (* at most 31 characters. "global", "var", "const",
+                        "type", "fun", "return", "if", "then", "elseif",
+                        "else", "while", "for", "typeof", "is", "match",
+                        "with", "in", "do", "break", "continue", "true",
+                        "false", "nil", and "end" are keywords and are not
+                        identifiers. Longer names are a lexer error. *)
 
 letter-or-underscore = "A" | ... | "Z" | "a" | ... | "z" | "_" ;
 letter-or-digit-or-underscore = letter-or-underscore | digit ;
@@ -268,6 +276,10 @@ elseif             = "elseif" ;
 else               = "else" ;
 while              = "while" ;
 for                = "for" ;
+typeof             = "typeof" ;
+is                 = "is" ;
+match              = "match" ;
+with               = "with" ;
 in                 = "in" ;
 do                 = "do" ;
 break              = "break" ;
@@ -288,6 +300,17 @@ end                = "end" ;
 ")"                = ")" ;
 ","                = "," ;
 "+"                = "+" ;
+"-"                = "-" ;
+"*"                = "*" ;
+"/"                = "/" ;
+"%"                = "%" ;
+"~"                = "~" ;
+"&"                = "&" ;
+"^"                = "^" ;
+"<<"               = "<<" ;
+">>"               = ">>" ;
+"{"                = "{" ;
+"}"                = "}" ;
 "<"                = "<" ;
 "<="               = "<=" ;
 ">"                = ">" ;
@@ -308,7 +331,8 @@ end                = "end" ;
 
        global points: Store = Store(4096)
 
-   `bytes` is a constant Int32 expression (integer literals and +). Stores are
+   `bytes` is a constant Int32 expression (literals, `const` bindings, and
+   arithmetic/bitwise operators). Stores are
    global, non-first-class, and allocated at program start. The methods are:
 
        points.alloc<T>(value)   -> Handle<T>
@@ -318,6 +342,7 @@ end                = "end" ;
        points.text(f)         -> Text
        points.builder(capacity) -> TextBuilder
        points.list<T>(capacity)-> List<T>
+       points.table<K,V>(capacity) -> Table<K,V>
        handle.read()            -> T
        handle.write(value)      -> Nil
 
@@ -343,6 +368,8 @@ end                = "end" ;
        r.remove(key)            -> Bool
        r.len()                  -> Int32
        xs.pop()                 -> T | Nil (Array and List)
+       xs.get(i)                -> T | Nil (Array, List, and Slice)
+       r.get(key)               -> V | Nil (Table)
        xs[i], xs[i] = value     -> list indexing (bounds-checked)
        xs.slice(start, length)  -> Slice<T> (dynamic lists only)
        s.len(), s[i]            -> read-only slice access
@@ -362,7 +389,7 @@ end                = "end" ;
 (* ---- rejected forms worth naming ---- *)
 
 (* A bare expression is not a program:
-       13                      (* parser: expected 'global', 'var', 'type', or 'fun' ... *)
+       13                      (* parser: expected 'global', 'var', 'const', 'type', or 'fun' ... *)
    A struct declaration needs at least one field:
        type Point end          (* parser: expected at least one field ... *)
    A generic type needs its arguments where it is named:
@@ -415,8 +442,38 @@ end                = "end" ;
        if x > 0 return 1 end   (* parser: expected 'then' ... *)
    Conditions must be Bool:
        if 1 then ... end       (* checker: condition must be Bool *)
-   break and continue need an enclosing while:
+   A literal index must fit a fixed Array or String:
+       var xs: Array<Int32, 2> = [1, 2]
+       xs[2]                   (* checker: literal index is outside the fixed bound *)
+   Capacities cannot be literal negative numbers:
+       arena.list<Int32>(-1)   (* checker: capacity cannot be negative *)
+   A for body cannot directly push or pop its iterated list:
+       for x in xs do xs.push(1) end
+                               (* checker: cannot mutate the iterated list ... *)
+
+   break and continue need an enclosing loop (while or for):
        break                   (* checker: 'break' outside a loop *)
+   Constant expressions are checked for overflow, shift range, and zero divisors:
+       print(2147483647 + 1)   (* checker: constant expression overflows Int32 *)
+       print(1 << 40)          (* checker: constant shift count must be in 0..31 *)
+       const z: Int32 = 0
+       print(1 / z)            (* checker: '/' by zero *)
+   const inline values are not mutable:
+       const p: Point = Point(1, 2)
+       p.x = 3                 (* checker: cannot assign to const 'p' *)
+       const xs: Array<Int32, 2> = [1, 2]
+       xs.push(3)              (* checker: cannot assign to const 'xs' *)
+   A call statement cannot discard a result containing Error:
+       f()                     (* checker: a result containing Error cannot be discarded *)
+   Statements after a terminating statement are unreachable:
+       return 1
+       return 2                (* checker: unreachable code after a terminating statement *)
+   Every return path of a function cannot call itself:
+       fun f(x:Int32):Int32 return f(x + 1) end
+                               (* checker: every return path of 'f' calls itself *)
+   A by-value type cannot exceed 64 KiB:
+       type Big a: Array<Int32, 4096> ... end
+                               (* checker: by-value type is too large *)
    Every function must return on every path:
        fun f(x:Int32):Int32
          if x > 0 then return 1 end

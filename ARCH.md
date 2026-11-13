@@ -18,8 +18,8 @@ The compiler is written in C11 and links against libc only.
 
 ```text
 source  ->  tokens  ->  syntax tree  ->  typed program  ->  C11 text
-            lexer.c     parser.c         checker.c          generator.c
-                                        analyser.c
+           lexer/      parser/          checker/           generator/
+                                         analyser/
 ```
 
 `compiler/compiler.c` drives the order. Each stage consumes the previous stage's
@@ -76,16 +76,16 @@ no syntactic meaning and indentation is not significant.
 
 Tokens are plain values stored inline in a `List`: no pointers, so the list can
 be moved or freed without walking its contents. string literals are the one
-variable-length token payload: decoded bytes live in `LexerResult.text_bytes`,
+variable-length token payload: decoded bytes live in `LexerResult.string_bytes`,
 and the token stores an offset and length into that pool. Escapes are decoded
 during scanning; NUL bytes, raw newlines, unterminated literals, and unknown
 escapes are lexer errors. Keyword recognition happens
-during scanning (`global`, `var`, `type`, `fun`, `return`, `if`, `then`,
-`elseif`, `else`, `while`, `for`, `in`, `do`, `break`, `continue`, `true`,
-`false`, `end`); everything else is
-an identifier. Two-character operators (`==`, `!=`, `<=`, `>=`, `&&`, `||`) are
-recognised before their single-character prefixes. A double quote starts a
-string literal.
+during scanning (`global`, `var`, `const`, `type`, `fun`, `return`, `if`,
+`then`, `elseif`, `else`, `while`, `for`, `typeof`, `is`, `match`, `with`,
+`in`, `do`, `break`, `continue`, `true`, `false`, `nil`, `end`); everything
+else is an identifier. Two-character operators (`==`, `!=`, `<=`, `>=`, `<<`,
+`>>`, `&&`, `||`) are recognised before their single-character prefixes. A
+double quote starts a string literal.
 
 ### Parser
 
@@ -128,8 +128,9 @@ Function bodies are blocks of statements. `if`/`elseif`/`else` is parsed as an
 `AST_IF_EXPRESSION` for expression branches; an
 `elseif` chain is desugared into nested `if` nodes in the else branch. `while`
 stores its condition and body block. `for` stores its optional two bindings,
-iterable, and body block. Statements are `return`, `if`, `while`, `for`,
-`break`, and `continue`.
+iterable, and body block. `match` stores its head/pattern arms and optional
+else block. Statements are `return`, `if`, `while`, `for`, `match`, `break`,
+`continue`, local declarations, assignments, and expression statements.
 
 Identifiers are interned: `ast_intern_symbol` maps text to an index into
 `Ast.symbols`, and nodes hold the index. Re-interning the same spelling returns
@@ -169,10 +170,25 @@ Reads the syntax tree through a `const` pointer and writes a separate
   argument is printable;
 - types `Error.throw(header, description)` as an `Error` whose filename and
   source position come from the compiler configuration and call site;
-- types boolean and nil literals, `typeof x is T`, and the comparison, equality, and
-  logical operators;
+- types boolean and nil literals, `typeof x is T`, arithmetic, bitwise,
+  comparison, equality, and logical operators;
 - checks `if`/`while` conditions are `Bool`;
-- checks `for` iterables and binds the loop value and optional `Int32` index;
+- checks `match` arms, duplicate patterns, and exhaustiveness;
+- evaluates constant Int32 expressions over literals, `const` bindings, unary
+  minus, and arithmetic/bitwise operators; rejects overflow, constant shift
+  counts outside `0..31`, and constant zero divisors;
+- rejects mutation of a `const` inline struct, Array, Record, or String, while
+  leaving descriptor types (`List`, `Table`, `Text`, `TextBuilder`, `Slice`)
+  shallow;
+- rejects call statements whose result type contains `Error`; binding the result
+  or matching it is the explicit discard path;
+- rejects statements after `return`, `break`, or `continue` as unreachable;
+- treats `while true` with no `break` as never falling through;
+- rejects a function whose every return expression calls itself and enforces a
+  recursive-stack depth guard in generated code;
+- caps any by-value type at 64 KiB so large payloads move into a Store;
+- checks `for` iterables and binds the loop value and optional `Int32` index, or
+  the key and optional value for Records and Tables;
 - checks every `return` expression against the return type, and rejects
   `break`/`continue` outside a loop;
 - proves that every function returns on every path, using the structured
@@ -203,16 +219,20 @@ Reads the syntax tree through a `const` pointer and writes a separate
 - types `store.builder(capacity)` and the `TextBuilder` methods `append`,
   `append_byte`, `byte_len`, and `finish`;
 - types fixed `Array<T,N>` literals with capacity/length and element coercion,
-  plus dynamic `store.list<T>(capacity)`, indexing, `push`, `pop`, and `len`;
-  mutation requires a list variable; function, union, and `Text` elements are
-  accepted; collections are rejected as direct elements; `pop` builds and
-  tag-remaps the optional union;
+  plus dynamic `store.list<T>(capacity)`, indexing, `push`, `pop`, `get`, and
+  `len`; mutation requires a list variable; function, union, and `Text`
+  elements are accepted; collections are rejected as direct elements; `pop` and
+  `get` build and tag-remap the optional union;
+- rejects a literal index outside a fixed Array or String bound, a literal
+  negative list/builder/table/store capacity, and a direct `push`/`pop` of the
+  iterated list inside its `for` body;
 - types `Slice<T>` views, list/sub-slices, and read-only slice indexing;
 - types fixed-string-keyed `Record<K,V,N>` and `Table<K,V>` maps, including
   Record literals, indexing, `has`, `remove`, and `len`;
 - types `Text` as a single item and `TextBuilder` as a collection, so `Text`
   can be a struct/union/parameter/return and `TextBuilder` cannot be an
-  `alloc`/`Handle` element;
+  `alloc`/`Handle` element; `get` on List, Array, Slice, and Table returns an
+  optional union instead of trapping;
 - builds the built-in `Error` type and its three configured fixed-string field
   types, checks `Error(...)` argument count and types, and types its six field
   methods;
@@ -227,9 +247,10 @@ Reads the syntax tree through a `const` pointer and writes a separate
 - copies every name it keeps into `TypedProgram.symbols`, so the typed program
   outlives the syntax tree.
 
-The checker owns four linear tables: declared types (`TypeEntry`), functions
-(`FunctionEntry`), program-level variables, and the current function's
-parameters, plus linear instantiation tables for generic structs and functions.
+The checker owns five linear tables: declared types (`TypeEntry`), functions
+(`FunctionEntry`), program-level variables, the current function's parameters,
+and global stores (`StoreEntry`), plus linear instantiation tables for generic
+structs and functions.
 Type identity is structural for unions and functions and nominal for structs.
 Union alternatives are stored in a canonical order, so structural equality is a
 linear walk.
@@ -313,8 +334,9 @@ becomes a `nyx_builder` descriptor pointing at store-backed state; append,
 growth, length, and finish use `nyx_builder_*` helpers. Arrays become
 `nyx_list_<index>` structs and fixed `get` helpers. Dynamic lists become a
 `nyx_list` descriptor pointing at store-backed state; create, push, pop,
-index, set, and length use `nyx_list_*` helpers. Arrays carry an inline
-length and have per-type push/at/pop helpers. Fixed function elements emit an
+index, set, get, and length use `nyx_list_*` helpers. Arrays carry an inline
+length and have per-type push/at/pop/get helpers; optional `get` helpers build
+the `T | Nil` result instead of trapping on a missing index. Fixed function elements emit an
 inline element typedef; function union payloads are emitted inline. `Slice<T>`
 uses a `nyx_slice` descriptor and non-owning read helpers. `TYPED_ERROR_CONSTRUCT`
 becomes a `nyx_error` compound literal and `TYPED_ERROR_FIELD` reads one of its
@@ -333,7 +355,12 @@ pointer. The runtime grows by doubling, retains capacity on reset, and panics
 deterministically on OOM, stale handles, invalid store ids, and out-of-range
 handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`. Record and Table helpers
 use FNV-1a hashing with linear probing; Table helpers allocate arena state and
-rehash on growth.
+rehash on growth. Optional `get` helpers return the `T | Nil` union instead of
+trapping on a missing key.
+
+A directly self-recursive function is emitted as a depth-guarded wrapper plus an
+inner implementation; exceeding `NIPPY_RECURSION_LIMIT` traps with
+`nippy: recursion depth exceeded` instead of overflowing the C stack.
 
 Because the number of declarations and fields is not fixed, the generator
 composes text in a growable `TextBuffer` and validates every interpolated
@@ -385,7 +412,7 @@ Fixed-size records and buffers are used where the size is a hard language limit:
 
 `Ast` keeps a separate `type_parameters` run because a generic declaration's
 value children and type parameters must not share one run. string literal bytes
-are variable-length too, so `LexerResult.text_bytes`, `Ast.bytes`, and
+are variable-length too, so `LexerResult.string_bytes`, `Ast.bytes`, and
 `TypedProgram.bytes` are byte pools; tokens and literal nodes store offsets and
 lengths rather than pointers. `TypedType.fixed_length` is the byte capacity of a
 `String<N>`. `TypedType` also records a union's alternatives, a struct
@@ -461,7 +488,7 @@ Anything shared between those modules is declared in the directory's
   are. Local variables are block-scoped and cannot shadow parameters or other
   visible names.
 - No ownership or lifetime analysis; the analyser validates links only.
-- The type, function, and variable tables are linear string searches.
+- The type, function, variable, and store tables are linear string searches.
 - Function types are emitted as one typedef per signature occurrence, so
   duplicate but structurally identical typedefs are common.
 - Generic calls only infer type arguments from value arguments. A type

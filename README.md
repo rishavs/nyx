@@ -1,18 +1,22 @@
 # Nippy compiler prototype
 
 Nippy is a small, statically typed language in the Lua/Luau syntactic family:
-keyword-delimited blocks ending in `end`, no braces or semicolons, and type
-annotations written with `:`. It is a typed relative of Lua, not a C-shaped
-language with Lua spelling.
+keyword-delimited blocks ending in `end`, no braces for blocks, no semicolons,
+and type annotations written with `:`. It is a typed relative of Lua, not a
+C-shaped language with Lua spelling. Braces appear only in record literals.
 
-This first compiler accepts a sequence of top-level declarations and
-statements: struct type declarations, which emit C `typedef struct`s; type
-aliases and union types; variable declarations; function declarations,
-including generic ones; and assignments. A single integer variable declaration still emits a
-program that prints its value; other programs declare their types, values, and
-functions. Compiler modules live in `compiler/`, and public headers live in
-`include/`. `compiler.c` calls the stages in order: lexer, parser, checker,
-analyser, and generator. The compiler API accepts a source string and
+This compiler accepts a sequence of top-level declarations and statements:
+struct type declarations, aliases, and unions; variable and `const`
+declarations; global stores; function declarations, including generic ones;
+assignments; `if`, `match`, and `for` statements; and call statements. It
+implements stores and checked handles, fixed and dynamic strings, string
+builders, arrays/lists/slices, records/tables, errors, printing, generics,
+unions and narrowing. A single `Int32` variable declaration additionally emits
+a program that prints its value.
+
+Compiler modules live in phase directories under `compiler/`; public headers
+live in `include/`. `compiler.c` calls the stages in order: lexer, parser,
+checker, analyser, and generator. The compiler API accepts a source string and
 configuration, then returns owned C and header source strings. `main.c` is the
 command-line driver; it writes those strings and invokes `cc` to build the
 requested executable.
@@ -100,17 +104,25 @@ var add : Fun<(Int32, Int32):Int32> = adder
 var sum2 : Int32 = apply(add, 1, 2)
 ```
 
-Expressions are integer, boolean, and `nil` literals, names, calls, struct
-constructors, arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`), bitwise (`&`, `|`, `^`, `~`,
-`<<`, `>>`), comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`),
-logical operators (`!`, `&&`, `||`), `typeof x is T` tests, `if` expressions,
-`match` expressions, and grouped expressions.
+Expressions include integer, boolean, string, `nil`, list, and record
+literals; names; calls and member calls; struct constructors; indexing and
+member access; arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`); bitwise (`&`,
+`|`, `^`, `~`, `<<`, `>>`); comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`);
+logical operators (`!`, `&&`, `||`); `typeof x is T` tests; `if` and `match`
+expressions; and grouped expressions.
+
+Constant expressions are evaluated at compile time. Literal arithmetic that
+overflows `Int32`, a constant shift count outside `0..31`, and division or
+modulo by a constant zero are compile errors. `const` integer bindings are
+usable in these expressions, and the same evaluator checks `Store(bytes)` and
+constructor capacities.
 `Bool` is the built-in boolean type; `true` and `false` are its literals. `Nil`
 is the unit type; `nil` is its only value.
 
 ## Local variables and fields
 
-Function bodies and `if`/`while` blocks can declare locals:
+Function bodies and every block (`if`/`elseif`/`else`, `while`, `for`, and
+`match` arms) can declare locals:
 
 ```nippy
 fun score(): Int32
@@ -168,7 +180,9 @@ end
 - The index is `Int32`.
 - The iterable expression is evaluated once.
 - The length is snapshotted at loop entry.
-- Changing the length of an iterated list inside the loop fails deterministically.
+- A direct `xs.push` or `xs.pop` on the iterated list inside the body is a
+  compile-time error. Indirect mutation still fails deterministically at
+  runtime.
 - `break` and `continue` apply to the innermost loop.
 - The loop bindings are scoped to the loop body.
 
@@ -240,6 +254,8 @@ struct      Point { x: 4, y: 5 }
 Array       [1, 2, 3]
 List        [10, 20]
 Slice       [10, 20]
+Record      {key: value, ...}
+Table       {key: value, ...}
 TextBuilder hi
 Handle      <handle store=0 offset=48 generation=1>
 Function    <function>
@@ -363,13 +379,14 @@ points.reset()
   check the store id, generation, and bounds and fail deterministically.
 - `reset()` invalidates every handle from that store while keeping the arena's
   capacity for reuse.
+- A literal negative `Store(bytes)` size is a compile-time error.
 - Stores grow by doubling, so the declared size is an initial reservation.
 - `Byte` maps to `uint8_t`; integer literals are typed as `Byte` where a Byte is
   expected, and must be in `0..255`. Byte supports `==` and `!=` only.
 - Stores are global and non-first-class: function bodies can name them, but a
   store cannot be passed, returned, copied, or stored in a field.
-- Stores also create builders and dynamic lists: `s.builder(bytes)` and
-  `s.list<T>(capacity)`.
+- Stores also create builders, dynamic lists, and dynamic tables: `s.builder(bytes)`,
+  `s.list<T>(capacity)`, and `s.table<K,V>(capacity)`.
 - `global` requires the declared type to be `Store`. The older `var` spelling
   with a `Store` annotation is still accepted for compatibility; `global` is the
   canonical form.
@@ -399,9 +416,10 @@ fun bump(x: Int32): Int32
 end
 ```
 
-The target is a variable or parameter. The right-hand side is evaluated first,
-then copied into the target. The value must match the target's declared type,
-with the usual literal and union-injection rules:
+The target is a variable, parameter, list index, or writable struct field. The
+right-hand side is evaluated first, then copied into the target. The value must
+match the target's declared type, with the usual literal and union-injection
+rules:
 
 ```nippy
 var b: Byte = 1
@@ -415,10 +433,16 @@ name = "hi"
 ```
 
 Assignment is a statement, not an expression. There is no `+=`, no chained
-assignment, and no assignment to stores, functions, or type names. Program-level
-variables are assignable at program level, but not inside functions; functions
-can assign their own parameters. Inside `if typeof x is T then`, assigning to `x`
+assignment, and no assignment to stores, functions, or type names. Variables,
+list elements, and writable struct fields are assignable at program level, but
+program-level variables are not assignable inside functions; functions can
+assign their own parameters. Inside `if typeof x is T then`, assigning to `x`
 invalidates the narrowing for later statements.
+
+`const` is deep for inline values. A `const` struct, `Array`, `Record`, or
+`String<N>` cannot be mutated through a field, index, `push`, or `pop`. `List`,
+`Table`, `Text`, `TextBuilder`, and `Slice` are descriptors, so a `const`
+binding to one still allows mutation of the shared store-backed value.
 
 ## Arrays and Lists
 
@@ -442,6 +466,8 @@ var last: Int32 | Nil = xs.pop()
   `nil`.
 - `xs[i]` reads an element and `xs[i] = value` writes one. Indices are `Int32`
   and bounds-checked.
+- `xs.get(i)` returns `T | Nil`, returning `nil` for an out-of-range index.
+- A literal index that is negative or at least `N` is a compile-time error.
 - Arrays are inline values. Mutation through `push`, `pop`, and `xs[i] =`
   requires the list to be a variable or parameter, so the compiler can update
   the inline storage.
@@ -463,8 +489,10 @@ var n: Int32 = xs.len()       // 2
 var first: Int32 = xs[0]      // 10
 ```
 
-- `arena.list<T>(capacity)` allocates a dynamic list in the store.
-- `push`, `pop`, `xs[i]`, and `len()` are available.
+- `arena.list<T>(capacity)` allocates a dynamic list in the store. A literal
+  negative capacity is a compile-time error.
+- `push`, `pop`, `xs[i]`, `get(i)`, and `len()` are available.
+- `get(i)` returns `T | Nil`, returning `nil` for an out-of-range index.
 - Dynamic lists are mutable. Copying one copies the descriptor, and all copies
   alias the same list state, like `TextBuilder`.
 - Dynamic `push` grows the buffer; old buffers remain until reset.
@@ -494,6 +522,11 @@ allocator-backed fields: primitives, function types, `Error`, `String<N>`,
 alternatives are fixed. `Handle`, `Text`, `List`, `Slice`, `TextBuilder`,
 `Record`, and `Table` are not fixed. `List`, `Text`, and `TextBuilder` have dedicated constructors;
 `Array` is fixed and uses `alloc` when arena storage is required.
+
+By-value types have a compile-time size cap of 64 KiB. A struct, Array, Record,
+String, or union larger than that is rejected; move the data into a Store
+instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`, and `Handle` are
+descriptors and do not count their payload against the cap.
 
 Collection elements remain single items, so `List<Text>` and
 `List<StructWithText>` are allowed even though `alloc<Text>` and
@@ -539,10 +572,12 @@ t["a"] = 1
 var n: Int32 = t.len()
 ```
 
-- `arena.table<K,V>(capacity)` creates a Table.
+- `arena.table<K,V>(capacity)` creates a Table. A literal negative capacity is
+  a compile-time error.
 - Tables grow by rehashing.
 - Copies alias the same table state.
 - `reset()` invalidates a Table.
+- `t.get(key)` returns `V | Nil`, returning `nil` for a missing key.
 
 Both print as `{key: value, ...}`. Iteration yields key/value pairs:
 
@@ -582,7 +617,8 @@ var first: Int32 = s[0]  // 20
 ```
 
 - `xs.slice(start, length)` returns a `Slice<T>` view; it does not allocate.
-- `Slice<T>` has `len()` and `[]` reads. It is read-only: no `push`, `pop`,
+- `Slice<T>` has `len()`, `[]` reads, and `s.get(i): T | Nil`. It is
+  read-only: no `push`, `pop`,
   `set`, or `[] =`.
 - A slice of a slice is another view.
 - Parent `xs[i] = value` writes are visible through a slice.
@@ -637,6 +673,8 @@ var out: Text = b.finish()
 var len: Int32 = out.byte_len()   // 12
 ```
 
+- `arena.builder(capacity)` creates a builder. A literal negative capacity is a
+  compile-time error.
 - `append`, `append_byte`, and `byte_len` operate on the builder.
 - `finish()` copies the current bytes into a fresh immutable `Text`; the
   builder remains usable.
@@ -662,14 +700,17 @@ var same: Bool = name == "nyx"
   terminator, so it is directly usable from C.
 - The capacity must be an integer literal in `0..4096` by default. It can be
   raised or lowered through `CompilerConfig.max_string_capacity`, up to a hard
-  limit of 1 MiB.
+  limit of 1 MiB. The by-value size cap still applies: a `String<N>` larger
+  than 64 KiB must live behind a `Handle`, not in a local, field, parameter, or
+  return value.
 - String literals are typed by context. `var s: String<16> = "nyx"` is fixed;
   `var s: Text = "nyx"` is a static dynamic string. `var s = "nyx"` is
   rejected because it has no context.
 - A literal longer than a fixed capacity, or a value of a different capacity,
   is rejected. `Text` and `String<N>` do not convert implicitly.
 - `byte_len()` is the byte length; `byte_at(i)` is bounds-checked and returns a
-  `Byte`; `==`/`!=` compare content.
+  `Byte`; `==`/`!=` compare content. A literal index that is negative or at
+  least `N` is a compile-time error.
 - A fixed string is a sized value, so it can be stored in a Store like any
   other value:
 
@@ -708,6 +749,10 @@ clamped to `max_string_capacity`. `Error` fields are readable directly
 not writable. `Error` can be stored, passed, returned, put in a struct field,
 and used as a union alternative such as `String<8> | Error`.
 
+A call statement cannot discard a result whose type contains `Error`. Bind the
+result or use `match` with an `else` instead; this keeps the error from vanishing
+silently.
+
 Dynamic strings, slicing, `store.concat`/`store.copy`, and `TextBuilder` are
 implemented. C string projection and UTF-8 codepoint APIs are not.
 
@@ -736,11 +781,18 @@ end
 ```
 
 `if` conditions and `while` conditions must be `Bool`. `break` and `continue`
-apply to the innermost `while`. Every function must return on every path.
-Functions may call earlier functions and themselves, but a function body cannot
-see ordinary program-level variables yet; stores remain visible. Function
-bodies support local variables, block-scoped `if`/`while` blocks, assignment,
-field access, and list indexing.
+apply to the innermost loop (`while` or `for`). Every function must return on
+every path. A `while true` with no `break` counts as not falling through, so a
+function that ends in such a loop is accepted. Statements after `return`,
+`break`, or `continue` are unreachable and rejected. Functions may call earlier
+functions and themselves, but a function body cannot see ordinary program-level
+variables yet; stores remain visible. Function bodies support local variables,
+block-scoped `if`/`while`/`for`/`match` blocks, assignment, field access, and
+list indexing.
+
+A function whose every return expression calls itself is rejected. Remaining
+direct recursion is protected by a generated depth guard; exceeding it traps
+with `nippy: recursion depth exceeded` instead of overflowing the C stack.
 
 The parser returns a flattened AST: nodes are stored inline in a list, and
 child links are node indices. Variable-arity children are indices in a separate

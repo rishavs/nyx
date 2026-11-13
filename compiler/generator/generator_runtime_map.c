@@ -421,5 +421,115 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
     }
+    {
+        size_t n;
+
+        for (n = 0; n < program->nodes.length; n++) {
+            const TypedNode *node = typed_program_node(program, n);
+            const TypedNode *receiver;
+            const TypedType *receiver_type;
+            const TypedType *union_type;
+            size_t key_type;
+            size_t value_type;
+            size_t nil_type = TYPED_NO_NODE;
+            size_t nil_tag;
+            char union_name[NIPPY_IDENTIFIER_MAX + 32];
+            char key_name[64];
+            char value_name[64];
+            TextBuffer body;
+            size_t j;
+
+            if (node == NULL || node->kind != TYPED_TABLE_GET_OPTIONAL) {
+                continue;
+            }
+            receiver = typed_program_node(program, node->left_child);
+            receiver_type = receiver == NULL
+                                ? NULL
+                                : typed_program_type(program,
+                                                     receiver->type_index);
+            if (receiver_type == NULL ||
+                receiver_type->kind != NIPPY_TYPE_TABLE ||
+                receiver_type->child_count != 2) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+                return false;
+            }
+            union_type = typed_program_type(program, node->type_index);
+            key_type = *(const size_t *)list_get(&program->type_children,
+                                                receiver_type->first_child);
+            value_type = *(const size_t *)list_get(
+                &program->type_children, receiver_type->first_child + 1);
+            if (union_type == NULL ||
+                !map_key_names(program, key_type, value_type, key_name,
+                               sizeof(key_name), value_name,
+                               sizeof(value_name), errors)) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+                return false;
+            }
+            buffer_init(&body);
+            if (union_type->kind == NIPPY_TYPE_NIL) {
+                if (!buffer_appendf(
+                        &body,
+                        "static NIPPY_UNUSED nyx_nil "
+                        "nyx_table_%zu_get_optional_%zu(nyx_table t, %s key)\n"
+                        "{\n"
+                        "    %s value;\n"
+                        "    (void)nyx_table_%zu_get(t, key, &value);\n"
+                        "    return (nyx_nil)0;\n"
+                        "}\n\n",
+                        receiver->type_index, n, key_name, value_name,
+                        receiver->type_index)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    buffer_free(&body);
+                    return false;
+                }
+                if (!buffer_append(source, body.text)) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    buffer_free(&body);
+                    return false;
+                }
+                buffer_free(&body);
+                continue;
+            }
+            if (!format_c_type(program, node->type_index, union_name,
+                               sizeof(union_name), errors)) {
+                buffer_free(&body);
+                return false;
+            }
+            for (j = 0; j < program->types.length; j++) {
+                const TypedType *candidate = typed_program_type(program, j);
+
+                if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
+                    nil_type = j;
+                    break;
+                }
+            }
+            if (nil_type == TYPED_NO_NODE ||
+                !find_union_alternative(program, union_type, nil_type,
+                                        &nil_tag) ||
+                !buffer_appendf(
+                    &body,
+                    "static NIPPY_UNUSED %s nyx_table_%zu_get_optional_%zu("
+                    "nyx_table t, %s key)\n"
+                    "{\n"
+                    "    %s result;\n"
+                    "    %s value;\n\n"
+                    "    if (!nyx_table_%zu_get(t, key, &value)) {\n"
+                    "        result = (%s){ .tag = %zu };\n"
+                    "        return result;\n"
+                    "    }\n",
+                    union_name, receiver->type_index, n, key_name, union_name,
+                    value_name, receiver->type_index, union_name, nil_tag) ||
+                !append_optional_union(&body, program, node->type_index,
+                                       node->auxiliary_type, union_name,
+                                       "value", "result") ||
+                !buffer_append(&body, "    return result;\n}\n\n") ||
+                !buffer_append(source, body.text)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+            buffer_free(&body);
+        }
+    }
     return true;
 }

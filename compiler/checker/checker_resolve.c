@@ -198,6 +198,9 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             record->type_index = type_index;
             record->in_progress = false;
         }
+        if (!check_type_value_size(ctx, type_index, declaration->pos)) {
+            return false;
+        }
         *out_type = type_index;
         return true;
     }

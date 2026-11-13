@@ -266,6 +266,10 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
     size_t i;
     bool ok = false;
 
+    if (declaration == NULL ||
+        !check_type_value_size(ctx, return_type, declaration->pos)) {
+        return false;
+    }
     list_init(&fresh_mapping, sizeof(size_t));
     list_init(&locals, sizeof(VariableEntry));
     for (i = 0; i < ctx->ast->nodes.length; i++) {
@@ -308,6 +312,11 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
         if (!check_reserved_name(ctx, parameter->pos, parameter_name)) {
             goto done;
         }
+        if (strcmp(parameter_name, "print") == 0) {
+            error_report_at(ctx->errors, parameter->pos,
+                            MESSAGE_CHECKER_PRINT_RESERVED);
+            goto done;
+        }
         if (find_variable(&locals, parameter_name) != NULL) {
             error_report_at(ctx->errors, parameter->pos,
                             MESSAGE_CHECKER_DUPLICATE_PARAMETER,
@@ -327,6 +336,9 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
                                 MESSAGE_CHECKER_STORE_TYPE);
                 goto done;
             }
+        }
+        if (!check_type_value_size(ctx, parameter_type, parameter->pos)) {
+            goto done;
         }
         typed_parameter.kind = TYPED_PARAMETER;
         typed_parameter.type_index = parameter_type;

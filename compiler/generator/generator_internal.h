@@ -102,7 +102,8 @@ bool program_uses_handle_or_store_type(const TypedProgram *program);
 bool emit_builder_runtime(TextBuffer *source, ErrorState *errors);
 bool emit_list_runtime(const TypedProgram *program, size_t store_count,
     TextBuffer *source, ErrorState *errors);
-bool emit_slice_runtime(TextBuffer *source, ErrorState *errors);
+bool emit_slice_runtime(const TypedProgram *program, TextBuffer *source,
+                        ErrorState *errors);
 bool validate_store_declarations(const TypedProgram *program, size_t store_count,
     ErrorState *errors);
 bool program_uses_binary_operator(const TypedProgram *program, NippyOperator op);
@@ -136,5 +137,14 @@ bool emit_expr_access(const TypedProgram *program, const TypedNode *node,
     TextBuffer *buffer, ErrorState *errors, bool *handled);
 bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
     TextBuffer *buffer, ErrorState *errors, bool *handled);
+
+bool append_optional_union(TextBuffer *body, const TypedProgram *program,
+                           size_t union_index, size_t element_index,
+                           const char *union_name, const char *value_name,
+                           const char *result_name);
+
+bool typed_calls_name(const TypedProgram *program, size_t node_index,
+                      size_t symbol_index);
+bool program_uses_recursion(const TypedProgram *program);
 
 #endif

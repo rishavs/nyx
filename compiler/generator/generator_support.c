@@ -519,3 +519,153 @@ bool map_key_names(const TypedProgram *program, size_t key_type,
     return format_c_type(program, key_type, key_name, key_size, errors) &&
            format_c_type(program, value_type, value_name, value_size, errors);
 }
+
+bool append_optional_union(TextBuffer *body, const TypedProgram *program,
+                           size_t union_index, size_t element_index,
+                           const char *union_name, const char *value_name,
+                           const char *result_name)
+{
+    const TypedType *union_type = typed_program_type(program, union_index);
+    const TypedType *element_type = typed_program_type(program, element_index);
+    size_t nil_type = TYPED_NO_NODE;
+    size_t nil_tag;
+    size_t element_tag = TYPED_NO_NODE;
+    bool element_is_union;
+    bool same_result;
+    size_t i;
+
+    if (union_type == NULL || element_type == NULL ||
+        union_type->kind != NIPPY_TYPE_UNION) {
+        return false;
+    }
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *candidate = typed_program_type(program, i);
+
+        if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
+            nil_type = i;
+            break;
+        }
+    }
+    if (nil_type == TYPED_NO_NODE ||
+        !find_union_alternative(program, union_type, nil_type, &nil_tag)) {
+        return false;
+    }
+    element_is_union = element_type->kind == NIPPY_TYPE_UNION;
+    same_result = types_equivalent(program, element_index, union_index, 16);
+    if (!element_is_union &&
+        !find_union_alternative(program, union_type, element_index,
+                                &element_tag)) {
+        return false;
+    }
+    (void)nil_tag;
+    if (element_is_union && !same_result) {
+        if (!buffer_append(body, "    switch (")) {
+            return false;
+        }
+        if (!buffer_appendf(body, "%s.tag) {\n", value_name)) {
+            return false;
+        }
+        for (i = 0; i < element_type->child_count; i++) {
+            const TypedType *alternative = union_alternative_type(
+                program, element_type, i);
+            size_t result_tag;
+
+            if (alternative == NULL ||
+                alternative->kind == NIPPY_TYPE_NIL ||
+                !find_union_alternative(
+                    program, union_type,
+                    *(const size_t *)list_get(&program->type_children,
+                                              element_type->first_child + i),
+                    &result_tag)) {
+                return false;
+            }
+            if (!buffer_appendf(
+                    body,
+                    "    case %zu:\n"
+                    "        %s = (%s){ .tag = %zu, .value.v%zu = "
+                    "%s.value.v%zu };\n"
+                    "        break;\n",
+                    i, result_name, union_name, result_tag, result_tag,
+                    value_name, i)) {
+                return false;
+            }
+        }
+        return buffer_append(body, "    }\n");
+    }
+    if (element_is_union) {
+        return buffer_appendf(body, "    %s = %s;\n", result_name, value_name);
+    }
+    return buffer_appendf(body,
+                          "    %s = (%s){ .tag = %zu, .value.v%zu = %s };\n",
+                          result_name, union_name, element_tag, element_tag,
+                          value_name);
+}
+
+static bool typed_calls_name_depth(const TypedProgram *program,
+                                   size_t node_index, size_t symbol_index,
+                                   unsigned depth, unsigned char *visited)
+{
+    const TypedNode *node;
+    size_t i;
+
+    if (node_index >= program->nodes.length || depth == 0 ||
+        visited[node_index]) {
+        return false;
+    }
+    visited[node_index] = 1;
+    node = typed_program_node(program, node_index);
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == TYPED_FUNCTION_CALL &&
+        node->name_index == symbol_index) {
+        return true;
+    }
+    if (node->left_child != TYPED_NO_NODE &&
+        typed_calls_name_depth(program, node->left_child, symbol_index,
+                               depth - 1, visited)) {
+        return true;
+    }
+    if (node->right_child != TYPED_NO_NODE &&
+        typed_calls_name_depth(program, node->right_child, symbol_index,
+                               depth - 1, visited)) {
+        return true;
+    }
+    if (node->children_count != 0 &&
+        (node->children_start >= program->children.length ||
+         node->children_count >
+             program->children.length - node->children_start)) {
+        return false;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &program->children, node->children_start + i);
+
+        if (typed_calls_name_depth(program, child, symbol_index, depth - 1,
+                                   visited)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+bool typed_calls_name(const TypedProgram *program, size_t node_index,
+                      size_t symbol_index)
+{
+    unsigned char *visited;
+    bool result;
+
+    if (program->nodes.length == 0) {
+        return false;
+    }
+    visited = nippy_malloc(program->nodes.length);
+    if (visited == NULL) {
+        return false;
+    }
+    memset(visited, 0, program->nodes.length);
+    result = typed_calls_name_depth(program, node_index, symbol_index, 1024,
+                                    visited);
+    free(visited);
+    return result;
+}

@@ -302,6 +302,129 @@ map_len_fallthrough:
         return emit_node(ctx, &typed, ast_index, &(size_t){0});
     }
 
+    if (strcmp(method, "get") == 0) {
+        *handled = true;
+        size_t receiver;
+        size_t argument;
+        size_t coerced;
+        size_t element;
+        size_t nil_type;
+        size_t result_type;
+        const TypedNode *receiver_node;
+        const TypedType *receiver_type;
+
+        if (node->right_child != AST_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_TYPE_ARG, method);
+            return false;
+        }
+        if (node->children_count != 1) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_ARGS, method);
+            return false;
+        }
+        if (!check_expression(ctx, node->left_child, &receiver)) {
+            return false;
+        }
+        receiver_node = typed_program_node(ctx->program, receiver);
+        receiver_type = receiver_node == NULL
+                            ? NULL
+                            : typed_program_type(ctx->program,
+                                                 receiver_node->type_index);
+        if (receiver_type == NULL) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_RECEIVER, method);
+            return false;
+        }
+        argument = *(const size_t *)list_get(&ctx->ast->children,
+                                             node->children_start);
+        if (receiver_type->kind == NIPPY_TYPE_TABLE) {
+            size_t key_type;
+            size_t value_type;
+            size_t key;
+
+            if (receiver_type->child_count != 2) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MEMBER_RECEIVER, method);
+                return false;
+            }
+            key_type = *(const size_t *)list_get(
+                &ctx->program->type_children, receiver_type->first_child);
+            value_type = *(const size_t *)list_get(
+                &ctx->program->type_children, receiver_type->first_child + 1);
+            if (!check_expression(ctx, argument, &key) ||
+                !inject_into(ctx, key, key_type, &coerced)) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MAP_KEY);
+                return false;
+            }
+            element = value_type;
+            typed.kind = TYPED_TABLE_GET_OPTIONAL;
+            typed.right_child = coerced;
+        } else if (receiver_type->kind == NIPPY_TYPE_LIST ||
+                   receiver_type->kind == NIPPY_TYPE_FIXED_LIST ||
+                   receiver_type->kind == NIPPY_TYPE_SLICE) {
+            size_t index;
+            const TypedNode *index_node;
+            const TypedType *index_type;
+
+            if (receiver_type->child_count != 1) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MEMBER_RECEIVER, method);
+                return false;
+            }
+            element = *(const size_t *)list_get(
+                &ctx->program->type_children, receiver_type->first_child);
+            if (!check_fixed_index_bounds(ctx, argument,
+                                          receiver_node->type_index) ||
+                !check_expression(ctx, argument, &index)) {
+                return false;
+            }
+            index_node = typed_program_node(ctx->program, index);
+            index_type = index_node == NULL
+                             ? NULL
+                             : typed_program_type(ctx->program,
+                                                  index_node->type_index);
+            if (index_type == NULL || index_type->kind != NIPPY_TYPE_INT32) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_LIST_INDEX);
+                return false;
+            }
+            typed.kind = TYPED_LIST_GET_OPTIONAL;
+            typed.right_child = index;
+        } else {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MEMBER_RECEIVER, method);
+            return false;
+        }
+        if (!builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
+            return false;
+        }
+        if (same_type(ctx->program, element, nil_type)) {
+            result_type = element;
+        } else {
+            List alternatives;
+
+            list_init(&alternatives, sizeof(size_t));
+            if (!list_push(&alternatives, &element) ||
+                !list_push(&alternatives, &nil_type) ||
+                !intern_union(ctx, &alternatives, &result_type)) {
+                list_free(&alternatives);
+                return false;
+            }
+            list_free(&alternatives);
+        }
+        typed.type_index = result_type;
+        typed.pos = node->pos;
+        typed.name_index = TYPED_NO_NODE;
+        typed.left_child = receiver;
+        typed.auxiliary_type = element;
+        typed.store_id = TYPED_NO_NODE;
+        typed.children_start = 0;
+        typed.children_count = 0;
+        return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    }
+
     if (strcmp(method, "pop") == 0) {
         *handled = true;
         size_t receiver;
@@ -345,6 +468,10 @@ map_len_fallthrough:
             receiver_node->name_index == TYPED_NO_NODE) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_LIST_LVALUE);
+            return false;
+        }
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST &&
+            !check_inline_const_mutation(ctx, node->left_child)) {
             return false;
         }
         element = *(const size_t *)list_get(
@@ -409,6 +536,9 @@ map_len_fallthrough:
         }
         capacity_ast = *(const size_t *)list_get(&ctx->ast->children,
                                                  node->children_start);
+        if (!check_negative_capacity(ctx, capacity_ast)) {
+            return false;
+        }
         if (!check_expression(ctx, capacity_ast, &capacity) ||
             !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type) ||
             !inject_into(ctx, capacity, int32_type, &coerced)) {
@@ -468,6 +598,9 @@ map_len_fallthrough:
         }
         capacity_ast = *(const size_t *)list_get(&ctx->ast->children,
                                                  node->children_start);
+        if (!check_negative_capacity(ctx, capacity_ast)) {
+            return false;
+        }
         if (!check_expression(ctx, capacity_ast, &capacity) ||
             !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type) ||
             !inject_into(ctx, capacity, int32_type, &coerced)) {

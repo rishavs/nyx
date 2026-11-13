@@ -119,6 +119,45 @@ bool check_member_access(CheckContext *ctx, const AstNode *node,
 }
 
 
+bool check_inline_const_mutation(CheckContext *ctx, size_t ast_index)
+{
+    const AstNode *node = ast_get_node(ctx->ast, ast_index);
+    const VariableEntry *variable;
+    const TypedType *type;
+    const char *name;
+
+    while (node != NULL &&
+           (node->kind == AST_MEMBER_ACCESS || node->kind == AST_INDEX)) {
+        node = ast_get_node(ctx->ast, node->left_child);
+    }
+    if (node == NULL || node->kind != AST_IDENTIFIER) {
+        return true;
+    }
+    name = ast_symbol_text(ctx->ast, node->name_index);
+    if (name == NULL) {
+        return true;
+    }
+    variable = find_variable(ctx->locals, name);
+    if (variable == NULL && !ctx->in_function) {
+        variable = find_variable(ctx->globals, name);
+    }
+    if (variable == NULL || !variable->is_const) {
+        return true;
+    }
+    type = typed_program_type(ctx->program, variable->type_index);
+    if (type == NULL ||
+        (type->kind != NIPPY_TYPE_STRUCT &&
+         type->kind != NIPPY_TYPE_FIXED_LIST &&
+         type->kind != NIPPY_TYPE_RECORD &&
+         type->kind != NIPPY_TYPE_STRING)) {
+        return true;
+    }
+    error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_CONST_ASSIGN,
+                    name);
+    return false;
+}
+
+
 bool check_member_assignment(CheckContext *ctx, const AstNode *node,
                                     size_t ast_index, size_t *out_typed)
 {
@@ -144,6 +183,9 @@ bool check_member_assignment(CheckContext *ctx, const AstNode *node,
     if (target_node == NULL || target_node->kind != TYPED_MEMBER_ACCESS) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_FIELD_LVALUE);
+        return false;
+    }
+    if (!check_inline_const_mutation(ctx, node->left_child)) {
         return false;
     }
     target_type_index = target_node->type_index;
@@ -179,6 +221,30 @@ bool check_member_assignment(CheckContext *ctx, const AstNode *node,
     typed.children_start = 0;
     typed.children_count = 0;
     return emit_node(ctx, &typed, ast_index, out_typed);
+}
+
+
+bool check_fixed_index_bounds(CheckContext *ctx, size_t index_ast,
+                                     size_t receiver_type_index)
+{
+    const TypedType *type = typed_program_type(ctx->program,
+                                               receiver_type_index);
+    const AstNode *index_node = ast_get_node(ctx->ast, index_ast);
+    int value;
+
+    if (type == NULL || index_node == NULL ||
+        (type->kind != NIPPY_TYPE_FIXED_LIST &&
+         type->kind != NIPPY_TYPE_STRING) ||
+        !literal_int_value(ctx->ast, index_ast, &value)) {
+        return true;
+    }
+    if (value < 0 || (size_t)value >= type->fixed_length) {
+        error_report_at(ctx->errors, index_node->pos,
+                        MESSAGE_CHECKER_INDEX_BOUNDS, value,
+                        type->fixed_length);
+        return false;
+    }
+    return true;
 }
 
 
@@ -262,6 +328,10 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
         return false;
     }
+    if (!check_fixed_index_bounds(ctx, node->right_child,
+                                  receiver_type_index)) {
+        return false;
+    }
     if (!check_expression(ctx, node->right_child, &index)) {
         return false;
     }
@@ -330,6 +400,9 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     if (receiver_ast == NULL || receiver_ast->kind != AST_IDENTIFIER) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    if (!check_inline_const_mutation(ctx, node->left_child)) {
         return false;
     }
     if (!check_expression(ctx, node->left_child, &target_typed)) {
@@ -409,6 +482,10 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     if (receiver_type->kind == NIPPY_TYPE_SLICE) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_SLICE_READONLY);
+        return false;
+    }
+    if (!check_fixed_index_bounds(ctx, target_right_child,
+                                  receiver->type_index)) {
         return false;
     }
     element = *(const size_t *)list_get(&ctx->program->type_children,

@@ -895,7 +895,9 @@ bool parse_var_declaration(
     if (token != NULL && token->type == TOKEN_COLON) {
         (*cursor)++;
         token = token_at(tokens, *cursor);
-        if (token == NULL || token->type != TOKEN_IDENTIFIER) {
+        if (token == NULL ||
+            (token->type != TOKEN_IDENTIFIER &&
+             token->type != TOKEN_LPAREN)) {
             error_report_at(errors, position_at(tokens, *cursor),
                             MESSAGE_PARSER_EXPECTED_TYPE_NAME);
             return false;

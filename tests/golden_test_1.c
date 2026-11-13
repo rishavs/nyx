@@ -94,7 +94,10 @@ TestResult test_recursive_function_codegen(void)
 {
     const char *source =
         "fun countdown(n:Int32):Int32\n"
-        "  return countdown(n)\n"
+        "  if n == 0 then\n"
+        "    return 0\n"
+        "  end\n"
+        "  return countdown(n - 1)\n"
         "end\n"
         "\n"
         "var zero : Int32 = 0\n";
@@ -355,11 +358,14 @@ TestResult test_generic_nested_codegen(void)
 TestResult test_generic_self_codegen(void)
 {
     const char *source =
-        "fun count<T>(x: T): T\n"
-        "  return count(x)\n"
+        "fun count<T>(x: T, n: Int32): T\n"
+        "  if n == 0 then\n"
+        "    return x\n"
+        "  end\n"
+        "  return count(x, n - 1)\n"
         "end\n"
         "\n"
-        "var n: Int32 = count(1)\n";
+        "var n: Int32 = count(1, 0)\n";
 
     return compile_succeeds(source, golden_generic_self_c,
                             golden_generic_self_h, "a recursive generic function");

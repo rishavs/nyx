@@ -192,8 +192,24 @@
     "checker: cannot redefine built-in type 'Bool'"
 #define MESSAGE_CHECKER_DUPLICATE_TYPE \
     "checker: duplicate type '%s'"
+#define MESSAGE_CHECKER_REDEFINES_BUILTIN \
+    "checker: cannot redefine built-in type '%s'"
 #define MESSAGE_CHECKER_DUPLICATE_NAME \
     "checker: duplicate declaration of '%s'"
+#define MESSAGE_CHECKER_INDEX_BOUNDS \
+    "checker: literal index %d is outside the fixed bound %zu"
+#define MESSAGE_CHECKER_NEGATIVE_CAPACITY \
+    "checker: capacity cannot be negative"
+#define MESSAGE_CHECKER_FOR_MUTATION \
+    "checker: cannot mutate the iterated list inside its for body"
+#define MESSAGE_CHECKER_DISCARDED_ERROR \
+    "checker: a result containing Error cannot be discarded"
+#define MESSAGE_CHECKER_UNREACHABLE_CODE \
+    "checker: unreachable code after a terminating statement"
+#define MESSAGE_CHECKER_ALWAYS_RECURSIVE \
+    "checker: every return path of '%s' calls itself"
+#define MESSAGE_CHECKER_VALUE_TOO_LARGE \
+    "checker: by-value type is %zu bytes; the maximum is %zu"
 #define MESSAGE_CHECKER_DUPLICATE_PARAMETER \
     "checker: duplicate parameter '%s'"
 #define MESSAGE_CHECKER_RESERVED_NAME \
@@ -242,6 +258,10 @@
     "checker: function '%s' has no return expression"
 #define MESSAGE_CHECKER_ZERO_DIVISOR \
     "checker: '%s' by zero"
+#define MESSAGE_CHECKER_CONST_OVERFLOW \
+    "checker: constant expression overflows Int32"
+#define MESSAGE_CHECKER_SHIFT_RANGE \
+    "checker: constant shift count must be in 0..31"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
 #define MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE \
@@ -492,6 +512,8 @@
 #define MESSAGE_RUNTIME_LIST_BOUNDS "nippy: list index out of bounds"
 #define MESSAGE_RUNTIME_FOR_MUTATED \
     "nippy: iterated collection changed length during for loop"
+#define MESSAGE_RUNTIME_RECURSION \
+    "nippy: recursion depth exceeded"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \

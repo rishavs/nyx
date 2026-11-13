@@ -1,9 +1,72 @@
 #include "checker_internal.h"
 
+#include <stdint.h>
 
-bool eval_const_int(CheckContext *ctx, size_t ast_index, int *out)
+
+bool literal_int_value(const Ast *ast, size_t ast_index, int *out)
+{
+    const AstNode *node = ast_get_node(ast, ast_index);
+
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == AST_INTEGER_LITERAL) {
+        *out = node->integer_value;
+        return true;
+    }
+    if (node->kind == AST_UNARY && node->op == NIPPY_OPERATOR_NEG) {
+        const AstNode *operand = ast_get_node(ast, node->left_child);
+
+        if (operand != NULL && operand->kind == AST_INTEGER_LITERAL) {
+            *out = -operand->integer_value;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool check_negative_capacity(CheckContext *ctx, size_t capacity_ast)
+{
+    bool is_constant = false;
+    int value = 0;
+
+    if (!const_int_eval(ctx, capacity_ast, &value, &is_constant)) {
+        return false;
+    }
+    if (!is_constant || value >= 0) {
+        return true;
+    }
+    error_report_at(ctx->errors,
+                    ast_get_node(ctx->ast, capacity_ast)->pos,
+                    MESSAGE_CHECKER_NEGATIVE_CAPACITY);
+    return false;
+}
+
+
+static bool const_value_of_name(CheckContext *ctx, const char *name,
+                                int *out)
+{
+    const VariableEntry *variable = find_variable(ctx->locals, name);
+
+    if (variable == NULL && !ctx->in_function) {
+        variable = find_variable(ctx->globals, name);
+    }
+    if (variable == NULL || !variable->has_constant) {
+        return false;
+    }
+    *out = variable->constant_value;
+    return true;
+}
+
+
+static bool const_int_eval_node(CheckContext *ctx, size_t ast_index, int *out,
+                                bool *is_constant)
 {
     const AstNode *node = ast_get_node(ctx->ast, ast_index);
+    int left;
+    int right;
+    bool left_constant;
+    bool right_constant;
 
     if (node == NULL) {
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
@@ -11,30 +74,146 @@ bool eval_const_int(CheckContext *ctx, size_t ast_index, int *out)
     }
     if (node->kind == AST_INTEGER_LITERAL) {
         *out = node->integer_value;
+        *is_constant = true;
         return true;
     }
-    if (node->kind == AST_BINARY && node->op == NIPPY_OPERATOR_ADD) {
-        int left;
-        int right;
-        long long sum;
+    if (node->kind == AST_IDENTIFIER) {
+        const char *name = ast_symbol_text(ctx->ast, node->name_index);
 
-        if (!eval_const_int(ctx, node->left_child, &left) ||
-            !eval_const_int(ctx, node->right_child, &right)) {
-            return false;
+        if (name != NULL && const_value_of_name(ctx, name, out)) {
+            *is_constant = true;
+        } else {
+            *is_constant = false;
         }
-        sum = (long long)left + (long long)right;
-        if (sum < 0 || sum > 2147483647LL) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_STORE_SIZE);
-            return false;
-        }
-        *out = (int)sum;
         return true;
     }
-    error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_SIZE);
-    return false;
+    if (node->kind == AST_UNARY && node->op == NIPPY_OPERATOR_NEG) {
+        if (!const_int_eval_node(ctx, node->left_child, &left, is_constant)) {
+            return false;
+        }
+        if (!*is_constant) {
+            return true;
+        }
+        if (left == INT32_MIN) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_CONST_OVERFLOW);
+            return false;
+        }
+        *out = -left;
+        return true;
+    }
+    if (node->kind != AST_BINARY) {
+        *is_constant = false;
+        return true;
+    }
+    if (!const_int_eval_node(ctx, node->left_child, &left, &left_constant) ||
+        !const_int_eval_node(ctx, node->right_child, &right,
+                             &right_constant)) {
+        return false;
+    }
+    if (!left_constant || !right_constant) {
+        *is_constant = false;
+        return true;
+    }
+    switch (node->op) {
+    case NIPPY_OPERATOR_ADD:
+    case NIPPY_OPERATOR_SUB:
+    case NIPPY_OPERATOR_MUL: {
+        int64_t wide;
+
+        if (node->op == NIPPY_OPERATOR_ADD) {
+            wide = (int64_t)left + (int64_t)right;
+        } else if (node->op == NIPPY_OPERATOR_SUB) {
+            wide = (int64_t)left - (int64_t)right;
+        } else {
+            wide = (int64_t)left * (int64_t)right;
+        }
+        if (wide < INT32_MIN || wide > INT32_MAX) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_CONST_OVERFLOW);
+            return false;
+        }
+        *out = (int)wide;
+        break;
+    }
+    case NIPPY_OPERATOR_DIV:
+        if (right == 0) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ZERO_DIVISOR, "/");
+            return false;
+        }
+        if (left == INT32_MIN && right == -1) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_CONST_OVERFLOW);
+            return false;
+        }
+        *out = left / right;
+        break;
+    case NIPPY_OPERATOR_MOD:
+        if (right == 0) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ZERO_DIVISOR, "%");
+            return false;
+        }
+        *out = left == INT32_MIN && right == -1 ? 0 : left % right;
+        break;
+    case NIPPY_OPERATOR_BIT_AND:
+        *out = left & right;
+        break;
+    case NIPPY_OPERATOR_BIT_OR:
+        *out = left | right;
+        break;
+    case NIPPY_OPERATOR_BIT_XOR:
+        *out = left ^ right;
+        break;
+    case NIPPY_OPERATOR_SHL:
+        if (right < 0 || right > 31) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_SHIFT_RANGE);
+            return false;
+        }
+        *out = (int)((uint32_t)left << right);
+        break;
+    case NIPPY_OPERATOR_SHR:
+        if (right < 0 || right > 31) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_SHIFT_RANGE);
+            return false;
+        }
+        *out = (int)((int32_t)left >> right);
+        break;
+    default:
+        *is_constant = false;
+        return true;
+    }
+    *is_constant = true;
+    return true;
 }
 
+
+bool const_int_eval(CheckContext *ctx, size_t ast_index, int *out,
+                    bool *is_constant)
+{
+    *is_constant = false;
+    return const_int_eval_node(ctx, ast_index, out, is_constant);
+}
+
+
+bool eval_const_int(CheckContext *ctx, size_t ast_index, int *out)
+{
+    bool is_constant = false;
+
+    if (!const_int_eval(ctx, ast_index, out, &is_constant)) {
+        return false;
+    }
+    if (!is_constant) {
+        error_report_at(ctx->errors,
+                        ast_get_node(ctx->ast, ast_index)->pos,
+                        MESSAGE_CHECKER_STORE_SIZE);
+        return false;
+    }
+    return true;
+}
 
 bool check_store_declaration(CheckContext *ctx, const AstNode *node,
                                     const char *name, size_t ast_index,
@@ -70,7 +249,13 @@ bool check_store_declaration(CheckContext *ctx, const AstNode *node,
             return false;
         }
     }
-    if (!eval_const_int(ctx, size_ast, &size)) {
+    if (!check_negative_capacity(ctx, size_ast) ||
+        !eval_const_int(ctx, size_ast, &size)) {
+        return false;
+    }
+    if (size < 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_NEGATIVE_CAPACITY);
         return false;
     }
     if (find_store(ctx->stores, name) != NULL) {
@@ -129,17 +314,7 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         find_function(ctx->functions, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
-        strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-        strcmp(name, "Store") == 0 || strcmp(name, "Handle") == 0 ||
-        strcmp(name, "String") == 0 ||
-        strcmp(name, "Text") == 0 ||
-        strcmp(name, "TextBuilder") == 0 ||
-        strcmp(name, "List") == 0 ||
-        strcmp(name, "Array") == 0 ||
-        strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Error") == 0 ||
-        strcmp(name, "print") == 0) {
+        is_builtin_type_name(name) || strcmp(name, "print") == 0) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);
         return false;
@@ -245,6 +420,9 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         variable_type = initialiser_node->type_index;
     }
 
+    if (!check_type_value_size(ctx, variable_type, node->pos)) {
+        return false;
+    }
     typed.kind = TYPED_DECLARATION;
     typed.type_index = variable_type;
     typed.pos = node->pos;
@@ -265,11 +443,27 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
 
     {
         VariableEntry entry;
+        const TypedType *type = typed_program_type(ctx->program,
+                                                   variable_type);
 
         memset(&entry, 0, sizeof(entry));
         memcpy(entry.name, name, strlen(name) + 1);
         entry.type_index = variable_type;
         entry.is_const = node->is_const;
+        if (node->is_const && type != NULL &&
+            type->kind == NIPPY_TYPE_INT32) {
+            bool is_constant = false;
+            int value;
+
+            if (!const_int_eval(ctx, node->left_child, &value,
+                                &is_constant)) {
+                return false;
+            }
+            if (is_constant) {
+                entry.has_constant = true;
+                entry.constant_value = value;
+            }
+        }
         if (!list_push(ctx->globals, &entry)) {
             error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
@@ -353,6 +547,12 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
     if (strcmp(name, "Table") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_REDEFINES_TABLE);
+        return false;
+    }
+    if (strcmp(name, "Byte") == 0 || strcmp(name, "Store") == 0 ||
+        strcmp(name, "Handle") == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_REDEFINES_BUILTIN, name);
         return false;
     }
     if (find_type_index(ctx->types, name) != TYPED_NO_NODE) {

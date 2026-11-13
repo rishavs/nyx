@@ -12,7 +12,10 @@ static const char *const temporary_files[] = {
     "tests/.test-runtime.log",
     "tests/.test-runtime-main.c",
     "tests/.test-runtime.o",
-    "tests/.test-runtime-main.o"
+    "tests/.test-runtime-main.o",
+    "tests/.test-trap",
+    "tests/.test-trap.c",
+    "tests/.test-trap.log"
 };
 
 

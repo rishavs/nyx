@@ -464,6 +464,136 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
         }
         buffer_free(&body);
     }
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+        const TypedNode *receiver;
+        const TypedType *receiver_type;
+        const TypedType *union_type;
+        const TypedType *element_type;
+        size_t nil_type = TYPED_NO_NODE;
+        size_t nil_tag;
+        char union_name[NIPPY_IDENTIFIER_MAX + 32];
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        char list_name[NIPPY_IDENTIFIER_MAX + 32];
+        TextBuffer body;
+        size_t j;
+
+        if (node == NULL || node->kind != TYPED_LIST_GET_OPTIONAL) {
+            continue;
+        }
+        receiver = typed_program_node(program, node->left_child);
+        receiver_type = receiver == NULL
+                            ? NULL
+                            : typed_program_type(program, receiver->type_index);
+        if (receiver_type == NULL || receiver_type->kind == NIPPY_TYPE_SLICE) {
+            continue;
+        }
+        union_type = typed_program_type(program, node->type_index);
+        element_type = typed_program_type(program, node->auxiliary_type);
+        if (union_type == NULL || element_type == NULL) {
+            return false;
+        }
+        if (union_type->kind == NIPPY_TYPE_NIL) {
+            ok = ok && buffer_appendf(
+                           source,
+                           "static NIPPY_UNUSED nyx_nil "
+                           "nyx_list_get_optional_%zu(nyx_list list, "
+                           "int32_t index)\n"
+                           "{\n"
+                           "    (void)list;\n"
+                           "    (void)index;\n"
+                           "    return (nyx_nil)0;\n"
+                           "}\n\n",
+                           i);
+            continue;
+        }
+        if (!format_c_type(program, node->type_index, union_name,
+                           sizeof(union_name), errors) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            return false;
+        }
+        for (j = 0; j < program->types.length; j++) {
+            const TypedType *candidate = typed_program_type(program, j);
+
+            if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
+                nil_type = j;
+                break;
+            }
+        }
+        if (nil_type == TYPED_NO_NODE ||
+            !find_union_alternative(program, union_type, nil_type, &nil_tag)) {
+            return false;
+        }
+        buffer_init(&body);
+        if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
+            if (!format_c_type(program, receiver->type_index, list_name,
+                               sizeof(list_name), errors) ||
+                !buffer_appendf(
+                    &body,
+                    "static NIPPY_UNUSED %s nyx_list_get_optional_%zu("
+                    "%s list, int32_t index)\n"
+                    "{\n"
+                    "    %s result;\n"
+                    "    %s value;\n\n"
+                    "    if (index < 0 || (size_t)index >= list.length) {\n"
+                    "        result = (%s){ .tag = %zu };\n"
+                    "        return result;\n"
+                    "    }\n"
+                    "    value = list.data[index];\n",
+                    union_name, i, list_name, union_name, element_name,
+                    union_name, nil_tag)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        } else {
+            if (!buffer_appendf(
+                    &body,
+                    "static NIPPY_UNUSED %s nyx_list_get_optional_%zu("
+                    "nyx_list list, int32_t index)\n"
+                    "{\n"
+                    "    %s result;\n"
+                    "    %s value;\n\n"
+                    "    {\n"
+                    "        nyx_list_state *state = "
+                    "nyx_list_get_state(list);\n"
+                    "        nyx_store *store;\n"
+                    "        size_t offset;\n\n"
+                    "        if (index < 0 || "
+                    "(size_t)index >= state->length) {\n"
+                    "            result = (%s){ .tag = %zu };\n"
+                    "            return result;\n"
+                    "        }\n"
+                    "        store = nyx_list_store(list);\n"
+                    "        offset = state->offset + "
+                    "(size_t)index * sizeof(%s);\n"
+                    "        if (offset > store->used ||\n"
+                    "            sizeof(%s) > store->used - offset) {\n"
+                    "            nyx_list_fail(\""
+                    MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
+                    "        }\n"
+                    "        value = *(%s *)(void *)"
+                    "(store->data + offset);\n"
+                    "    }\n",
+                    union_name, i, union_name, element_name, union_name,
+                    nil_tag, element_name, element_name, element_name)) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                buffer_free(&body);
+                return false;
+            }
+        }
+        if (!append_optional_union(&body, program, node->type_index,
+                                   node->auxiliary_type, union_name, "value",
+                                   "result") ||
+            !buffer_append(&body, "    return result;\n}\n\n") ||
+            !buffer_append(source, body.text)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        buffer_free(&body);
+    }
     if (!ok) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;
@@ -472,9 +602,11 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
 }
 
 
-bool emit_slice_runtime(TextBuffer *source, ErrorState *errors)
+bool emit_slice_runtime(const TypedProgram *program, TextBuffer *source,
+                        ErrorState *errors)
 {
     bool ok = true;
+    size_t i;
 
     ok = ok && buffer_append(
                    source,
@@ -560,6 +692,105 @@ bool emit_slice_runtime(TextBuffer *source, ErrorState *errors)
                    "    (void)nyx_slice_store(slice);\n"
                    "    return (int32_t)slice.length;\n"
                    "}\n\n");
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+        const TypedNode *receiver;
+        const TypedType *receiver_type;
+        const TypedType *union_type;
+        const TypedType *element_type;
+        size_t nil_type = TYPED_NO_NODE;
+        size_t nil_tag;
+        char union_name[NIPPY_IDENTIFIER_MAX + 32];
+        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        TextBuffer body;
+        size_t j;
+
+        if (node == NULL || node->kind != TYPED_LIST_GET_OPTIONAL) {
+            continue;
+        }
+        receiver = typed_program_node(program, node->left_child);
+        receiver_type = receiver == NULL
+                            ? NULL
+                            : typed_program_type(program, receiver->type_index);
+        if (receiver_type == NULL || receiver_type->kind != NIPPY_TYPE_SLICE) {
+            continue;
+        }
+        union_type = typed_program_type(program, node->type_index);
+        element_type = typed_program_type(program, node->auxiliary_type);
+        if (union_type == NULL || element_type == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (union_type->kind == NIPPY_TYPE_NIL) {
+            ok = ok && buffer_appendf(
+                           source,
+                           "static NIPPY_UNUSED nyx_nil "
+                           "nyx_slice_get_optional_%zu(nyx_slice slice, "
+                           "int32_t index)\n"
+                           "{\n"
+                           "    (void)nyx_slice_store(slice);\n"
+                           "    (void)index;\n"
+                           "    return (nyx_nil)0;\n"
+                           "}\n\n",
+                           i);
+            continue;
+        }
+        if (!format_c_type(program, node->type_index, union_name,
+                           sizeof(union_name), errors) ||
+            !format_c_type(program, node->auxiliary_type, element_name,
+                           sizeof(element_name), errors)) {
+            return false;
+        }
+        for (j = 0; j < program->types.length; j++) {
+            const TypedType *candidate = typed_program_type(program, j);
+
+            if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
+                nil_type = j;
+                break;
+            }
+        }
+        if (nil_type == TYPED_NO_NODE ||
+            !find_union_alternative(program, union_type, nil_type, &nil_tag)) {
+            return false;
+        }
+        buffer_init(&body);
+        if (!buffer_appendf(
+                &body,
+                "static NIPPY_UNUSED %s nyx_slice_get_optional_%zu("
+                "nyx_slice slice, int32_t index)\n"
+                "{\n"
+                "    %s result;\n"
+                "    %s value;\n"
+                "    nyx_store *store = nyx_slice_store(slice);\n"
+                "    size_t offset;\n\n"
+                "    if (index < 0 || (size_t)index >= slice.length) {\n"
+                "        result = (%s){ .tag = %zu };\n"
+                "        return result;\n"
+                "    }\n"
+                "    offset = slice.offset + (size_t)index * sizeof(%s);\n"
+                "    if (offset > store->used ||\n"
+                "        sizeof(%s) > store->used - offset) {\n"
+                "        nyx_list_fail(\""
+                MESSAGE_RUNTIME_HANDLE_BOUNDS "\");\n"
+                "    }\n"
+                "    value = *(%s *)(const void *)(store->data + offset);\n",
+                union_name, i, union_name, element_name, union_name,
+                nil_tag, element_name, element_name, element_name)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        if (!append_optional_union(&body, program, node->type_index,
+                                   node->auxiliary_type, union_name, "value",
+                                   "result") ||
+            !buffer_append(&body, "    return result;\n}\n\n") ||
+            !buffer_append(source, body.text)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            buffer_free(&body);
+            return false;
+        }
+        buffer_free(&body);
+    }
     if (!ok) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;

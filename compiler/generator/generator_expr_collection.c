@@ -66,6 +66,35 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
         }
         return true;
     }
+    if (node->kind == TYPED_LIST_GET_OPTIONAL) {
+        *handled = true;
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+        const TypedType *receiver_type =
+            receiver == NULL
+                ? NULL
+                : typed_program_type(program, receiver->type_index);
+
+        if (receiver_type == NULL) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+            return false;
+        }
+        if (!buffer_appendf(buffer,
+                            receiver_type->kind == NIPPY_TYPE_SLICE
+                                ? "nyx_slice_get_optional_%zu("
+                                : "nyx_list_get_optional_%zu(",
+                            node_index) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
     if (node->kind == TYPED_LIST_GET) {
         *handled = true;
         const TypedNode *receiver =
@@ -429,6 +458,25 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                             "nyx_table_%zu_create(&nyx_stores[%zu], %zu, ",
                             node->type_index, node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            }
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_TABLE_GET_OPTIONAL) {
+        *handled = true;
+        const TypedNode *receiver = typed_program_node(program,
+                                                       node->left_child);
+
+        if (receiver == NULL ||
+            !buffer_appendf(buffer, "nyx_table_%zu_get_optional_%zu(",
+                            receiver->type_index, node_index) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);

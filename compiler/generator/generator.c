@@ -20,6 +20,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool uses_dynamic_list;
     bool uses_slice;
     bool uses_print;
+    bool uses_recursion;
     bool uses_map;
     bool uses_table;
     bool uses_arith_helpers;
@@ -55,6 +56,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     uses_dynamic_list = program_uses_dynamic_list(program);
     uses_slice = program_uses_slice(program);
     uses_print = program_uses_print(program);
+    uses_recursion = program_uses_recursion(program);
     uses_arith_helpers =
         program_uses_binary_operator(program, NIPPY_OPERATOR_DIV) ||
         program_uses_binary_operator(program, NIPPY_OPERATOR_MOD) ||
@@ -147,6 +149,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         } else if (node->kind == TYPED_EXPRESSION_STATEMENT) {
             has_expression_statement = true;
         } else if (node->kind == TYPED_ASSIGNMENT ||
+                   node->kind == TYPED_LIST_SET ||
+                   node->kind == TYPED_MEMBER_WRITE ||
                    node->kind == TYPED_RECORD_SET ||
                    node->kind == TYPED_TABLE_SET ||
                    node->kind == TYPED_FOR ||
@@ -186,7 +190,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     }
     if (store_count > 0 || program_uses_string(program) ||
         uses_dynamic_string || uses_list || uses_slice || uses_print ||
-        uses_map || uses_arith_helpers) {
+        uses_map || uses_arith_helpers || uses_recursion) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
@@ -196,6 +200,11 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         }
     } else if (print_program &&
                !buffer_append(&source, "#include <stdio.h>\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        goto done;
+    }
+    if (uses_recursion &&
+        !buffer_append(&source, "#define NIPPY_RECURSION_LIMIT 10000\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
@@ -240,7 +249,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         goto done;
     }
     if (uses_slice && uses_dynamic_list && store_count > 0 &&
-        !emit_slice_runtime(&source, errors)) {
+        !emit_slice_runtime(program, &source, errors)) {
         goto done;
     }
     if (uses_map && !emit_map_runtime(program, store_count, &source, errors)) {
@@ -284,6 +293,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             }
             if ((node->kind == TYPED_EXPRESSION_STATEMENT ||
                  node->kind == TYPED_ASSIGNMENT ||
+                 node->kind == TYPED_LIST_SET ||
+                 node->kind == TYPED_MEMBER_WRITE ||
                  node->kind == TYPED_RECORD_SET ||
                  node->kind == TYPED_TABLE_SET ||
                  node->kind == TYPED_FOR ||

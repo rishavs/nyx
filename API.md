@@ -15,11 +15,13 @@ Everything here is C11 and depends only on libc.
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
 | `source_pos.h` | `SourcePos`: byte offset plus 1-based line and column |
 | `identifier.h` | `NIPPY_IDENTIFIER_MAX`, the shared name limit, and `NIPPY_GENERATED_PREFIX`, the reserved emitted-name prefix |
-
-Internal headers under `compiler/<stage>/` are implementation details and are
-not part of this API.
 | `operator.h` | `NippyOperator`, shared by syntax and typed nodes |
 | `list.h` | `List`, the owning dynamic array |
+
+Internal headers under `compiler/<stage>/` are implementation details and are
+not part of this API. `test_harness.h` is used only by the test binaries; its
+`expect_message`/`test_run_suite`/`test_run_suites` interface is described in
+`BUILD.md`.
 
 Stage headers (`lexer.h`, `parser.h`, `checker.h`, `analyser.h`, `generator.h`)
 expose the individual pipeline stages. `ast.h` and `typed_program.h` expose the
@@ -36,7 +38,7 @@ typedef struct {
     int error_filename_capacity;    /* 0 -> default 128 */
     int max_source_bytes;           /* source-size limit; 0 -> 4096 */
     int max_string_capacity;        /* String<N> upper bound; 0 -> 4096 */
-    int max_list_capacity;          /* Array<T,N> upper bound; 0 -> 4096 */
+    int max_list_capacity;          /* Array/Record capacity bound; 0 -> 4096 */
     int max_print_depth;            /* pretty-print depth; 0 -> 16 */
 } CompilerConfig;
 
@@ -57,8 +59,11 @@ duration of the call and are never freed by the compiler. Configuration values
 are copied. Error capacities default to 32, 128, and 128 and are clamped to
 `max_string_capacity`; an explicit Error capacity outside `1..max_string_capacity`
 fails the compilation. `max_string_capacity` defaults to 4096 and may not exceed
-the hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` defaults
-to 4096 and may not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB).
+the hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` bounds
+fixed `Array<T,N>` and `Record<K,V,N>` capacities; it defaults to 4096 and may
+not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB). All by-value types are capped at
+`NIPPY_MAX_VALUE_BYTES` (64 KiB); larger structs, Arrays, Records, Strings,
+Errors, and unions are rejected.
 `max_print_depth` defaults to 16 and may not exceed `NIPPY_MAX_PRINT_DEPTH`
 (1024); explicit values must be positive.
 `max_source_bytes` defaults to 4096;
@@ -273,9 +278,11 @@ in `left_child` and the field name in `name_index`;
 `right_child`. `AST_FOR` has its iterable in `left_child`, its body in
 `right_child`, the first binding in `name_index`, and the optional second
 binding in `second_name_index`.
-`TypedNode.auxiliary_type` holds the tested type for a `TYPED_IS` node and is
-`TYPED_NO_NODE` otherwise. Function bodies and `if`/`while` bodies are block
-nodes; block statements and `if` branches are stored in `children`.
+`TypedNode.auxiliary_type` is the secondary type link: the tested type for a
+`TYPED_IS`, the element type for list push/pop and `for`, or the filename type for
+`TYPED_ERROR_THROW`; it is `TYPED_NO_NODE` when unused. Function, `if`,
+`while`, `for`, and `match` bodies are block nodes; block statements and `if`
+branches are stored in `children`.
 `TYPED_NO_NODE`/`AST_NO_NODE` means "no node".
 
 Resolved types are records in `TypedProgram.types`:
@@ -298,6 +305,8 @@ typedef enum {
     NIPPY_TYPE_LIST,
     NIPPY_TYPE_FIXED_LIST,
     NIPPY_TYPE_SLICE,
+    NIPPY_TYPE_RECORD,
+    NIPPY_TYPE_TABLE,
     NIPPY_TYPE_STRING_LITERAL,
     NIPPY_TYPE_ERROR
 } NippyType;
@@ -371,14 +380,16 @@ The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 `TYPED_PRINT`, `TYPED_ERROR_THROW`, `TYPED_RECORD_LITERAL`,
 `TYPED_RECORD_GET`, `TYPED_RECORD_SET`, `TYPED_RECORD_HAS`,
 `TYPED_RECORD_REMOVE`, `TYPED_RECORD_LEN`, `TYPED_TABLE_CREATE`,
-`TYPED_TABLE_GET`, `TYPED_TABLE_SET`, `TYPED_TABLE_HAS`,
+`TYPED_TABLE_GET`, `TYPED_TABLE_GET_OPTIONAL`, `TYPED_TABLE_SET`,
+`TYPED_TABLE_HAS`,
 `TYPED_TABLE_REMOVE`, `TYPED_TABLE_LEN`,
 `TYPED_STRING_LITERAL`,
 `TYPED_STRING_LEN`, `TYPED_STRING_AT`, `TYPED_STRING_SLICE`,
 `TYPED_STRING_CONCAT`, `TYPED_STRING_COPY`, `TYPED_STRING_FROM_FIXED`,
 `TYPED_BUILDER_CREATE`, `TYPED_BUILDER_APPEND`, `TYPED_BUILDER_APPEND_BYTE`,
 `TYPED_BUILDER_LEN`, `TYPED_BUILDER_FINISH`, `TYPED_LIST_LITERAL`,
-`TYPED_LIST_LEN`, `TYPED_LIST_GET`, `TYPED_LIST_SET`, `TYPED_LIST_PUSH`,
+`TYPED_LIST_LEN`, `TYPED_LIST_GET`, `TYPED_LIST_GET_OPTIONAL`,
+`TYPED_LIST_SET`, `TYPED_LIST_PUSH`,
 `TYPED_LIST_POP`, `TYPED_LIST_CREATE`, `TYPED_SLICE_CREATE`, `TYPED_SLICE_LEN`,
 `TYPED_SLICE_GET`, `TYPED_ERROR_CONSTRUCT`, and `TYPED_ERROR_FIELD`. For injection and
 payload projection, `integer_value` is the alternative's canonical tag.
@@ -417,7 +428,9 @@ capacity in `left_child` and the destination store in `store_id`;
 `auxiliary_type`, and the destination store in `store_id`;
 `TYPED_LIST_LITERAL` has type `Array<T,N>` and its elements in a children run;
 `TYPED_LIST_GET` has type `T` with the list in `left_child` and index in
-`right_child`; `TYPED_LIST_SET` has type `Nil`, the list in `left_child`, and
+`right_child`; `TYPED_LIST_GET_OPTIONAL` has type `T | Nil`, the list or slice
+in `left_child`, the index in `right_child`, and the element type in
+`auxiliary_type`; `TYPED_LIST_SET` has type `Nil`, the list in `left_child`, and
 two children for index and value; `TYPED_LIST_PUSH` has type `Nil`, the list
 in `left_child`, the value in `right_child`, and `auxiliary_type` for the
 element type; `TYPED_LIST_POP` has type `T | Nil`, the list in `left_child`, and
@@ -427,13 +440,16 @@ initializer in `left_child`; `TYPED_MEMBER_ACCESS` has the field type, object in
 `left_child`, and field name in `name_index`; `TYPED_MEMBER_WRITE` has type
 `Nil`, the target access in `left_child`, and the value in `right_child`;
 `TYPED_FOR` has type `Nil`, the iterable in `left_child`, the body in
-`right_child`, the value binding in `name_index`, the optional index binding in
-`second_name_index`, and the element type in `auxiliary_type`; `TYPED_PRINT`
+`right_child`, the first binding in `name_index`, the optional second binding in
+`second_name_index`, and the sequence element type in `auxiliary_type`; a map
+loop derives its key and value types from the iterable type; `TYPED_PRINT`
 has type `Nil` and its arguments in a children run; `TYPED_RECORD_LITERAL`
 has type `Record<K,V,N>` and alternating key/value pairs in a children run;
 map get/set/has/remove/len nodes carry the receiver and key (or key/value)
 links; `TYPED_TABLE_CREATE` has the capacity in `left_child` and the store id
-in `store_id`; `TYPED_ERROR_THROW` has type
+in `store_id`; `TYPED_TABLE_GET_OPTIONAL` has type `V | Nil`, the table in
+`left_child`, the key in `right_child`, and the value type in
+`auxiliary_type`; `TYPED_ERROR_THROW` has type
 `Error`, its header/description in a children run, `auxiliary_type` for the
 filename fixed-string type, and `string_offset`/`string_length` for the
 generated filename bytes;
@@ -463,8 +479,8 @@ The `add_*` helpers append and return the new index. The caller must check
 `bool` results; a false return means allocation failed. `typed_program_copy_symbol`
 interns text into the typed program's own symbol table, so the artifact does not
 borrow from the syntax tree. `operator.h` defines `NippyOperator`, shared by
-`AstNode` and `TypedNode` for arithmetic, comparison, equality, and logical
-operators.
+`AstNode` and `TypedNode` for arithmetic, bitwise, comparison, equality, and
+logical operators.
 
 ## Stage API
 
@@ -502,7 +518,7 @@ Rules that hold for every stage:
 - `generator_generate` sets both output pointers to NULL before doing anything,
   so they are always either both valid or both NULL.
 - `lexer_tokenize` returns either tokens or errors, never both. Text-literal
-  bytes live in `LexerResult.text_bytes`; a `TOKEN_STRING` stores an offset
+  bytes live in `LexerResult.string_bytes`; a `TOKEN_STRING` stores an offset
   and length into that pool. `parser_parse` copies the bytes it needs into
   `Ast.bytes`, so it borrows the pool only for the duration of the call.
 

@@ -42,12 +42,14 @@ COMPILER_TEST_SOURCES = tests/compiler_test.c tests/test_support.c \
 	tests/golden_data_4.c tests/golden_data_5.c tests/golden_data_6.c \
 	tests/golden_test_1.c tests/golden_test_2.c tests/syntax_test_1.c \
 	tests/checker_test_1.c tests/checker_test_2.c tests/checker_test_3.c \
+	tests/bounds_test.c \
 	tests/analyser_test.c tests/generator_test.c tests/compiler_api_test.c \
 	tests/misc_test.c tests/harness.c $(COMPILER_LIB_SOURCES)
 TOOL_TEST_SOURCES = tests/tool_test.c tests/tool_support.c \
 	tests/runtime_store_test.c tests/runtime_string_test.c \
 	tests/runtime_collection_test.c tests/runtime_print_test.c \
-	tests/runtime_language_test.c tests/driver_test.c \
+	tests/runtime_language_test.c tests/runtime_trap_test.c \
+	tests/driver_test.c \
 	tests/harness.c $(COMPILER_LIB_SOURCES)
 
 .PHONY: all test test-compiler test-tool clean

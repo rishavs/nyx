@@ -297,10 +297,23 @@ TestResult test_checker_print_named(void)
 
 TestResult test_checker_print_reserved(void)
 {
-    return compile_fails(
+    TestResult result = compile_fails(
         "fun print(x: Int32): Nil\n  return nil\nend\n",
-        "print reserved",
-        MESSAGE_CHECKER_PRINT_RESERVED);
+        "print reserved", MESSAGE_CHECKER_PRINT_RESERVED);
+
+    if (result != TEST_PASS) {
+        return result;
+    }
+    result = compile_fails(
+        "fun f(print: Int32): Nil\n  return nil\nend\n",
+        "print parameter reserved", MESSAGE_CHECKER_PRINT_RESERVED);
+    if (result != TEST_PASS) {
+        return result;
+    }
+    return compile_fails(
+        "fun f<T>(print: T): T\n  return print\nend\n"
+        "var n: Int32 = f(1)\n",
+        "generic print parameter reserved", MESSAGE_CHECKER_PRINT_RESERVED);
 }
 
 
@@ -422,6 +435,37 @@ TestResult test_checker_table_args(void)
         MESSAGE_CHECKER_TABLE_ARGS);
 }
 
+
+TestResult test_checker_redefines_builtin(void)
+{
+    TestResult result;
+
+    result = compile_fails("type Byte = Int32\n", "redefining Byte",
+                           MESSAGE_CHECKER_REDEFINES_BUILTIN, "Byte");
+    if (result != TEST_PASS) {
+        return result;
+    }
+    result = compile_fails("type Store = Int32\n", "redefining Store",
+                           MESSAGE_CHECKER_REDEFINES_BUILTIN, "Store");
+    if (result != TEST_PASS) {
+        return result;
+    }
+    result = compile_fails("type Handle = Int32\n", "redefining Handle",
+                           MESSAGE_CHECKER_REDEFINES_BUILTIN, "Handle");
+    if (result != TEST_PASS) {
+        return result;
+    }
+    result = compile_fails("var Record: Int32 = 1\n",
+                           "a value named like a built-in",
+                           MESSAGE_CHECKER_DUPLICATE_NAME, "Record");
+    if (result != TEST_PASS) {
+        return result;
+    }
+    return compile_fails(
+        "fun f(): Int32\n  var Table: Int32 = 1\n  return Table\nend\n",
+        "a local named like a built-in", MESSAGE_CHECKER_DUPLICATE_NAME,
+        "Table");
+}
 
 TestResult test_checker_redefines_record(void)
 {
@@ -595,6 +639,7 @@ const TestCase checker_test_3_tests[] = {
     {"Table literal", test_checker_table_literal},
     {"bare Record", test_checker_record_args},
     {"bare Table", test_checker_table_args},
+    {"redefining built-in type", test_checker_redefines_builtin},
     {"redefining Record", test_checker_redefines_record},
     {"redefining Table", test_checker_redefines_table},
     {"Error.throw argument count", test_checker_error_throw_args},

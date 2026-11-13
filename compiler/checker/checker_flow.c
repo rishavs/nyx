@@ -1,6 +1,66 @@
 #include "checker_internal.h"
 
 
+static bool typed_statement_breaks_loop(const TypedProgram *program,
+                                        size_t index)
+{
+    const TypedNode *node = typed_program_node(program, index);
+    size_t i;
+
+    if (node == NULL) {
+        return false;
+    }
+    if (node->kind == TYPED_BREAK) {
+        return true;
+    }
+    if (node->kind == TYPED_WHILE || node->kind == TYPED_FOR) {
+        return false;
+    }
+    if (node->kind == TYPED_BLOCK) {
+        for (i = 0; i < node->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, node->children_start + i);
+
+            if (typed_statement_breaks_loop(program, child)) {
+                return true;
+            }
+        }
+    }
+    if (node->kind == TYPED_IF && node->children_count >= 1) {
+        size_t then_block = *(const size_t *)list_get(
+            &program->children, node->children_start);
+
+        if (typed_statement_breaks_loop(program, then_block)) {
+            return true;
+        }
+        if (node->children_count == 2) {
+            size_t else_block = *(const size_t *)list_get(
+                &program->children, node->children_start + 1);
+
+            return typed_statement_breaks_loop(program, else_block);
+        }
+    }
+    return false;
+}
+
+
+static bool typed_while_never_falls_through(const TypedProgram *program,
+                                            const TypedNode *node)
+{
+    const TypedNode *condition;
+
+    if (node == NULL || node->kind != TYPED_WHILE ||
+        node->left_child == TYPED_NO_NODE ||
+        node->right_child == TYPED_NO_NODE) {
+        return false;
+    }
+    condition = typed_program_node(program, node->left_child);
+    return condition != NULL && condition->kind == TYPED_BOOL_LITERAL &&
+           condition->integer_value != 0 &&
+           !typed_statement_breaks_loop(program, node->right_child);
+}
+
+
 bool typed_statement_returns(const TypedProgram *program, size_t index)
 {
     const TypedNode *node = typed_program_node(program, index);
@@ -13,6 +73,9 @@ bool typed_statement_returns(const TypedProgram *program, size_t index)
     }
     if (node->kind == TYPED_BLOCK) {
         return typed_block_returns(program, index);
+    }
+    if (node->kind == TYPED_WHILE) {
+        return typed_while_never_falls_through(program, node);
     }
     if (node->kind == TYPED_IF) {
         size_t then_block;
@@ -56,6 +119,9 @@ bool typed_statement_terminates(const TypedProgram *program,
             }
         }
         return false;
+    }
+    if (node->kind == TYPED_WHILE) {
+        return typed_while_never_falls_through(program, node);
     }
     if (node->kind == TYPED_IF) {
         size_t then_block;
