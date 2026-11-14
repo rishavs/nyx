@@ -10,6 +10,7 @@ Everything here is C11 and depends only on libc.
 | Header | Purpose |
 |---|---|
 | `compiler.h` | The one-shot API: source string in, C11 text out |
+| `limits_config.h` | Named defaults and fixed compiler safety limits |
 | `error.h` | `ErrorState`, the diagnostic accumulator |
 | `alloc.h` | Checked allocation wrappers and the test failure hook |
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
@@ -77,9 +78,10 @@ Ownership rules:
   `compiler_result_free`, which also zeroes the struct.
 - On success, `succeeded` is true, both sources are non-NULL, and
   `error_message` is NULL.
-- On failure, `succeeded` is false, both sources are NULL, and `error_message`
-  is a heap string with at least one message. It is never NULL on failure: if no
-  stage reported anything, it is exactly `Unknown Error`.
+- On failure, `succeeded` is false and both sources are NULL. `error_message`
+  is an owned diagnostic string when its allocation succeeds; it may be NULL
+  if allocating that string fails. If no stage reported an error, the diagnostic
+  is `Unknown Error` when allocation succeeds.
 - `compiler_result_free(NULL)` is a no-op, and freeing an already-freed result is
   safe because the fields are cleared.
 
@@ -109,6 +111,7 @@ compiler_result_free(&result);
 ```c
 typedef struct {
     bool reported;
+    bool fatal;
     const char *source_name;   /* borrowed; used by positioned messages */
     size_t length;
     char message[ERROR_MESSAGE_CAPACITY];  /* 4096 bytes */
@@ -117,6 +120,8 @@ typedef struct {
 void error_init(ErrorState *state);
 void error_report(ErrorState *state, const char *format, ...);
 void error_report_at(ErrorState *state, SourcePos pos, const char *format, ...);
+void error_report_fatal(ErrorState *state, const char *format, ...);
+void error_report_fatal_at(ErrorState *state, SourcePos pos, const char *format, ...);
 void error_unknown_if_none(ErrorState *state);
 ```
 
@@ -124,12 +129,13 @@ void error_unknown_if_none(ErrorState *state);
 it on the stack. Messages accumulate; each one is appended with a trailing
 newline, and truncation is handled rather than asserted away.
 
-- `error_init` clears the buffer and the `reported` flag. Call it before use.
-- `error_report` appends a message with no source position. Use it for driver
-  and out-of-memory diagnostics.
+- `error_init` clears the buffer and both status flags. Call it before use.
+- `error_report` appends a nonfatal message with no source position.
 - `error_report_at` prefixes the message with
   `file:line:column (byte offset): `. It uses `state->source_name`, or
   `<source>` when that is NULL.
+- `error_report_fatal` and `error_report_fatal_at` also set the sticky `fatal`
+  flag, so recovery does not depend on the wording of the diagnostic.
 - `error_unknown_if_none` appends `Unknown Error` if nothing was reported yet.
   This is what guarantees a failure always carries a diagnostic.
 
@@ -146,6 +152,8 @@ void *nippy_realloc(void *pointer, size_t size);
 char *nippy_strdup(const char *text);
 void nippy_alloc_fail_after(size_t successful_allocations);
 void nippy_alloc_reset(void);
+void nippy_alloc_begin_counting(void);
+size_t nippy_alloc_attempts(void);
 ```
 
 The compiler allocates through these wrappers so that every out-of-memory path
@@ -157,6 +165,9 @@ with one counter comparison.
   time is what lets a test observe the diagnostic that failure produces.
 - `nippy_alloc_reset()` or `nippy_alloc_fail_after(NIPPY_ALLOC_NEVER)` disables
   the hook.
+- `nippy_alloc_begin_counting()` enables test-only allocation counting;
+  `nippy_alloc_attempts()` reads the count. Resetting or arming a failure
+  disables counting.
 - The driver arms the hook from the environment variable
   `NIPPY_FAIL_ALLOC_AFTER`, which is a test-only interface. Unset it in normal
   use.

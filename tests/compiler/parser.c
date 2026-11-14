@@ -30,6 +30,17 @@ TEST("independent syntax errors are reported together")
     return ok ? TEST_PASS : TEST_FAIL;
 }
 
+TEST("diagnostic text does not control parser recovery")
+{
+    CompilerConfig config = {.source_name = "out of memory.nip"};
+    CompilerResult result = compiler_compile("var a: = 1\nvar b: = 2\n", &config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "out of memory.nip:1:") != NULL &&
+              strstr(result.error_message, "out of memory.nip:2:") != NULL;
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("independent syntax errors in a function are reported together")
 {
     CompilerResult result = compiler_compile(

@@ -440,3 +440,16 @@ TEST("separators compile")
                     "var c: Float64 = 1e1_0\n",
                     "digit separators in decimals and floats");
 }
+
+TEST("built-in scalar names and numeric conversions")
+{
+    return compile_accepts(
+        "var a: Int8 = Int8(1)\nvar b: Int16 = Int16(1)\n"
+        "var c: Int32 = Int32(1)\nvar d: Int64 = Int64(1)\n"
+        "var e: Uint8 = Uint8(1)\nvar f: Byte = Byte(1)\n"
+        "var g: Uint16 = Uint16(1)\nvar h: Uint32 = Uint32(1)\n"
+        "var i: Uint64 = Uint64(1)\n"
+        "var j: Float32 = Float32(1)\nvar k: Float64 = Float64(1)\n"
+        "var valid: Bool = true\n",
+        "built-in scalar type names and numeric conversions");
+}

@@ -90,7 +90,8 @@ TEST("dynamic range zero step reports its source position")
 {
     return run_generated_failure(
         "var step: Int64 = 0\nvar r = range(0, 5, step)\n",
-        "test.nip:2:9 (byte 28): range step cannot be zero",
+        MESSAGE_RUNTIME_PREFIX "test.nip:2:9 (byte 28): "
+        MESSAGE_RUNTIME_RANGE_ZERO_STEP,
         "dynamic zero range step");
 }
 

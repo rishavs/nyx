@@ -85,7 +85,7 @@ bool parse_call(
                     return false;
                 }
                 if (!list_push(&arguments, &argument)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&arguments);
                     return false;
@@ -136,13 +136,13 @@ bool parse_call(
                 wrapper.right_child = AST_NO_NODE;
                 if (!push_node(ast, &wrapper, &wrapper_index) ||
                     !ast_push_child(ast, wrapper_index)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&arguments);
                     return false;
                 }
             } else if (!ast_push_child(ast, argument->value_index)) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 list_free(&arguments);
                 return false;
             }
@@ -201,7 +201,7 @@ bool parse_record_literal(const TokenList *tokens,
                 string_bytes, token->string_offset + i);
 
             if (byte == NULL || !ast_push_byte(ast, *byte)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 list_free(&children);
                 return false;
@@ -247,7 +247,7 @@ bool parse_record_literal(const TokenList *tokens,
         size_t child = *(const size_t *)list_get(&children, i);
 
         if (!ast_push_child(ast, child)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&children);
             return false;
         }

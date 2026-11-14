@@ -299,15 +299,15 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         "static inline int64_t nyx_range_step(int64_t step, const char *file, "
         "size_t line, size_t col, size_t pos) {\n"
         "    if (step == 0) { fflush(stdout); "
-        "fprintf(stderr, \"nippy: %s:%zu:%zu (byte %zu): "
-        MESSAGE_RUNTIME_RANGE_ZERO_STEP "\\n\", "
-        "file, line, col, pos); exit(1); }\n"
+        "fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", "
+        "file, line, col, pos, \"" MESSAGE_RUNTIME_RANGE_ZERO_STEP "\"); exit(1); }\n"
         "    return step;\n}\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
     if (uses_recursion &&
-        !buffer_append(&source, "#define NIPPY_RECURSION_LIMIT 10000\n\n")) {
+        !buffer_appendf(&source, "#define NIPPY_RECURSION_LIMIT %d\n\n",
+                        NIPPY_RUNTIME_RECURSION_LIMIT)) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }

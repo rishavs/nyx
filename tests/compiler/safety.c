@@ -2,6 +2,84 @@
    code. */
 
 #include "compile_support.h"
+#include "../../compiler/checker/checker_internal.h"
+
+TEST("unknown layouts fail closed")
+{
+    TypedProgram program;
+    ErrorState errors;
+    CheckContext ctx = {0};
+    TypedType unknown = {0};
+    List instances, cache;
+    size_t index;
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    list_init(&instances, sizeof(StructInstantiation));
+    list_init(&cache, sizeof(ValueLayoutCache));
+    unknown.kind = NIPPY_TYPE_UNKNOWN;
+    if (!typed_program_add_type(&program, &unknown, &index)) return TEST_ERROR;
+    ctx.program = &program;
+    ctx.errors = &errors;
+    ctx.struct_instantiations = &instances;
+    ctx.layout_cache = &cache;
+    ok = !check_type_value_size(&ctx, index, (SourcePos){0, 1, 1}) &&
+         error_contains(&errors, MESSAGE_CHECKER_LAYOUT_UNAVAILABLE);
+    list_free(&cache);
+    list_free(&instances);
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("type size includes array metadata and alignment")
+{
+    char source[2048];
+    size_t used = (size_t)snprintf(source, sizeof(source), "type Large\n");
+    int i;
+    for (i = 0; i < 16; i++)
+        used += (size_t)snprintf(source + used, sizeof(source) - used,
+                                 " field%d: Array<Byte,4096>\n", i);
+    snprintf(source + used, sizeof(source) - used, "end\n");
+    return compile_fails(source, "array metadata in layout",
+                         MESSAGE_CHECKER_VALUE_TOO_LARGE, (size_t)65600,
+                         (size_t)NIPPY_MAX_VALUE_BYTES);
+}
+
+TEST("an unused oversized type alias is rejected")
+{
+    CompilerConfig config = test_config;
+    CompilerResult result;
+    char expected[256];
+    bool ok;
+    config.max_list_capacity = 65536;
+    result = compiler_compile("type Big = Array<Byte,65536>\n", &config);
+    expect_message(expected, sizeof(expected), MESSAGE_CHECKER_VALUE_TOO_LARGE,
+                   (size_t)65540, (size_t)NIPPY_MAX_VALUE_BYTES);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("type size is checked through deeply nested structs")
+{
+    char source[4096];
+    size_t used = (size_t)snprintf(source, sizeof(source), "type Base\n");
+    int i;
+    for (i = 0; i < 16; i++)
+        used += (size_t)snprintf(source + used, sizeof(source) - used,
+                                 " field%d: String<4091>\n", i);
+    used += (size_t)snprintf(source + used, sizeof(source) - used,
+                             "end\ntype T0 value: Base end\n");
+    for (i = 1; i <= 35; i++)
+        used += (size_t)snprintf(source + used, sizeof(source) - used,
+                                 "type T%d value: T%d end\n", i, i - 1);
+    snprintf(source + used, sizeof(source) - used,
+             "type TooBig value: T35 extra: Byte end\n");
+    return compile_fails(source, "deep type layout", MESSAGE_CHECKER_VALUE_TOO_LARGE,
+                         (size_t)65540, (size_t)NIPPY_MAX_VALUE_BYTES);
+}
 
 TEST("literal division by zero")
 {
@@ -256,7 +334,7 @@ TEST("by-value size cap")
         "  a19: String<4096>\n"
         "end\n",
         "by-value size cap", MESSAGE_CHECKER_VALUE_TOO_LARGE,
-        (size_t)82020, (size_t)NIPPY_MAX_VALUE_BYTES);
+        (size_t)82080, (size_t)NIPPY_MAX_VALUE_BYTES);
 }
 
 TEST("local inference contexts")

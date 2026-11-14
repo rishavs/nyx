@@ -163,7 +163,7 @@ bool check_print(CheckContext *ctx, const AstNode *node,
             return false;
         }
         if (!list_push(&children, &argument)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             list_free(&children);
             return false;
         }
@@ -175,7 +175,7 @@ bool check_print(CheckContext *ctx, const AstNode *node,
             size_t child = *(const size_t *)list_get(&children, i);
 
             if (!typed_program_push_child(ctx->program, child)) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 list_free(&children);
                 return false;

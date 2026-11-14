@@ -338,11 +338,6 @@ TEST("allocation failures fail closed")
             result = TEST_FAIL;
             goto finished;
         }
-        /* Once the failure index is past every allocation the build succeeds
-           again; stop sweeping. */
-        if (WEXITSTATUS(status) == 0 && index > 20) {
-            break;
-        }
     }
     result = TEST_PASS;
 
@@ -436,8 +431,9 @@ TEST("could not write source")
         fprintf(stderr, "  could not write the source\n");
         goto finished;
     }
-    /* A directory occupying the .c path lets the header write succeed and the
-       C write fail. */
+    if (!write_text(test_path("bin.h"), "previous header\n") ||
+        !write_text(test_path("bin"), "previous executable\n")) return TEST_ERROR;
+    /* A directory occupying the .c path prevents publication. */
     if (mkdir(test_path("bin.c"), 0700) != 0) {
         fprintf(stderr, "  could not create the blocking directory\n");
         goto finished;
@@ -455,10 +451,39 @@ TEST("could not write source")
         result = TEST_FAIL;
         goto finished;
     }
+    if (!file_equals(test_path("bin.h"), "previous header\n") ||
+        !file_equals(test_path("bin"), "previous executable\n")) {
+        fprintf(stderr, "  failed build changed an existing output\n");
+        return TEST_FAIL;
+    }
     result = TEST_PASS;
 
 finished:
     return result;
+}
+
+TEST("publication failures restore all previous outputs")
+{
+    size_t i;
+    char command[4096];
+    if (!write_text(test_path("source.nip"), "print(1)\n")) return TEST_ERROR;
+    for (i = 0; i < 6; i++) {
+        if (!write_text(test_path("bin.h"), "previous header\n") ||
+            !write_text(test_path("bin.c"), "previous source\n") ||
+            !write_text(test_path("bin"), "previous executable\n")) return TEST_ERROR;
+        snprintf(command, sizeof(command),
+                 "NIPPY_FAIL_RENAME_AFTER=%zu %s %s %s > %s 2>&1", i,
+                 nippy_binary(), test_path("source.nip"), test_path("bin"),
+                 test_path("log"));
+        if (system(command) == 0 ||
+            !file_equals(test_path("bin.h"), "previous header\n") ||
+            !file_equals(test_path("bin.c"), "previous source\n") ||
+            !file_equals(test_path("bin"), "previous executable\n")) {
+            fprintf(stderr, "  publication failure %zu did not restore outputs\n", i);
+            return TEST_FAIL;
+        }
+    }
+    return TEST_PASS;
 }
 
 TEST("C compiler failures")
@@ -470,6 +495,9 @@ TEST("C compiler failures")
         fprintf(stderr, "  could not write the source\n");
         goto finished;
     }
+    if (!write_text(test_path("bin.h"), "previous header\n") ||
+        !write_text(test_path("bin.c"), "previous source\n") ||
+        !write_text(test_path("bin"), "previous executable\n")) return TEST_ERROR;
     /* An empty PATH leaves `cc` unfindable, so system() reports a failure to
        start the shell command. */
     {
@@ -491,6 +519,9 @@ TEST("C compiler failures")
         result = TEST_FAIL;
         goto finished;
     }
+    if (!file_equals(test_path("bin.h"), "previous header\n") ||
+        !file_equals(test_path("bin.c"), "previous source\n") ||
+        !file_equals(test_path("bin"), "previous executable\n")) return TEST_FAIL;
     result = TEST_PASS;
 
 finished:

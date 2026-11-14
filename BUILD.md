@@ -255,6 +255,11 @@ return compile_fails("var x : Float = 13\n", "an unknown variable type",
                      MESSAGE_CHECKER_UNKNOWN_TYPE, "Float", "x");
 ```
 
+A source-scanning compiler test flags common inline diagnostic literals and
+embedded runtime prefixes outside the catalog. It is deliberately a limited
+check rather than a C parser, and it does not prove that every message has a
+behavioral test; reviewers must check coverage.
+
 This keeps wording and assertions from drifting apart. It also means a message
 that cannot be reached from a test is a design smell: either the path is dead
 code, or it needs a hook. Deleting an unreachable message is usually right.
@@ -308,14 +313,15 @@ out-of-memory handling stays executable instead of untested.
   disables it.
 - The driver honours the environment variable `NIPPY_FAIL_ALLOC_AFTER`, which is
   a test-only interface. It must stay unset in normal use.
+- `NIPPY_FAIL_RENAME_AFTER` is a test-only, one-shot failure hook for output
+  publication and rollback; the tool suite checks each backup and publish step.
 
-Three tests use this: two in the tool suite (one sweeps every allocation index
-through the CLI and asserts the compiler fails closed — non-zero exit, a
-diagnostic, no binary left behind, no crash — and one proves each of the ten
-out-of-memory messages is reachable in a single pass over the failure index), and
-one in the compiler suite that injects a failure straight into
-`compiler_compile`. The sweeps are the slowest tests in the suite, because they
-start the compiler hundreds of times.
+The CLI suite sweeps 400 allocation positions without stopping at the first
+successful run, and checks the driver diagnostics and output behavior. The
+compiler suite counts every allocation in a representative compilation, then
+injects a failure at each position. A successful result must match the baseline;
+a failed result must not contain generated source. These sweeps are among the
+slower tests because they run the compiler repeatedly.
 
 ### Scratch files
 
@@ -346,11 +352,11 @@ links.
 
 ## Generated-code build
 
-`compiler/main.c` writes the generated `.c` and `.h` beside the requested output
-binary and then runs:
+`compiler/main.c` writes the generated `.c` and `.h` into a private temporary
+directory beside the requested output and runs:
 
 ```sh
-cc -std=c11 -o <output> <output>.c
+cc -std=c11 -o <staged-output> <staged-output>.c
 ```
 
 Points worth knowing:
@@ -360,9 +366,11 @@ Points worth knowing:
 - Only the `.c` is compiled; the `.h` is picked up through the emitted
   `#include`, which is why the header name is validated before being
   interpolated.
-- The generated header is written first, then the source. A failure writing the
-  source therefore leaves the header on disk, which is harmless because nothing
-  links it.
+- After `cc` succeeds, existing outputs are backed up and the staged header,
+  source, and executable are renamed into place. If publication fails, the
+  driver restores the previous outputs where possible. Each rename is atomic,
+  but the three-file publication is not atomic against a process crash. If a
+  rollback fails, the staging directory is retained for recovery.
 - Generated code must compile cleanly under `-std=c11 -Wall -Wextra -Wpedantic`.
   That is why unused initialised variables get a `(void)name;` line: the
   generator, not the user, is responsible for warning-free output.

@@ -71,7 +71,7 @@ bool check_record_literal(CheckContext *ctx, const AstNode *node,
         size_t child = *(const size_t *)list_get(&children, i);
 
         if (!typed_program_push_child(ctx->program, child)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             list_free(&children);
             return false;
         }
@@ -125,7 +125,7 @@ bool check_list_literal(CheckContext *ctx, const AstNode *node,
              !check_default_numeric(ctx, child)) ||
             !list_push(&checked, &child)) {
             if (!ctx->errors->reported) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             }
             list_free(&checked);
@@ -197,7 +197,7 @@ bool check_list_literal(CheckContext *ctx, const AstNode *node,
             size_t child = *(const size_t *)list_get(&checked, i);
 
             if (!typed_program_push_child(ctx->program, child)) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 list_free(&checked);
                 return false;
@@ -264,7 +264,7 @@ bool check_string_literal(CheckContext *ctx, const AstNode *node,
 
         if (byte == NULL ||
             !typed_program_push_byte(ctx->program, *byte)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
@@ -488,7 +488,7 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
                 base.name_index = typed_program_copy_symbol(
                     ctx->program, name, strlen(name));
                 if (base.name_index == TYPED_NO_NODE) {
-                    error_report(ctx->errors,
+                    error_report_fatal(ctx->errors,
                                  MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
                     return false;
                 }
@@ -496,7 +496,7 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
                 base.right_child = TYPED_NO_NODE;
                 base.is_self = variable->is_self_pointer;
                 if (!typed_program_push(ctx->program, &base, &base_index)) {
-                    error_report(ctx->errors,
+                    error_report_fatal(ctx->errors,
                                  MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                     return false;
                 }
@@ -514,7 +514,7 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
     typed.name_index = typed_program_copy_symbol(ctx->program, name,
                                                  strlen(name));
     if (typed.name_index == TYPED_NO_NODE) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
         return false;
     }
     typed.left_child = TYPED_NO_NODE;

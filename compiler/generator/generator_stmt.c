@@ -6,7 +6,7 @@ static bool emit_inline_failure(TextBuffer *source, SourcePos pos,
     return buffer_append(source,
                          "fflush(stdout); fprintf(stderr, \""
                          MESSAGE_RUNTIME_POSITION "\\n\", __FILE__, ") &&
-           buffer_appendf(source, "(size_t)%zu, (size_t)%zu, (size_t)%zu, \"%s\" + 7); exit(1);",
+           buffer_appendf(source, "(size_t)%zu, (size_t)%zu, (size_t)%zu, \"%s\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1); exit(1);",
                           pos.line, pos.column, pos.offset, message);
 }
 

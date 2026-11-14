@@ -1,6 +1,6 @@
 #include "parser_internal.h"
 
-#define NIPPY_MAX_PARSE_NESTING 256
+#include "limits_config.h"
 
 bool token_opens_nesting(TokenType type)
 {
@@ -99,7 +99,7 @@ bool intern_token(Ast *ast, const Token *token, size_t *out_index,
 {
     *out_index = ast_intern_symbol(ast, token->text, token->length);
     if (*out_index == AST_NO_NODE) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
         return false;
     }
     return true;
@@ -119,11 +119,11 @@ bool push_root(Ast *ast, const AstNode *node, ErrorState *errors)
     size_t index = ast->nodes.length;
 
     if (!list_push(&ast->nodes, node)) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         return false;
     }
     if (!list_push(&ast->roots, &index)) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         return false;
     }
     return true;
@@ -201,7 +201,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -213,7 +213,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -225,7 +225,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -237,7 +237,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -249,7 +249,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -261,7 +261,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -273,7 +273,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -286,7 +286,7 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                 goto recover;
             }
             if (!list_push(&ast->roots, &statement)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -301,9 +301,9 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
 
 recover:
         if (errors->length == error_start) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         }
-        if (strstr(errors->message + error_start, "out of memory") != NULL ||
+        if (errors->fatal ||
             errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
             return false;
         }

@@ -5,15 +5,32 @@
 
 /* Countdown to the first allocation that must fail. SIZE_MAX means "never". */
 static size_t allocations_remaining = (size_t)-1;
+static size_t allocation_attempts;
+static int count_allocations;
 
 void nippy_alloc_fail_after(size_t successful_allocations)
 {
     allocations_remaining = successful_allocations;
+    allocation_attempts = 0;
+    count_allocations = 0;
 }
 
 void nippy_alloc_reset(void)
 {
     allocations_remaining = (size_t)-1;
+    allocation_attempts = 0;
+    count_allocations = 0;
+}
+
+void nippy_alloc_begin_counting(void)
+{
+    allocation_attempts = 0;
+    count_allocations = 1;
+}
+
+size_t nippy_alloc_attempts(void)
+{
+    return allocation_attempts;
 }
 
 /* Returns true when this allocation should fail. Exactly one allocation
@@ -22,6 +39,7 @@ void nippy_alloc_reset(void)
    failure would mask (the error-message copy would fail too). */
 static int allocation_should_fail(void)
 {
+    if (count_allocations && allocation_attempts != (size_t)-1) allocation_attempts++;
     if (allocations_remaining == (size_t)-1) {
         return 0;
     }

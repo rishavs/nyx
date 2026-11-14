@@ -3,6 +3,18 @@
 
 #include "compile_support.h"
 
+TEST("diagnostic text does not control checker recovery")
+{
+    CompilerConfig config = {.source_name = "out of memory.nip"};
+    CompilerResult result = compiler_compile(
+        "var a: Bool = 1\nvar b: Bool = 2\n", &config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "out of memory.nip:1:") != NULL &&
+              strstr(result.error_message, "out of memory.nip:2:") != NULL;
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("struct defaults are checked even when unused")
 {
     return compile_fails("type Bad x: Bool = 10 end\n",

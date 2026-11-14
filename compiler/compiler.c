@@ -14,7 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define NIPPY_MAX_AST_DEPTH 1024
 
 static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
 {

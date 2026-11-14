@@ -43,7 +43,7 @@ bool string_type(CheckContext *ctx, int capacity, size_t *out_index)
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         return true;
@@ -71,7 +71,7 @@ bool string_literal_type(CheckContext *ctx, size_t *out_index)
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         return true;
@@ -104,7 +104,7 @@ bool error_type(CheckContext *ctx, size_t *out_index)
     if (!typed_program_add_type_child(ctx->program, header) ||
         !typed_program_add_type_child(ctx->program, description) ||
         !typed_program_add_type_child(ctx->program, filename)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     {
@@ -118,7 +118,7 @@ bool error_type(CheckContext *ctx, size_t *out_index)
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         return true;
@@ -271,7 +271,7 @@ bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
         size_t first = ctx->program->type_children.length;
 
         if (!typed_program_add_type_child(ctx->program, element)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         type.kind = NIPPY_TYPE_HANDLE;
@@ -282,7 +282,7 @@ bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         return true;
@@ -303,7 +303,7 @@ bool add_type_record(CheckContext *ctx, NippyType kind,
     type.declaration_node = TYPED_NO_NODE;
     type.source_name_index = TYPED_NO_NODE;
     if (!typed_program_add_type(ctx->program, &type, out_index)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     return true;
@@ -397,7 +397,7 @@ bool map_type(CheckContext *ctx, size_t key_type, size_t value_type,
         if (!typed_program_add_type_child(ctx->program, key_type) ||
             !typed_program_add_type_child(ctx->program, value_type) ||
             !typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         return true;
@@ -448,11 +448,11 @@ bool list_type(CheckContext *ctx, size_t element_type, bool fixed,
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         if (!typed_program_add_type_child(ctx->program, element_type)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             return false;
         }
         return true;
@@ -496,11 +496,11 @@ bool slice_type(CheckContext *ctx, size_t element_type,
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         if (!typed_program_add_type_child(ctx->program, element_type)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             return false;
         }
         return true;
@@ -532,7 +532,7 @@ bool range_type(CheckContext *ctx, size_t element_type, size_t *out_index)
     type.source_name_index = TYPED_NO_NODE;
     if (!typed_program_add_type(ctx->program, &type, out_index) ||
         !typed_program_add_type_child(ctx->program, element_type)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     return true;
@@ -554,13 +554,13 @@ bool add_function_type(CheckContext *ctx, const List *parameter_types,
 
         if (!typed_program_add_signature_parameter(ctx->program,
                                                    parameter_type)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
     if (!typed_program_add_signature(ctx->program, &signature,
                                      &signature_index)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     return add_type_record(ctx, NIPPY_TYPE_FUNCTION, TYPED_NO_NODE,
@@ -656,175 +656,204 @@ bool type_contains_error(const TypedProgram *program, size_t type_index)
     return type_contains_error_depth(program, type_index, NIPPY_TYPE_DEPTH);
 }
 
-static bool add_value_size(size_t *total, size_t amount)
+typedef struct {
+    size_t size;
+    size_t align;
+} ValueLayout;
+
+/* Match the target C ABI, including padding between members and at the end. */
+static size_t layout_add_saturated(size_t a, size_t b)
 {
-    if (*total > (size_t)-1 - amount) {
-        *total = NIPPY_MAX_VALUE_BYTES + 1;
-        return false;
-    }
-    *total += amount;
-    return true;
+    return a > SIZE_MAX - b ? SIZE_MAX : a + b;
 }
 
-
-static bool type_value_size_depth(const TypedProgram *program,
-                                  size_t type_index, unsigned depth,
-                                  size_t *out)
+static size_t layout_round(size_t size, size_t alignment)
 {
+    size_t remainder = size % alignment;
+    return remainder == 0 ? size : layout_add_saturated(size, alignment - remainder);
+}
+
+static size_t layout_multiply(size_t a, size_t b)
+{
+    return b != 0 && a > SIZE_MAX / b ? SIZE_MAX : a * b;
+}
+
+static void layout_member(ValueLayout *aggregate, ValueLayout member)
+{
+    aggregate->size = layout_add_saturated(layout_round(aggregate->size, member.align),
+                                           member.size);
+    if (member.align > aggregate->align) aggregate->align = member.align;
+}
+
+#define SCALAR_LAYOUT(T) (ValueLayout){sizeof(T), _Alignof(T)}
+
+static bool type_layout_depth(CheckContext *ctx, size_t type_index,
+                              unsigned depth, ValueLayout *out)
+{
+    const TypedProgram *program = ctx->program;
     const TypedType *type = typed_program_type(program, type_index);
+    const ValueLayoutCache *cached = list_get(ctx->layout_cache, type_index);
+    ValueLayout result = {0, 1}, child, second;
     size_t i;
-
-    if (type == NULL || depth == 0) {
-        return false;
+    if (type == NULL) return false;
+    if (cached != NULL && cached->valid) {
+        *out = (ValueLayout){cached->size, cached->align};
+        return true;
     }
+    if (depth == 0) return false;
     switch (type->kind) {
-    case NIPPY_TYPE_INT8:
-    case NIPPY_TYPE_BYTE:
-        *out = 1;
-        return true;
-    case NIPPY_TYPE_INT16:
-    case NIPPY_TYPE_UINT16:
-        *out = 2;
-        return true;
-    case NIPPY_TYPE_INT32:
-    case NIPPY_TYPE_UINT32:
-    case NIPPY_TYPE_FLOAT32:
-        *out = 4;
-        return true;
-    case NIPPY_TYPE_INT64:
-    case NIPPY_TYPE_UINT64:
-    case NIPPY_TYPE_FLOAT64:
-        *out = 8;
-        return true;
-    case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_NIL:
-        *out = 1;
-        return true;
+    case NIPPY_TYPE_INT8: *out = SCALAR_LAYOUT(int8_t); return true;
+    case NIPPY_TYPE_BYTE: case NIPPY_TYPE_NIL: *out = SCALAR_LAYOUT(uint8_t); return true;
+    case NIPPY_TYPE_BOOL: *out = SCALAR_LAYOUT(bool); return true;
+    case NIPPY_TYPE_INT16: *out = SCALAR_LAYOUT(int16_t); return true;
+    case NIPPY_TYPE_UINT16: *out = SCALAR_LAYOUT(uint16_t); return true;
+    case NIPPY_TYPE_INT32: *out = SCALAR_LAYOUT(int32_t); return true;
+    case NIPPY_TYPE_UINT32: *out = SCALAR_LAYOUT(uint32_t); return true;
+    case NIPPY_TYPE_INT64: *out = SCALAR_LAYOUT(int64_t); return true;
+    case NIPPY_TYPE_UINT64: *out = SCALAR_LAYOUT(uint64_t); return true;
+    case NIPPY_TYPE_FLOAT32: *out = SCALAR_LAYOUT(float); return true;
+    case NIPPY_TYPE_FLOAT64: *out = SCALAR_LAYOUT(double); return true;
+    case NIPPY_TYPE_FUNCTION: *out = SCALAR_LAYOUT(void (*)(void)); return true;
     case NIPPY_TYPE_STRING:
-        *out = type->fixed_length + 5;
-        return true;
-    case NIPPY_TYPE_ERROR:
-        *out = (size_t)program->error_header_capacity +
-               (size_t)program->error_description_capacity +
-               (size_t)program->error_filename_capacity + 3 + 12;
-        return true;
-    case NIPPY_TYPE_FIXED_LIST: {
-        size_t element;
-
+        layout_member(&result, (ValueLayout){layout_add_saturated(type->fixed_length, 1), 1});
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        break;
+    case NIPPY_TYPE_HANDLE:
+    case NIPPY_TYPE_LIST:
+    case NIPPY_TYPE_TEXT_BUILDER:
+    case NIPPY_TYPE_TABLE:
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(uint64_t));
+        break;
+    case NIPPY_TYPE_DYNAMIC_STRING:
+        layout_member(&result, SCALAR_LAYOUT(const uint8_t *));
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(uint64_t));
+        break;
+    case NIPPY_TYPE_SLICE:
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        layout_member(&result, SCALAR_LAYOUT(uint64_t));
+        break;
+    case NIPPY_TYPE_RANGE:
         if (type->child_count != 1 ||
-            !type_value_size_depth(program,
-                                   *(const size_t *)list_get(
-                                       &program->type_children,
-                                       type->first_child),
-                                   depth - 1, &element)) {
-            return false;
-        }
-        if (type->fixed_length != 0 &&
-            element > ((size_t)-1) / type->fixed_length) {
-            *out = NIPPY_MAX_VALUE_BYTES + 1;
-            return true;
-        }
-        *out = (type->fixed_length == 0 ? 1 : type->fixed_length) * element;
-        return true;
-    }
+            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
+                               type->first_child), depth - 1, &child)) return false;
+        layout_member(&result, child);
+        layout_member(&result, child);
+        layout_member(&result, SCALAR_LAYOUT(int64_t));
+        break;
+    case NIPPY_TYPE_FIXED_LIST:
+        if (type->child_count != 1 ||
+            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
+                               type->first_child), depth - 1, &child)) return false;
+        child.size = layout_multiply(child.size, type->fixed_length == 0 ? 1 : type->fixed_length);
+        layout_member(&result, child);
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        break;
     case NIPPY_TYPE_RECORD: {
-        size_t key;
-        size_t value;
-        size_t capacity = type->fixed_length + 1;
-
+        size_t buckets = type->fixed_length == 0 ? 1 : type->fixed_length + 1;
         if (type->child_count != 2 ||
-            !type_value_size_depth(program,
-                                   *(const size_t *)list_get(
-                                       &program->type_children,
-                                       type->first_child),
-                                   depth - 1, &key) ||
-            !type_value_size_depth(program,
-                                   *(const size_t *)list_get(
-                                       &program->type_children,
-                                       type->first_child + 1),
-                                   depth - 1, &value)) {
-            return false;
-        }
-        *out = 0;
-        if (!add_value_size(out, key + value + 1) ||
-            (capacity != 0 && *out > ((size_t)-1) / capacity)) {
-            *out = NIPPY_MAX_VALUE_BYTES + 1;
-            return true;
-        }
-        *out *= capacity;
-        return true;
+            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
+                               type->first_child), depth - 1, &child) ||
+            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
+                               type->first_child + 1), depth - 1, &second)) return false;
+        child.size = layout_multiply(child.size, buckets);
+        second.size = layout_multiply(second.size, buckets);
+        layout_member(&result, child);
+        layout_member(&result, second);
+        layout_member(&result, (ValueLayout){buckets, 1});
+        layout_member(&result, SCALAR_LAYOUT(size_t));
+        break;
     }
     case NIPPY_TYPE_UNION: {
-        size_t largest = 0;
-
+        ValueLayout payload = {0, 1};
+        bool has_payload = false;
         for (i = 0; i < type->child_count; i++) {
-            size_t alternative;
-
-            if (!type_value_size_depth(
-                    program,
-                    *(const size_t *)list_get(
-                        &program->type_children, type->first_child + i),
-                    depth - 1, &alternative)) {
-                return false;
-            }
-            if (alternative > largest) {
-                largest = alternative;
-            }
+            size_t alternative = *(const size_t *)list_get(&program->type_children,
+                                                            type->first_child + i);
+            const TypedType *alt = typed_program_type(program, alternative);
+            if (alt == NULL) return false;
+            if (alt->kind == NIPPY_TYPE_NIL) continue;
+            if (!type_layout_depth(ctx, alternative, depth - 1, &child)) return false;
+            if (child.size > payload.size) payload.size = child.size;
+            if (child.align > payload.align) payload.align = child.align;
+            has_payload = true;
         }
-        *out = largest;
-        add_value_size(out, 8);
-        return true;
+        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        if (has_payload) {
+            payload.size = layout_round(payload.size, payload.align);
+            layout_member(&result, payload);
+        }
+        break;
     }
     case NIPPY_TYPE_STRUCT: {
-        const TypedNode *declaration = typed_program_node(
-            program, type->declaration_node);
-        size_t total = 0;
-
-        if (declaration != NULL) {
-            for (i = 0; i < declaration->children_count; i++) {
-                size_t child = *(const size_t *)list_get(
-                    &program->children, declaration->children_start + i);
-                const TypedNode *field = typed_program_node(program, child);
-                size_t field_size;
-
-                if (field != NULL && field->kind == TYPED_FIELD) {
-                    if (!type_value_size_depth(program, field->type_index,
-                                               depth - 1, &field_size)) {
-                        return false;
-                    }
-                    add_value_size(&total, field_size);
-                }
-            }
+        const TypedNode *declaration = typed_program_node(program, type->declaration_node);
+        if (declaration == NULL) return false;
+        for (i = 0; i < declaration->children_count; i++) {
+            size_t child_index = *(const size_t *)list_get(&program->children,
+                                                           declaration->children_start + i);
+            const TypedNode *field = typed_program_node(program, child_index);
+            if (field == NULL || field->kind != TYPED_FIELD ||
+                !type_layout_depth(ctx, field->type_index, depth - 1, &child)) return false;
+            layout_member(&result, child);
         }
-        *out = total;
-        return true;
+        break;
     }
-    case NIPPY_TYPE_HANDLE:
-    case NIPPY_TYPE_DYNAMIC_STRING:
-    case NIPPY_TYPE_TEXT_BUILDER:
-    case NIPPY_TYPE_LIST:
-    case NIPPY_TYPE_SLICE:
-    case NIPPY_TYPE_RANGE:
-    case NIPPY_TYPE_TABLE:
-        *out = 32;
-        return true;
-    case NIPPY_TYPE_FUNCTION:
-        *out = 16;
-        return true;
+    case NIPPY_TYPE_ERROR:
+        if (type->child_count != 3) return false;
+        for (i = 0; i < 3; i++) {
+            if (!type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
+                                   type->first_child + i), depth - 1, &child)) return false;
+            layout_member(&result, child);
+        }
+        for (i = 0; i < 3; i++) layout_member(&result, SCALAR_LAYOUT(int32_t));
+        break;
     default:
         return false;
     }
+    result.size = layout_round(result.size, result.align);
+    {
+        ValueLayoutCache *slot = (ValueLayoutCache *)list_get(ctx->layout_cache, type_index);
+        if (slot != NULL) {
+            slot->size = result.size;
+            slot->align = result.align;
+            slot->valid = true;
+        }
+    }
+    *out = result;
+    return true;
 }
 
+#undef SCALAR_LAYOUT
 
 bool check_type_value_size(CheckContext *ctx, size_t type_index,
                            SourcePos pos)
 {
-    size_t size;
+    ValueLayout layout;
+    size_t size, i;
 
-    if (!type_value_size_depth(ctx->program, type_index, 32, &size)) {
-        return true;
+    while (ctx->layout_cache->length < ctx->program->types.length) {
+        ValueLayoutCache empty = {0};
+        if (!list_push(ctx->layout_cache, &empty)) {
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
     }
+    if (!type_layout_depth(ctx, type_index, NIPPY_MAX_LAYOUT_DEPTH, &layout)) {
+        for (i = 0; i < ctx->struct_instantiations->length; i++) {
+            const StructInstantiation *record = list_get(ctx->struct_instantiations, i);
+            if (record->in_progress) return true;
+        }
+        error_report_at(ctx->errors, pos, MESSAGE_CHECKER_LAYOUT_UNAVAILABLE);
+        return false;
+    }
+    size = layout.size;
     if (size <= NIPPY_MAX_VALUE_BYTES) {
         return true;
     }

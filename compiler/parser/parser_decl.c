@@ -138,7 +138,7 @@ bool parse_type_declaration(
         }
         if (!push_node(ast, &field, &field_index) ||
             !list_push(&fields, &field_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&fields);
             return false;
         }
@@ -175,7 +175,7 @@ bool parse_type_declaration(
         size_t field_index = *(const size_t *)list_get(&fields, i);
 
         if (!ast_push_child(ast, field_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&fields);
             return false;
         }
@@ -348,7 +348,7 @@ static bool parse_function_tail(
             parameter.right_child = AST_NO_NODE;
             if (!push_node(ast, &parameter, &parameter_index) ||
                 !list_push(&parameters, &parameter_index)) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 list_free(&parameters);
                 return false;
             }
@@ -411,7 +411,7 @@ static bool parse_function_tail(
         size_t self_name_index;
         self_name_index = ast_intern_symbol(ast, "self", 4);
         if (self_name_index == AST_NO_NODE) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
             list_free(&parameters);
             return false;
         }
@@ -423,7 +423,7 @@ static bool parse_function_tail(
         self_parameter.is_self = true;
         if (!push_node(ast, &self_parameter, &i) ||
             !ast_push_child(ast, i)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&parameters);
             return false;
         }
@@ -433,7 +433,7 @@ static bool parse_function_tail(
         size_t parameter_index = *(const size_t *)list_get(&parameters, i);
 
         if (!ast_push_child(ast, parameter_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&parameters);
             return false;
         }

@@ -3,6 +3,7 @@
 
 #include "identifier.h"
 #include "list.h"
+#include "limits_config.h"
 #include "name_index.h"
 #include "operator.h"
 #include "source_pos.h"
@@ -12,18 +13,6 @@
 #include <stdint.h>
 
 #define TYPED_NO_NODE ((size_t)-1)
-
-/* Fixed-string capacity limit, and the default capacities of the built-in
-   Error fields. The compiler config can override the Error capacities. */
-#define NIPPY_DEFAULT_MAX_STRING_CAPACITY 4096
-#define NIPPY_DEFAULT_MAX_LIST_CAPACITY 4096
-#define NIPPY_DEFAULT_MAX_PRINT_DEPTH 16
-#define NIPPY_MAX_PRINT_DEPTH 1024
-#define NIPPY_MAX_STRING_CAPACITY (1024 * 1024)
-#define NIPPY_MAX_VALUE_BYTES (64 * 1024)
-#define NIPPY_DEFAULT_ERROR_HEADER_CAPACITY 32
-#define NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY 128
-#define NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY 128
 
 typedef enum {
     TYPED_DECLARATION,

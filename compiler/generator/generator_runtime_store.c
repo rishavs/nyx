@@ -24,7 +24,7 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "{\n"
                    "    if (file == NULL) nyx_panic(message);\n"
                    "    fflush(stdout);\n"
-                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + 7);\n"
+                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                    "    exit(1);\n"
                    "}\n\n");
     ok = ok && buffer_append(

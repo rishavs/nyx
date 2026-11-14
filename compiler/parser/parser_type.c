@@ -18,7 +18,7 @@ bool parse_type(
 
     list_init(&alternatives, sizeof(size_t));
     if (!list_push(&alternatives, &first)) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         list_free(&alternatives);
         return false;
     }
@@ -45,7 +45,7 @@ bool parse_type(
             return false;
         }
         if (!list_push(&alternatives, &alternative)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&alternatives);
             return false;
         }
@@ -62,7 +62,7 @@ bool parse_type(
         size_t alternative = *(const size_t *)list_get(&alternatives, i);
 
         if (!ast_push_child(ast, alternative)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&alternatives);
             return false;
         }
@@ -369,7 +369,7 @@ bool parse_type_primary(
                         return false;
                     }
                     if (!list_push(&parameter_types, &parameter_type)) {
-                        error_report(errors,
+                        error_report_fatal(errors,
                                      MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                         list_free(&parameter_types);
                         return false;
@@ -425,7 +425,7 @@ bool parse_type_primary(
                     &parameter_types, i);
 
                 if (!ast_push_child(ast, parameter_type)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&parameter_types);
                     return false;
@@ -474,7 +474,7 @@ bool parse_type_primary(
                 return false;
             }
             if (!list_push(&arguments, &argument)) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 list_free(&arguments);
                 return false;
             }
@@ -505,7 +505,7 @@ bool parse_type_primary(
             size_t argument = *(const size_t *)list_get(&arguments, i);
 
             if (!ast_push_child(ast, argument)) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 list_free(&arguments);
                 return false;
             }
@@ -567,7 +567,7 @@ bool parse_type_parameters(
         }
         if (!push_node(ast, &parameter, &index) ||
             !ast_push_type_parameter(ast, index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
         (*cursor)++;

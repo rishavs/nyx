@@ -8,9 +8,9 @@ test instructions in `BUILD.md`.
 ## Shape
 
 Nippy is a translator, not an interpreter. It reads a `.nip` source string and
-produces two C11 strings (a `.c` and a `.h`). The driver writes them beside the
-requested output binary and shells out to `cc -std=c11` to produce the
-executable. There is no bytecode, no VM, and no runtime library.
+produces two C11 strings (a `.c` and a `.h`). The driver stages them beside the
+requested output, invokes `cc -std=c11`, then publishes the successful build.
+There is no bytecode, no VM, and no runtime library.
 
 The compiler is written in C11 and links against libc only.
 
@@ -438,18 +438,24 @@ reports a diagnostic and returns false. There is no partial success.
 - If compilation fails with no diagnostic recorded, the message is exactly
   `Unknown Error`, produced by `error_unknown_if_none`.
 - `CompilerResult` either holds both generated sources or neither. On failure
-  `c_source` and `h_source` are `NULL` and only `error_message` is set.
+  `c_source` and `h_source` are `NULL`; `error_message` can also be NULL if
+  allocating the diagnostic fails.
 - The driver refuses sources larger than the configured limit (4096 bytes by
   default) and sources containing a NUL byte. `--max-source-bytes N` raises the
   CLI limit. A parser nesting guard and syntax-tree height check reject
   recursive inputs before later compiler stages can exhaust the stack.
+- Layout checks calculate the target C layout, including member padding and
+  array metadata, and cache completed results. An undetermined layout is
+  rejected; incomplete recursive shells are checked once resolution completes.
 
 ## Diagnostics
 
-Every message the compiler can emit lives in `include/messages.h` as a
-`MESSAGE_*` macro; no stage writes a user-facing string inline. Tests reference
-the same macros, so wording and assertions cannot drift apart, and
-`make test` fails if a message is added without a test that invokes it.
+Diagnostic wording is defined in `include/messages.h` as `MESSAGE_*` macros.
+Position prefixes are formatted by the diagnostic accumulator or generated
+runtime code; external C compiler diagnostics are outside this catalog. Tests
+should reference the same macros. A source-scanning test catches common inline
+`error_report` literals and embedded runtime prefixes; it is not a complete C
+parser. Checking that every message has a behavioral test remains a review rule.
 
 Source-level diagnostics are prefixed `file:line:column (byte offset): `, where
 line and column are 1-based and the offset is a 0-based byte index. Messages
@@ -507,6 +513,10 @@ statements and `if` branches; `TypedProgram.types`, `.signatures`, and
 `.signature_parameters` hold resolved types. All of these are copied indices,
 never pointers.
 
+Checker recovery snapshots registry and scope lengths in one checkpoint and
+restores them together after a recoverable error. Fatal errors are carried as
+an explicit status rather than inferred from diagnostic text.
+
 ## Module layout
 
 Each pipeline stage owns a directory. Large stages are split by concern, and
@@ -561,8 +571,8 @@ Anything shared between those modules is declared in the directory's
   parameter that appears only in a union or alias application with unbound
   parameters is not inferable, and there is no explicit call-site type-argument
   syntax.
-- Generic functions are checked per instantiation, so a generic function that is
-  never called is not body-checked and produces no code.
+- Generic bodies reject definitely unknown names at declaration. Full scope and
+  type checks run per instantiation; an unused generic function produces no code.
 - `typeof`/`match` type patterns require a single non-union target; union-subset
   tests are not implemented.
 - A generic constructor infers from its arguments only; there is no
@@ -593,3 +603,24 @@ Anything shared between those modules is declared in the directory's
 - Constant folding of arithmetic is implemented for `Int32` only; other
   numeric widths use runtime wrapping and checks. Literal typing and constant
   conversions are range-checked for every width.
+
+### Tables, limits, and diagnostics
+
+The lexer keyword table maps spellings to tokens, and the checker shares one
+scalar-type name table between type recognition, numeric conversions, and type
+resolution. Operator tables describe the operators at each binary-precedence
+level; the parser's calls define the order of those levels. Semantic checks and
+code generation remain explicit C where behavior differs by construct.
+
+`include/limits_config.h` holds shared defaults and compiler safety limits.
+Identifier and diagnostic-buffer capacities remain with their data structures. The
+per-compilation settings in `CompilerConfig` are validated against their hard
+limits; parser, AST, type-layout and type-recursion limits, generic counts,
+value size, and generated-program recursion are fixed safety constraints.
+Some of these also size internal arrays, so increasing them is a compiler
+change rather than a configuration option. The CLI currently exposes only
+`max_source_bytes` through `--max-source-bytes`.
+
+Runtime message text and the common positioned format live in `messages.h`.
+Messages that are used both with and without a position share the declared
+runtime prefix; generated C derives its length from that prefix.

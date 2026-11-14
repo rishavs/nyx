@@ -137,7 +137,7 @@ bool check_base64(CheckContext *ctx, const AstNode *node, size_t ast_index)
                             argument->string_length, &decoded, &at);
     if (problem == BASE64_MEMORY) {
         list_free(&decoded);
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     if (problem != BASE64_OK) {
@@ -157,7 +157,7 @@ bool check_base64(CheckContext *ctx, const AstNode *node, size_t ast_index)
         if (!typed_program_push_byte(
                 ctx->program, *(const unsigned char *)list_get(&decoded, i))) {
             list_free(&decoded);
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }

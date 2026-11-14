@@ -234,7 +234,7 @@ bool numeric_constant_emit(CheckContext *ctx, const NumericConstant *value,
     }
     literal.type_index = literal_type;
     if (!typed_program_push(ctx->program, &literal, &literal_index)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
         return false;
     }
     if (value->negative) {
@@ -249,7 +249,7 @@ bool numeric_constant_emit(CheckContext *ctx, const NumericConstant *value,
         negation.right_child = TYPED_NO_NODE;
         negation.store_id = TYPED_NO_NODE;
         if (!typed_program_push(ctx->program, &negation, out_index)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             return false;
         }
         return true;

@@ -229,7 +229,7 @@ bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *e
             ok = buffer_append(out,
                 "#include <stdio.h>\n#include <stdlib.h>\n"
                 "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
-                "{ (void)h; fflush(stdout); fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, \"" MESSAGE_RUNTIME_STORE_RANGE "\" + 7); exit(1); }\n\n");
+                "{ (void)h; fflush(stdout); fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, \"" MESSAGE_RUNTIME_STORE_RANGE "\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1); exit(1); }\n\n");
         }
     }
     for (i = 0; ok && i < types.length; i++) {

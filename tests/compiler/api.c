@@ -59,6 +59,21 @@ TEST("compiler: source string is null")
     return TEST_PASS;
 }
 
+TEST("compiler: error message allocation may fail")
+{
+    CompilerResult result;
+    nippy_alloc_fail_after(0);
+    result = compiler_compile(NULL, NULL);
+    nippy_alloc_reset();
+    if (result.succeeded || result.c_source != NULL || result.h_source != NULL ||
+        result.error_message != NULL) {
+        compiler_result_free(&result);
+        return TEST_FAIL;
+    }
+    compiler_result_free(&result);
+    return TEST_PASS;
+}
+
 TEST("compiler: injected out of memory")
 {
     CompilerResult result;
@@ -76,6 +91,51 @@ TEST("compiler: injected out of memory")
         return TEST_FAIL;
     }
     compiler_result_free(&result);
+    return TEST_PASS;
+}
+
+TEST("every allocation failure preserves the compiler result contract")
+{
+    const char *source =
+        "type Node value: Int64 next: Handle<Node> | Nil = nil end\n"
+        "global arena: Store = Store(512)\n"
+        "fun id<T>(x: T): T return x end\n"
+        "var node = arena.alloc<Node>(Node(1))\n"
+        "for n in range(0, 3) do print(id(n), node.read().value) end\n";
+    CompilerResult baseline;
+    size_t count, i;
+
+    nippy_alloc_reset();
+    nippy_alloc_begin_counting();
+    baseline = compiler_compile(source, &test_config);
+    count = nippy_alloc_attempts();
+    nippy_alloc_reset();
+    if (!baseline.succeeded) {
+        compiler_result_free(&baseline);
+        return TEST_ERROR;
+    }
+    for (i = 0; i < count; i++) {
+        CompilerResult result;
+        bool valid;
+        nippy_alloc_fail_after(i);
+        result = compiler_compile(source, &test_config);
+        nippy_alloc_reset();
+        if (result.succeeded) {
+            valid = result.c_source != NULL && result.h_source != NULL &&
+                    strcmp(result.c_source, baseline.c_source) == 0 &&
+                    strcmp(result.h_source, baseline.h_source) == 0;
+        } else {
+            valid = result.c_source == NULL && result.h_source == NULL &&
+                    result.error_message != NULL;
+        }
+        compiler_result_free(&result);
+        if (!valid) {
+            fprintf(stderr, "  invalid result after allocation %zu of %zu\n", i, count);
+            compiler_result_free(&baseline);
+            return TEST_FAIL;
+        }
+    }
+    compiler_result_free(&baseline);
     return TEST_PASS;
 }
 

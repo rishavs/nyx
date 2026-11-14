@@ -172,7 +172,7 @@ map_len_fallthrough:
             children_start = ctx->program->children.length;
             if (!typed_program_push_child(ctx->program, start_node) ||
                 !typed_program_push_child(ctx->program, length_node)) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 return false;
             }
@@ -218,7 +218,7 @@ map_len_fallthrough:
         children_start = ctx->program->children.length;
         if (!typed_program_push_child(ctx->program, coerced_start) ||
             !typed_program_push_child(ctx->program, coerced_length)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             return false;
         }
         typed.kind = TYPED_SLICE_CREATE;

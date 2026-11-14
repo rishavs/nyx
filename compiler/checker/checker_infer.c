@@ -259,7 +259,7 @@ bool infer_ast_type(CheckContext *ctx, size_t ast_type,
             list_free(&fixed);
             list_free(&residual);
             if (out_of_memory && !ctx->errors->reported) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             }
             return ok;
         }

@@ -19,7 +19,7 @@ static inline void nyx_panic_at(const char *message, const char *file, size_t li
 {
     if (file == NULL) nyx_panic(message);
     fflush(stdout);
-    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + 7);
+    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + sizeof("nippy: ") - 1);
     exit(1);
 }
 

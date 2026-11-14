@@ -137,21 +137,51 @@ bool check_reserved_name(CheckContext *ctx, SourcePos pos,
 }
 
 
+typedef struct {
+    const char *name;
+    NippyType kind;
+} BuiltinScalarType;
+
+static const BuiltinScalarType builtin_scalar_types[] = {
+    {"Int8", NIPPY_TYPE_INT8}, {"Int16", NIPPY_TYPE_INT16},
+    {"Int32", NIPPY_TYPE_INT32}, {"Int64", NIPPY_TYPE_INT64},
+    {"Uint8", NIPPY_TYPE_BYTE}, {"Byte", NIPPY_TYPE_BYTE},
+    {"Uint16", NIPPY_TYPE_UINT16}, {"Uint32", NIPPY_TYPE_UINT32},
+    {"Uint64", NIPPY_TYPE_UINT64},
+    {"Float32", NIPPY_TYPE_FLOAT32}, {"Float64", NIPPY_TYPE_FLOAT64},
+    {"Bool", NIPPY_TYPE_BOOL}, {"Nil", NIPPY_TYPE_NIL},
+    {"Store", NIPPY_TYPE_STORE}, {"Text", NIPPY_TYPE_DYNAMIC_STRING}
+};
+
+bool builtin_scalar_type_from_name(const char *name, NippyType *out)
+{
+    size_t i;
+
+    if (name == NULL) return false;
+    for (i = 0; i < sizeof(builtin_scalar_types) / sizeof(builtin_scalar_types[0]); i++) {
+        if (strcmp(name, builtin_scalar_types[i].name) == 0) {
+            *out = builtin_scalar_types[i].kind;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool is_builtin_type_name(const char *name)
 {
-    return strcmp(name, "Int8") == 0 || strcmp(name, "Int16") == 0 ||
-           strcmp(name, "Int32") == 0 || strcmp(name, "Int64") == 0 ||
-           strcmp(name, "Uint8") == 0 || strcmp(name, "Uint16") == 0 ||
-           strcmp(name, "Uint32") == 0 || strcmp(name, "Uint64") == 0 ||
-           strcmp(name, "Float32") == 0 || strcmp(name, "Float64") == 0 ||
-           strcmp(name, "Bool") == 0 || strcmp(name, "Nil") == 0 ||
-           strcmp(name, "Byte") == 0 || strcmp(name, "Store") == 0 ||
-           strcmp(name, "Handle") == 0 || strcmp(name, "String") == 0 ||
-           strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
-           strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
-           strcmp(name, "Slice") == 0 || strcmp(name, "Range") == 0 ||
-           strcmp(name, "Record") == 0 ||
-           strcmp(name, "Table") == 0 || strcmp(name, "Error") == 0;
+    static const char *const composite_names[] = {
+        "Handle", "String", "TextBuilder", "List", "Array", "Slice",
+        "Range", "Record", "Table", "Error"
+    };
+    NippyType kind;
+    size_t i;
+
+    if (builtin_scalar_type_from_name(name, &kind)) return true;
+    if (name == NULL) return false;
+    for (i = 0; i < sizeof(composite_names) / sizeof(composite_names[0]); i++) {
+        if (strcmp(name, composite_names[i]) == 0) return true;
+    }
+    return false;
 }
 
 bool is_builtin_function_name(const char *name)
@@ -163,31 +193,10 @@ bool is_builtin_function_name(const char *name)
 
 bool numeric_type_from_name(const char *name, NippyType *out)
 {
-    if (name == NULL) {
-        return false;
-    }
-    if (strcmp(name, "Int8") == 0) {
-        *out = NIPPY_TYPE_INT8;
-    } else if (strcmp(name, "Int16") == 0) {
-        *out = NIPPY_TYPE_INT16;
-    } else if (strcmp(name, "Int32") == 0) {
-        *out = NIPPY_TYPE_INT32;
-    } else if (strcmp(name, "Int64") == 0) {
-        *out = NIPPY_TYPE_INT64;
-    } else if (strcmp(name, "Uint8") == 0 || strcmp(name, "Byte") == 0) {
-        *out = NIPPY_TYPE_BYTE;
-    } else if (strcmp(name, "Uint16") == 0) {
-        *out = NIPPY_TYPE_UINT16;
-    } else if (strcmp(name, "Uint32") == 0) {
-        *out = NIPPY_TYPE_UINT32;
-    } else if (strcmp(name, "Uint64") == 0) {
-        *out = NIPPY_TYPE_UINT64;
-    } else if (strcmp(name, "Float32") == 0) {
-        *out = NIPPY_TYPE_FLOAT32;
-    } else if (strcmp(name, "Float64") == 0) {
-        *out = NIPPY_TYPE_FLOAT64;
-    } else {
-        return false;
-    }
+    NippyType kind;
+
+    if (!builtin_scalar_type_from_name(name, &kind) ||
+        !nippy_type_is_numeric(kind)) return false;
+    *out = kind;
     return true;
 }

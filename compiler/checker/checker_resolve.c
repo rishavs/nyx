@@ -70,7 +70,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
         }
         env.count = argument_count;
         if (!list_push(ctx->struct_instantiations, &record)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         record_index = ctx->struct_instantiations->length - 1;
@@ -80,7 +80,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
         name_index = typed_program_copy_symbol(ctx->program, generated,
                                                strlen(generated));
         if (name_index == TYPED_NO_NODE) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
             return false;
         }
 
@@ -93,7 +93,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
         first_argument = ctx->program->type_children.length;
         for (i = 0; i < argument_count; i++) {
             if (!typed_program_add_type_child(ctx->program, arguments[i])) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
         }
@@ -102,7 +102,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             size_t source_name = typed_program_copy_symbol(
                 ctx->program, entry->name, strlen(entry->name));
             if (source_name == TYPED_NO_NODE) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
                 return false;
             }
             type.kind = NIPPY_TYPE_STRUCT;
@@ -113,7 +113,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             type.declaration_node = TYPED_NO_NODE;
             type.source_name_index = source_name;
             if (!typed_program_add_type(ctx->program, &type, &type_index)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
             ((StructInstantiation *)list_get(ctx->struct_instantiations,
@@ -178,7 +178,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             typed_field.name_index = typed_program_copy_symbol(
                 ctx->program, field_name, strlen(field_name));
             if (typed_field.name_index == TYPED_NO_NODE) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
                 list_free(&field_nodes);
                 return false;
@@ -189,7 +189,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             typed_field.children_count = 0;
             if (!typed_program_push(ctx->program, &typed_field, &field_index) ||
                 !list_push(&field_nodes, &field_index)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 list_free(&field_nodes);
                 return false;
             }
@@ -200,7 +200,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             size_t field_index = *(const size_t *)list_get(&field_nodes, i);
 
             if (!typed_program_push_child(ctx->program, field_index)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 list_free(&field_nodes);
                 return false;
             }
@@ -220,7 +220,7 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
             typed_declaration.children_count = declaration->children_count;
             if (!typed_program_push(ctx->program, &typed_declaration,
                                     &declaration_index)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 return false;
             }
         }
@@ -314,55 +314,16 @@ bool resolve_type_name(CheckContext *ctx, const AstNode *node,
     if (env != NULL && env_lookup(env, name, out_index)) {
         return true;
     }
-    if (strcmp(name, "Int8") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_INT8, out_index);
-    }
-    if (strcmp(name, "Int16") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_INT16, out_index);
-    }
-    if (strcmp(name, "Int32") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_INT32, out_index);
-    }
-    if (strcmp(name, "Int64") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_INT64, out_index);
-    }
-    if (strcmp(name, "Uint8") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_BYTE, out_index);
-    }
-    if (strcmp(name, "Uint16") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_UINT16, out_index);
-    }
-    if (strcmp(name, "Uint32") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_UINT32, out_index);
-    }
-    if (strcmp(name, "Uint64") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_UINT64, out_index);
-    }
-    if (strcmp(name, "Float32") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_FLOAT32, out_index);
-    }
-    if (strcmp(name, "Float64") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_FLOAT64, out_index);
-    }
-    if (strcmp(name, "Bool") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_BOOL, out_index);
-    }
-    if (strcmp(name, "Nil") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_NIL, out_index);
-    }
-    if (strcmp(name, "Byte") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_BYTE, out_index);
-    }
-    if (strcmp(name, "Store") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_STORE, out_index);
+    {
+        NippyType scalar_kind;
+        if (builtin_scalar_type_from_name(name, &scalar_kind)) {
+            return builtin_type(ctx, scalar_kind, out_index);
+        }
     }
     if (strcmp(name, "String") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_STRING_ARGS);
         return false;
-    }
-    if (strcmp(name, "Text") == 0) {
-        return builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, out_index);
     }
     if (strcmp(name, "TextBuilder") == 0) {
         return text_builder_type(ctx, out_index);
@@ -527,7 +488,7 @@ bool resolve_type_application(CheckContext *ctx, const AstNode *node,
         if (!resolve_type_in_env(ctx, child, env, owner, &argument) ||
             !list_push(&arguments, &argument)) {
             if (!ctx->errors->reported) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             }
             list_free(&arguments);
@@ -640,7 +601,7 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
             if (!resolve_type_in_env(ctx, child, env, owner, &alternative) ||
                 !list_push(&alternatives, &alternative)) {
                 if (!ctx->errors->reported) {
-                    error_report(ctx->errors,
+                    error_report_fatal(ctx->errors,
                                  MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 }
                 list_free(&alternatives);
@@ -690,7 +651,7 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
                 goto function_type_done;
             }
             if (!list_push(&parameter_types, &parameter_type)) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 goto function_type_done;
             }

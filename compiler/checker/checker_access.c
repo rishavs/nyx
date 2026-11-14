@@ -102,7 +102,7 @@ bool check_member_access(CheckContext *ctx, const AstNode *node,
     }
     name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
     if (name_index == TYPED_NO_NODE) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
         return false;
     }
     typed.kind = TYPED_MEMBER_ACCESS;
@@ -471,7 +471,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
         children_start = ctx->program->children.length;
         if (!typed_program_push_child(ctx->program, coerced_key) ||
             !typed_program_push_child(ctx->program, coerced_value)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             return false;
         }
         typed.kind = is_record ? TYPED_RECORD_SET : TYPED_TABLE_SET;
@@ -517,7 +517,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     children_start = ctx->program->children.length;
     if (!typed_program_push_child(ctx->program, target_right_child) ||
         !typed_program_push_child(ctx->program, coerced)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
         return false;
     }
     typed.kind = TYPED_LIST_SET;

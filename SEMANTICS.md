@@ -37,8 +37,8 @@ Type names are available throughout the program, including before their source
 declarations. Values and functions are otherwise processed in declaration
 order. There is no preprocessor. A function may refer to itself, because its own
 name is bound before its body is checked; mutual recursion between functions is
-not supported. A generic function's body is checked only when an instantiation
-is needed.
+not supported. Definitely unknown names in a generic body are checked at its
+declaration; full scope and type checking occur when an instantiation is needed.
 
 Struct types can refer to themselves or each other through `Handle<T>`. Every
 recursive cycle must pass through a handle; cycles that contain values by value
@@ -1535,9 +1535,9 @@ Rules:
   not already covered by the other union alternatives. A bare `nil` cannot
   infer `T`. Aliases with unbound parameters are not inference sites.
 - A generic function name cannot be used as a value.
-- The body is checked once per concrete binding. A generic function that is
-  never called produces no code and is not body-checked. Operations in the body
-  are checked against the concrete types of each instantiation.
+- Names with no possible local, function, type, store, or builtin declaration
+  are rejected even in an unused generic body. Full scope and type checks run
+  once per concrete binding; an unused generic function produces no code.
 - Each binding is monomorphized into its own C function. Direct recursion works;
   mutual recursion is still unavailable because of the forward-reference rule.
 - A generic function can call other generic functions and non-generic functions.

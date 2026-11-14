@@ -6,85 +6,54 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+    const char *text;
+    size_t length;
+    TokenType type;
+} Keyword;
+
+#define KEYWORD(text, type) {text, sizeof(text) - 1, type}
+
+static const Keyword keywords[] = {
+    KEYWORD("global", TOKEN_KEYWORD_GLOBAL),
+    KEYWORD("var", TOKEN_KEYWORD_VAR),
+    KEYWORD("const", TOKEN_KEYWORD_CONST),
+    KEYWORD("type", TOKEN_KEYWORD_TYPE),
+    KEYWORD("fun", TOKEN_KEYWORD_FUN),
+    KEYWORD("method", TOKEN_KEYWORD_METHOD),
+    KEYWORD("static", TOKEN_KEYWORD_STATIC),
+    KEYWORD("return", TOKEN_KEYWORD_RETURN),
+    KEYWORD("if", TOKEN_KEYWORD_IF),
+    KEYWORD("then", TOKEN_KEYWORD_THEN),
+    KEYWORD("elseif", TOKEN_KEYWORD_ELSEIF),
+    KEYWORD("else", TOKEN_KEYWORD_ELSE),
+    KEYWORD("while", TOKEN_KEYWORD_WHILE),
+    KEYWORD("for", TOKEN_KEYWORD_FOR),
+    KEYWORD("typeof", TOKEN_KEYWORD_TYPEOF),
+    KEYWORD("is", TOKEN_KEYWORD_IS),
+    KEYWORD("match", TOKEN_KEYWORD_MATCH),
+    KEYWORD("with", TOKEN_KEYWORD_WITH),
+    KEYWORD("in", TOKEN_KEYWORD_IN),
+    KEYWORD("do", TOKEN_KEYWORD_DO),
+    KEYWORD("break", TOKEN_KEYWORD_BREAK),
+    KEYWORD("continue", TOKEN_KEYWORD_CONTINUE),
+    KEYWORD("true", TOKEN_KEYWORD_TRUE),
+    KEYWORD("false", TOKEN_KEYWORD_FALSE),
+    KEYWORD("nil", TOKEN_KEYWORD_NIL),
+    KEYWORD("end", TOKEN_KEYWORD_END),
+};
+
+#undef KEYWORD
+
 static TokenType keyword_type(const char *text, size_t length)
 {
-    if (length == 6 && memcmp(text, "global", 6) == 0) {
-        return TOKEN_KEYWORD_GLOBAL;
-    }
-    if (length == 3 && memcmp(text, "var", 3) == 0) {
-        return TOKEN_KEYWORD_VAR;
-    }
-    if (length == 5 && memcmp(text, "const", 5) == 0) {
-        return TOKEN_KEYWORD_CONST;
-    }
-    if (length == 4 && memcmp(text, "type", 4) == 0) {
-        return TOKEN_KEYWORD_TYPE;
-    }
-    if (length == 3 && memcmp(text, "fun", 3) == 0) {
-        return TOKEN_KEYWORD_FUN;
-    }
-    if (length == 6 && memcmp(text, "method", 6) == 0) {
-        return TOKEN_KEYWORD_METHOD;
-    }
-    if (length == 6 && memcmp(text, "static", 6) == 0) {
-        return TOKEN_KEYWORD_STATIC;
-    }
-    if (length == 6 && memcmp(text, "return", 6) == 0) {
-        return TOKEN_KEYWORD_RETURN;
-    }
-    if (length == 2 && memcmp(text, "if", 2) == 0) {
-        return TOKEN_KEYWORD_IF;
-    }
-    if (length == 4 && memcmp(text, "then", 4) == 0) {
-        return TOKEN_KEYWORD_THEN;
-    }
-    if (length == 6 && memcmp(text, "elseif", 6) == 0) {
-        return TOKEN_KEYWORD_ELSEIF;
-    }
-    if (length == 4 && memcmp(text, "else", 4) == 0) {
-        return TOKEN_KEYWORD_ELSE;
-    }
-    if (length == 5 && memcmp(text, "while", 5) == 0) {
-        return TOKEN_KEYWORD_WHILE;
-    }
-    if (length == 3 && memcmp(text, "for", 3) == 0) {
-        return TOKEN_KEYWORD_FOR;
-    }
-    if (length == 6 && memcmp(text, "typeof", 6) == 0) {
-        return TOKEN_KEYWORD_TYPEOF;
-    }
-    if (length == 2 && memcmp(text, "is", 2) == 0) {
-        return TOKEN_KEYWORD_IS;
-    }
-    if (length == 5 && memcmp(text, "match", 5) == 0) {
-        return TOKEN_KEYWORD_MATCH;
-    }
-    if (length == 4 && memcmp(text, "with", 4) == 0) {
-        return TOKEN_KEYWORD_WITH;
-    }
-    if (length == 2 && memcmp(text, "in", 2) == 0) {
-        return TOKEN_KEYWORD_IN;
-    }
-    if (length == 2 && memcmp(text, "do", 2) == 0) {
-        return TOKEN_KEYWORD_DO;
-    }
-    if (length == 5 && memcmp(text, "break", 5) == 0) {
-        return TOKEN_KEYWORD_BREAK;
-    }
-    if (length == 8 && memcmp(text, "continue", 8) == 0) {
-        return TOKEN_KEYWORD_CONTINUE;
-    }
-    if (length == 4 && memcmp(text, "true", 4) == 0) {
-        return TOKEN_KEYWORD_TRUE;
-    }
-    if (length == 5 && memcmp(text, "false", 5) == 0) {
-        return TOKEN_KEYWORD_FALSE;
-    }
-    if (length == 3 && memcmp(text, "nil", 3) == 0) {
-        return TOKEN_KEYWORD_NIL;
-    }
-    if (length == 3 && memcmp(text, "end", 3) == 0) {
-        return TOKEN_KEYWORD_END;
+    size_t i;
+
+    for (i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
+        if (keywords[i].length == length &&
+            memcmp(text, keywords[i].text, length) == 0) {
+            return keywords[i].type;
+        }
     }
     return TOKEN_IDENTIFIER;
 }

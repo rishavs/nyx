@@ -135,6 +135,28 @@ static bool validate_source_types(CheckContext *ctx, List *invalid_roots)
 }
 
 
+Checkpoint checker_checkpoint(const CheckContext *ctx)
+{
+    return (Checkpoint){ctx->types->length, ctx->functions->length,
+                        ctx->struct_instantiations->length,
+                        ctx->function_instantiations->length,
+                        ctx->locals->length, ctx->globals->length,
+                        ctx->stores->length, ctx->narrowings->length};
+}
+
+void checker_restore(CheckContext *ctx, Checkpoint checkpoint)
+{
+    ctx->types->length = checkpoint.types;
+    ctx->functions->length = checkpoint.functions;
+    ctx->struct_instantiations->length = checkpoint.structs;
+    ctx->function_instantiations->length = checkpoint.instantiations;
+    ctx->locals->length = checkpoint.locals;
+    ctx->globals->length = checkpoint.globals;
+    ctx->stores->length = checkpoint.stores;
+    ctx->narrowings->length = checkpoint.narrowings;
+    name_index_rebuild(&ctx->function_index, ctx->functions);
+}
+
 size_t *mapping_slot(List *mapping, size_t index)
 {
     return (size_t *)list_get(mapping, index);
@@ -329,7 +351,7 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
             unit.left_child = TYPED_NO_NODE;
             unit.right_child = TYPED_NO_NODE;
             if (!typed_program_push(ctx->program, &unit, &expression)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
                 return false;
             }
             typed.kind = TYPED_RETURN;
@@ -374,11 +396,7 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
         size_t else_block = TYPED_NO_NODE;
         size_t children_start;
         bool then_ok;
-        size_t error_start;
-        size_t types_before;
-        size_t functions_before;
-        size_t structs_before;
-        size_t instances_before;
+        Checkpoint checkpoint;
 
         size_t narrowing_count;
 
@@ -391,14 +409,10 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
             return false;
         }
         narrowing_count = ctx->narrowings->length;
+        checkpoint = checker_checkpoint(ctx);
         if (!push_if_narrowing(ctx, node->left_child)) {
             return false;
         }
-        error_start = ctx->errors->length;
-        types_before = ctx->types->length;
-        functions_before = ctx->functions->length;
-        structs_before = ctx->struct_instantiations->length;
-        instances_before = ctx->function_instantiations->length;
         {
             size_t then_ast = *(const size_t *)list_get(
                 &ctx->ast->children, node->children_start);
@@ -407,13 +421,9 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
         }
         ctx->narrowings->length = narrowing_count;
         if (!then_ok) {
-            if (strstr(ctx->errors->message + error_start, "out of memory") != NULL ||
+            if (ctx->errors->fatal ||
                 ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) return false;
-            ctx->types->length = types_before;
-            ctx->functions->length = functions_before;
-            ctx->struct_instantiations->length = structs_before;
-            ctx->function_instantiations->length = instances_before;
-            name_index_rebuild(&ctx->function_index, ctx->functions);
+            checker_restore(ctx, checkpoint);
         }
         if (node->children_count > 1) {
             size_t else_ast = *(const size_t *)list_get(
@@ -437,12 +447,12 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
 
         children_start = ctx->program->children.length;
         if (!typed_program_push_child(ctx->program, then_block)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         if (else_block != TYPED_NO_NODE &&
             !typed_program_push_child(ctx->program, else_block)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
 
@@ -530,7 +540,7 @@ bool emit_node(CheckContext *ctx, const TypedNode *node,
                       size_t ast_index, size_t *out_index)
 {
     if (!typed_program_push(ctx->program, node, out_index)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
         return false;
     }
     *mapping_slot(ctx->mapping, ast_index) = *out_index;
@@ -551,7 +561,7 @@ bool push_injection(CheckContext *ctx, size_t value, size_t target,
     inject.left_child = value;
     inject.right_child = TYPED_NO_NODE;
     if (!typed_program_push(ctx->program, &inject, out_value)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
         return false;
     }
     return true;
@@ -663,7 +673,7 @@ bool inject_into(CheckContext *ctx, size_t value, size_t target,
 
             if (!typed_program_push_child(ctx->program, child)) {
                 list_free(&values);
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
@@ -919,6 +929,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     List struct_instantiations;
     List function_instantiations;
     List narrowings;
+    List layout_cache;
     List stores;
     List invalid_roots;
     size_t i;
@@ -938,6 +949,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     list_init(&struct_instantiations, sizeof(StructInstantiation));
     list_init(&function_instantiations, sizeof(FunctionInstantiation));
     list_init(&narrowings, sizeof(Narrowing));
+    list_init(&layout_cache, sizeof(ValueLayoutCache));
     list_init(&stores, sizeof(StoreEntry));
     list_init(&invalid_roots, sizeof(bool));
 
@@ -953,6 +965,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     ctx.struct_instantiations = &struct_instantiations;
     ctx.function_instantiations = &function_instantiations;
     ctx.narrowings = &narrowings;
+    ctx.layout_cache = &layout_cache;
     ctx.stores = &stores;
     ctx.in_function = false;
     ctx.predeclaring_types = false;
@@ -973,7 +986,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     {
         size_t empty_scope = TYPED_NO_NODE;
         if (!list_push(&program->match_scopes, &empty_scope)) {
-            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
             goto done;
         }
     }
@@ -981,7 +994,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     for (i = 0; i < ast->roots.length; i++) {
         bool valid = false;
         if (!list_push(&invalid_roots, &valid)) {
-            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
         }
     }
@@ -991,7 +1004,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
         size_t none = TYPED_NO_NODE;
 
         if (!list_push(&mapping, &none)) {
-            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
         }
     }
@@ -1000,13 +1013,13 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     for (i = 0; i < ast->roots.length; i++) {
         size_t root = *(const size_t *)list_get(&ast->roots, i);
         const AstNode *node = ast_get_node(ast, root);
-        size_t before = types.length, error_start = errors->length;
+        size_t before = types.length;
         if (*(const bool *)list_get(&invalid_roots, i) || node == NULL ||
             (node->kind != AST_TYPE_DECLARATION && node->kind != AST_TYPE_ALIAS))
             continue;
         errors->reported = false;
         if (!check_type_declaration(&ctx, node, root)) {
-            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+            if (errors->fatal ||
                 errors->length >= ERROR_MESSAGE_CAPACITY - 1) goto done;
             types.length = before;
             *(bool *)list_get(&invalid_roots, i) = true;
@@ -1020,14 +1033,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
         const AstNode *node = ast_get_node(ast, ast_root);
         size_t typed_root;
         bool checked = false;
-        size_t types_before = types.length;
-        size_t functions_before = functions.length;
-        size_t globals_before = globals.length;
-        size_t stores_before = stores.length;
-        size_t structs_before = struct_instantiations.length;
-        size_t instances_before = function_instantiations.length;
-        size_t narrowing_before = narrowings.length;
-        size_t error_start = errors->length;
+        Checkpoint checkpoint = checker_checkpoint(&ctx);
 
         if (*(const bool *)list_get(&invalid_roots, i)) continue;
 
@@ -1053,6 +1059,8 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
                     checked = expand_alias(&ctx, entry, NULL, 0, &resolved);
                 else
                     checked = instantiate_struct(&ctx, index, NULL, 0, &resolved);
+                if (checked)
+                    checked = check_type_value_size(&ctx, resolved, node->pos);
                 if (checked)
                     ((TypeEntry *)list_get(&types, index))->type_index = resolved;
             } else {
@@ -1098,18 +1106,11 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
                 error_unknown_if_none(errors);
             }
             /* Allocation failure leaves no reliable state for recovery. */
-            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+            if (errors->fatal ||
                 errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
                 goto done;
             }
-            types.length = types_before;
-            functions.length = functions_before;
-            globals.length = globals_before;
-            stores.length = stores_before;
-            struct_instantiations.length = structs_before;
-            function_instantiations.length = instances_before;
-            narrowings.length = narrowing_before;
-            name_index_rebuild(&ctx.function_index, &functions);
+            checker_restore(&ctx, checkpoint);
             had_errors = true;
             continue;
         }
@@ -1125,7 +1126,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             continue;
         }
         if (!list_push(&program->roots, &typed_root)) {
-            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
         }
     }
@@ -1142,9 +1143,9 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
                     break;
                 }
             }
-            if (type != NULL && type->kind == NIPPY_TYPE_STRUCT) {
-                const TypedNode *declaration = typed_program_node(
-                    program, type->declaration_node);
+            if (type != NULL && is_sized_type(program, i)) {
+                const TypedNode *declaration = type->kind == NIPPY_TYPE_STRUCT
+                    ? typed_program_node(program, type->declaration_node) : NULL;
                 SourcePos pos = declaration == NULL ? (SourcePos){0, 1, 1}
                                                     : declaration->pos;
                 if (!check_type_value_size(&ctx, i, pos)) {
@@ -1169,6 +1170,7 @@ done:
     list_free(&struct_instantiations);
     list_free(&function_instantiations);
     list_free(&narrowings);
+    list_free(&layout_cache);
     list_free(&stores);
     list_free(&invalid_roots);
     return ok;

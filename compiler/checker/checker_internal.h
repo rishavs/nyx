@@ -15,13 +15,6 @@
 #include <string.h>
 
 
-#define NIPPY_MAX_TYPE_PARAMETERS 8
-#define NIPPY_TYPE_DEPTH 64
-/* The most distinct instantiations of generic functions in one program. It
-   stops a generic that instantiates itself with ever-growing types from
-   running away; it is a count and has nothing to do with nesting depth. */
-#define NIPPY_MAX_INSTANTIATIONS 4096
-
 typedef enum {
     TYPE_ENTRY_STRUCT,
     TYPE_ENTRY_ALIAS
@@ -105,6 +98,12 @@ typedef struct {
 } Narrowing;
 
 typedef struct {
+    size_t size;
+    size_t align;
+    bool valid;
+} ValueLayoutCache;
+
+typedef struct {
     const char *names[NIPPY_MAX_TYPE_PARAMETERS];
     size_t types[NIPPY_MAX_TYPE_PARAMETERS]; /* TYPED_NO_NODE until bound */
     size_t count;
@@ -124,6 +123,7 @@ typedef struct {
     List *struct_instantiations;  /* StructInstantiation */
     List *function_instantiations;/* FunctionInstantiation */
     List *narrowings;             /* Narrowing, scoped to a then block */
+    List *layout_cache;           /* ValueLayoutCache, indexed by typed type */
     List *stores;                 /* StoreEntry, program-level global stores */
     bool in_function;
     bool predeclaring_types;
@@ -142,6 +142,19 @@ typedef struct {
     const TypeEnv *env; /* concrete substitutions while checking a generic body */
 } CheckContext;
 
+typedef struct {
+    size_t types;
+    size_t functions;
+    size_t structs;
+    size_t instantiations;
+    size_t locals;
+    size_t globals;
+    size_t stores;
+    size_t narrowings;
+} Checkpoint;
+
+Checkpoint checker_checkpoint(const CheckContext *ctx);
+void checker_restore(CheckContext *ctx, Checkpoint checkpoint);
 
 /* Internal helpers shared by the checker modules. */
 
@@ -302,6 +315,7 @@ bool apply_access_narrowing(CheckContext *ctx, size_t ast_index);
 void invalidate_accesses_for_expression(CheckContext *ctx, size_t ast_index);
 void invalidate_aliased_narrowings(CheckContext *ctx);
 bool is_builtin_type_name(const char *name);
+bool builtin_scalar_type_from_name(const char *name, NippyType *out);
 bool check_assignment(CheckContext *ctx, const AstNode *node, size_t ast_index,
     size_t *out_typed);
 bool check_expression_statement(CheckContext *ctx, size_t ast_index, size_t *out_typed);

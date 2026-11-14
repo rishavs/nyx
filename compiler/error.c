@@ -9,6 +9,7 @@
 void error_init(ErrorState *state)
 {
     state->reported = false;
+    state->fatal = false;
     state->source_name = NULL;
     state->length = 0;
     state->message[0] = '\0';
@@ -82,6 +83,33 @@ void error_report_at(ErrorState *state, SourcePos pos, const char *format, ...)
              pos.line, pos.column, pos.offset);
     append_text(state, prefix);
 
+    va_start(args, format);
+    append_format(state, format, args);
+    va_end(args);
+    finish_message(state);
+}
+
+void error_report_fatal(ErrorState *state, const char *format, ...)
+{
+    va_list args;
+    state->reported = true;
+    state->fatal = true;
+    va_start(args, format);
+    append_format(state, format, args);
+    va_end(args);
+    finish_message(state);
+}
+
+void error_report_fatal_at(ErrorState *state, SourcePos pos, const char *format, ...)
+{
+    va_list args;
+    char prefix[128];
+    state->reported = true;
+    state->fatal = true;
+    snprintf(prefix, sizeof(prefix), "%s:%zu:%zu (byte %zu): ",
+             state->source_name == NULL ? "<source>" : state->source_name,
+             pos.line, pos.column, pos.offset);
+    append_text(state, prefix);
     va_start(args, format);
     append_format(state, format, args);
     va_end(args);

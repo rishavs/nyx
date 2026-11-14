@@ -2,6 +2,104 @@
 
 #include "compile_support.h"
 
+TEST("overflowing child run is rejected")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedNode node = {0};
+    size_t zero = 0, index;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    node.kind = TYPED_BLOCK;
+    node.name_index = TYPED_NO_NODE;
+    node.type_index = TYPED_NO_NODE;
+    node.auxiliary_type = TYPED_NO_NODE;
+    node.left_child = TYPED_NO_NODE;
+    node.right_child = TYPED_NO_NODE;
+    node.children_start = 1;
+    node.children_count = SIZE_MAX;
+    if (!typed_program_push(&program, &node, &index) ||
+        !list_push(&program.children, &zero) ||
+        !list_push(&program.children, &zero)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_NODE_LINK,
+                   index);
+    if (analyser_analyse(&program, &errors) || !error_contains(&errors, expected)) {
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
+TEST("if expression requires its else child")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedNode node = {0};
+    size_t index;
+    char expected[256];
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    node.kind = TYPED_IF_EXPRESSION;
+    node.name_index = TYPED_NO_NODE;
+    node.type_index = TYPED_NO_NODE;
+    node.auxiliary_type = TYPED_NO_NODE;
+    node.left_child = TYPED_NO_NODE;
+    node.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &node, &index)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_NODE_LINK, index);
+    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("overflowing type and signature runs are rejected")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    TypedFunctionSignature signature = {0};
+    size_t zero = 0, index;
+    char expected[256];
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = NIPPY_TYPE_UNION;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    type.first_child = 1;
+    type.child_count = SIZE_MAX;
+    if (!typed_program_add_type(&program, &type, &index) ||
+        !typed_program_add_type_child(&program, zero) ||
+        !typed_program_add_type_child(&program, zero)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_TYPE_CHILD, index);
+    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    typed_program_free(&program);
+    if (!ok) return TEST_FAIL;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = NIPPY_TYPE_INT64;
+    type.first_child = 0;
+    type.child_count = 0;
+    if (!typed_program_add_type(&program, &type, &index) ||
+        !list_push(&program.signature_parameters, &zero) ||
+        !list_push(&program.signature_parameters, &zero)) return TEST_ERROR;
+    signature.return_type = index;
+    signature.first_parameter = 1;
+    signature.parameter_count = SIZE_MAX;
+    if (!typed_program_add_signature(&program, &signature, &index)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_SIGNATURE_LINK, index);
+    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
 static TestResult analyser_numeric_rejects(const TypedNode *node,
                                            NippyType type_kind,
                                            const char *what)

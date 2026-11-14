@@ -21,5 +21,8 @@ void *nippy_realloc(void *pointer, size_t size);
 char *nippy_strdup(const char *text);
 void nippy_alloc_fail_after(size_t successful_allocations);
 void nippy_alloc_reset(void);
+/* Test instrumentation; counting is disabled unless explicitly enabled. */
+void nippy_alloc_begin_counting(void);
+size_t nippy_alloc_attempts(void);
 
 #endif

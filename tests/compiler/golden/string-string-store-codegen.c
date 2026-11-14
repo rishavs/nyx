@@ -19,7 +19,7 @@ static inline void nyx_panic_at(const char *message, const char *file, size_t li
 {
     if (file == NULL) nyx_panic(message);
     fflush(stdout);
-    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + 7);
+    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + sizeof("nippy: ") - 1);
     exit(1);
 }
 
@@ -177,7 +177,7 @@ static void nyx_store_free(nyx_store *store)
 static inline void nyx_string_bounds(const char *file, size_t line, size_t column, size_t offset)
 {
     fflush(stdout);
-    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, offset, "nippy: string index out of bounds" + 7);
+    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, offset, "nippy: string index out of bounds" + sizeof("nippy: ") - 1);
     exit(1);
 }
 

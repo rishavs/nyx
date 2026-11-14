@@ -277,7 +277,7 @@ bool check_store_declaration(CheckContext *ctx, const AstNode *node,
     entry.id = ctx->stores->length;
     entry.initial_size = size;
     if (!list_push(ctx->stores, &entry)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
 
@@ -287,7 +287,7 @@ bool check_store_declaration(CheckContext *ctx, const AstNode *node,
     typed.name_index = typed_program_copy_symbol(ctx->program, name,
                                                  strlen(name));
     if (typed.name_index == TYPED_NO_NODE) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
         return false;
     }
     typed.store_id = entry.id;
@@ -461,7 +461,7 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
     typed.name_index = typed_program_copy_symbol(ctx->program, name,
                                                  strlen(name));
     if (typed.name_index == TYPED_NO_NODE) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
         return false;
     }
     typed.left_child = initialiser;
@@ -497,7 +497,7 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
             }
         }
         if (!list_push(ctx->globals, &entry)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
@@ -605,7 +605,7 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     if (node->type_parameters_count > NIPPY_MAX_TYPE_PARAMETERS) {
-        error_report_at(ctx->errors, node->pos,
+        error_report_fatal_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
@@ -648,7 +648,7 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
     }
 
     if (!list_push(ctx->types, &entry)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     entry_index = ctx->types->length - 1;

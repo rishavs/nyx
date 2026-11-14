@@ -974,8 +974,9 @@ The default source limit is 4096 bytes. Raise it for a larger program with
 ./bin/nippy --max-source-bytes 1048576 path/to/source.nip bin/program
 ```
 
-The compiler writes the generated C source beside the binary as
-`bin/program.c`, then invokes `cc -std=c11` to build it. The generated C is
+The compiler builds in a temporary directory, then publishes the executable and
+the generated C source and header beside it as `bin/program.c` and
+`bin/program.h`. The generated C is
 internal IR, not a product: it is not required to be human-readable or
 formatted. It carries a `#line` directive pointing back at the Nippy
 declaration, so the C compiler reports the original source location. If

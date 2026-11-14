@@ -163,7 +163,7 @@ bool parse_primary(
     }
     if (token->type == TOKEN_INTEGER || token->type == TOKEN_FLOAT) {
         if (!push_literal(ast, token, out_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
         (*cursor)++;
@@ -190,7 +190,7 @@ bool parse_primary(
         token->type == TOKEN_KEYWORD_FALSE) {
         if (!push_bool_literal(ast, token, token->type == TOKEN_KEYWORD_TRUE,
                                out_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
         (*cursor)++;
@@ -226,7 +226,7 @@ bool parse_primary(
                     return false;
                 }
                 if (!list_push(&elements, &element)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&elements);
                     return false;
@@ -261,7 +261,7 @@ bool parse_primary(
                 size_t element = *(const size_t *)list_get(&elements, i);
 
                 if (!ast_push_child(ast, element)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&elements);
                     return false;
@@ -287,7 +287,7 @@ bool parse_primary(
                 string_bytes, token->string_offset + i);
 
             if (byte == NULL || !ast_push_byte(ast, *byte)) {
-                error_report(errors,
+                error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
@@ -342,7 +342,7 @@ bool parse_primary(
             }
             call = (AstNode *)list_get(&ast->nodes, call_index);
             if (call == NULL) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
             call->is_static = true;
@@ -563,7 +563,7 @@ bool parse_postfix(
                         return false;
                     }
                     if (!list_push(&arguments, &argument)) {
-                        error_report(errors,
+                        error_report_fatal(errors,
                                      MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                         list_free(&arguments);
                         return false;
@@ -596,7 +596,7 @@ bool parse_postfix(
                 size_t argument = *(const size_t *)list_get(&arguments, i);
 
                 if (!ast_push_child(ast, argument)) {
-                    error_report(errors,
+                    error_report_fatal(errors,
                                  MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                     list_free(&arguments);
                     return false;

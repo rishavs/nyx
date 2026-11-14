@@ -274,7 +274,7 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
                 goto done;
             }
             if (!list_push(&values, &coerced)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 goto done;
             }
         }
@@ -355,7 +355,7 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
                     !constructor_value_fits(ctx, value, entry, i, i + 1,
                                             node->pos, &coerced)) goto done;
                 if (!list_push(&values, &coerced)) {
-                    error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                     goto done;
                 }
                 continue;
@@ -376,7 +376,7 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
                     goto done;
                 }
                 if (!list_push(&values, &coerced)) {
-                    error_report(ctx->errors,
+                    error_report_fatal(ctx->errors,
                                  MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                     goto done;
                 }
@@ -393,7 +393,7 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
             size_t value = *(const size_t *)list_get(&values, i);
 
             if (!typed_program_push_child(ctx->program, value)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 goto done;
             }
         }
@@ -473,7 +473,7 @@ bool check_error_throw(CheckContext *ctx, const AstNode *node,
 
         if (filename_record == NULL ||
             filename_record->kind != NIPPY_TYPE_STRING) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
         capacity = filename_record->fixed_length;
@@ -489,7 +489,7 @@ bool check_error_throw(CheckContext *ctx, const AstNode *node,
     for (i = 0; i < filename_length; i++) {
         if (!typed_program_push_byte(ctx->program,
                                      (unsigned char)filename[i])) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
@@ -507,7 +507,7 @@ bool check_error_throw(CheckContext *ctx, const AstNode *node,
     typed.children_count = 2;
     for (i = 0; i < 2; i++) {
         if (!typed_program_push_child(ctx->program, values[i])) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
@@ -571,7 +571,7 @@ bool check_error_constructor(CheckContext *ctx, const AstNode *node,
             goto done;
         }
         if (!list_push(&values, &coerced)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
         }
     }
@@ -589,7 +589,7 @@ bool check_error_constructor(CheckContext *ctx, const AstNode *node,
         size_t value = *(const size_t *)list_get(&values, i);
 
         if (!typed_program_push_child(ctx->program, value)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
         }
     }

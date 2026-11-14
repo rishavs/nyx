@@ -3,6 +3,20 @@
 
 #include "compile_support.h"
 
+TEST("unused generic rejects unknown value names")
+{
+    return compile_fails("fun broken<T>(value: T): Int64 return unknown_name end\n"
+                         "print(1)\n", "unknown generic name",
+                         MESSAGE_CHECKER_UNKNOWN_NAME, "unknown_name");
+}
+
+TEST("unused generic rejects unknown calls")
+{
+    return compile_fails("fun broken<T>(value: T) missing(value) end\n"
+                         "print(1)\n", "unknown generic call",
+                         MESSAGE_CHECKER_UNKNOWN_CALL, "missing");
+}
+
 TEST("return without a value")
 {
     TestResult result = compile_accepts(

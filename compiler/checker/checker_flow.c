@@ -512,7 +512,7 @@ bool emit_narrowed_value(CheckContext *ctx, size_t source,
     *out = chain;
     return true;
 oom:
-    error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
     return false;
 }
 
@@ -627,7 +627,7 @@ static bool push_condition_narrowing(CheckContext *ctx, size_t condition_ast,
         list_free(&right_facts);
         return true;
 join_oom:
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
 join_error:
         ctx->narrowings->length = start;
         list_free(&left_facts);
@@ -713,7 +713,7 @@ join_error:
                                                     first + i);
             if (i != tag && !list_push(&alternatives, &item)) {
                 list_free(&alternatives);
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
         }
@@ -740,7 +740,7 @@ join_error:
         narrowing.alias_sensitive = receiver->kind != AST_IDENTIFIER &&
                                     access_has_list(ctx, condition->left_child);
         if (!list_push(ctx->narrowings, &narrowing)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }
@@ -789,11 +789,7 @@ bool check_if_expression(CheckContext *ctx, const AstNode *node,
     const TypedNode *then_node;
     const TypedNode *else_node;
     size_t narrowing_start;
-    size_t error_start;
-    size_t types_before;
-    size_t functions_before;
-    size_t structs_before;
-    size_t instances_before;
+    Checkpoint checkpoint;
     bool then_ok;
     size_t expected = ctx->expected_ast == ast_index
                           ? ctx->expected_type : TYPED_NO_NODE;
@@ -803,15 +799,11 @@ bool check_if_expression(CheckContext *ctx, const AstNode *node,
         return false;
     }
     narrowing_start = ctx->narrowings->length;
+    checkpoint = checker_checkpoint(ctx);
     if (!push_if_narrowing(ctx, node->left_child)) {
         ctx->narrowings->length = narrowing_start;
         return false;
     }
-    error_start = ctx->errors->length;
-    types_before = ctx->types->length;
-    functions_before = ctx->functions->length;
-    structs_before = ctx->struct_instantiations->length;
-    instances_before = ctx->function_instantiations->length;
     {
         then_ok = check_expression_coerced(ctx, node->right_child, expected,
                                            &then_expression);
@@ -822,13 +814,9 @@ bool check_if_expression(CheckContext *ctx, const AstNode *node,
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_IF_EXPR_MISMATCH);
             }
-            if (strstr(ctx->errors->message + error_start, "out of memory") != NULL ||
+            if (ctx->errors->fatal ||
                 ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) return false;
-            ctx->types->length = types_before;
-            ctx->functions->length = functions_before;
-            ctx->struct_instantiations->length = structs_before;
-            ctx->function_instantiations->length = instances_before;
-            name_index_rebuild(&ctx->function_index, ctx->functions);
+            checker_restore(ctx, checkpoint);
             ctx->errors->reported = false;
         }
     }
@@ -870,7 +858,7 @@ bool check_if_expression(CheckContext *ctx, const AstNode *node,
     typed.children_start = ctx->program->children.length;
     typed.children_count = 1;
     if (!typed_program_push_child(ctx->program, else_expression)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     return emit_node(ctx, &typed, ast_index, &(size_t){0});
@@ -937,7 +925,7 @@ bool push_match_narrowing(CheckContext *ctx, size_t head_ast,
     narrowing.alias_sensitive = head->kind != AST_IDENTIFIER &&
                                 access_has_list(ctx, head_ast);
     if (!list_push(ctx->narrowings, &narrowing)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     return true;
@@ -1012,14 +1000,14 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             TypedNode reference = {0};
 
             if (scope == NULL) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
             temporary.type_index = head_type_index;
             temporary.next = *scope;
             temporary_index = ctx->program->match_temporaries.length;
             if (!list_push(&ctx->program->match_temporaries, &temporary)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
             *scope = temporary_index;
@@ -1032,7 +1020,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             reference.right_child = TYPED_NO_NODE;
             reference.integer_value_u = temporary_index;
             if (!typed_program_push(ctx->program, &reference, &head)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
         }
@@ -1062,19 +1050,11 @@ bool check_match(CheckContext *ctx, const AstNode *node,
         size_t body;
         size_t body_type;
         size_t narrowing_start = ctx->narrowings->length;
-        size_t body_error_start;
-        size_t types_before;
-        size_t functions_before;
-        size_t structs_before;
-        size_t instances_before;
+        Checkpoint checkpoint;
         TypedNode test = {0};
 
         test.name_index = TYPED_NO_NODE;
-        body_error_start = ctx->errors->length;
-        types_before = ctx->types->length;
-        functions_before = ctx->functions->length;
-        structs_before = ctx->struct_instantiations->length;
-        instances_before = ctx->function_instantiations->length;
+        checkpoint = checker_checkpoint(ctx);
 
         if (type_match) {
             size_t tested;
@@ -1120,7 +1100,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             test.integer_value = head_is_union ? (int)tag : 1;
             test.pos = node->pos;
             if (!typed_program_push(ctx->program, &test, &condition)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 goto arm_error;
             }
             if (!push_match_narrowing(ctx, node->left_child, tested, tag)) {
@@ -1184,7 +1164,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
             test.right_child = pattern;
             test.pos = node->pos;
             if (!typed_program_push(ctx->program, &test, &condition)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 goto arm_error;
             }
         }
@@ -1223,7 +1203,7 @@ bool check_match(CheckContext *ctx, const AstNode *node,
         if (!list_push(&conditions, &condition) ||
             !list_push(&bodies, &body) ||
             !list_push(&body_types, &body_type)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             list_free(&conditions);
             list_free(&bodies);
             list_free(&body_types);
@@ -1234,18 +1214,14 @@ bool check_match(CheckContext *ctx, const AstNode *node,
 arm_error:
         ctx->narrowings->length = narrowing_start;
         if (!ctx->errors->reported) error_unknown_if_none(ctx->errors);
-        if (strstr(ctx->errors->message + body_error_start, "out of memory") != NULL ||
+        if (ctx->errors->fatal ||
             ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
             list_free(&conditions);
             list_free(&bodies);
             list_free(&body_types);
             return false;
         }
-        ctx->types->length = types_before;
-        ctx->functions->length = functions_before;
-        ctx->struct_instantiations->length = structs_before;
-        ctx->function_instantiations->length = instances_before;
-        name_index_rebuild(&ctx->function_index, ctx->functions);
+        checker_restore(ctx, checkpoint);
         had_arm_errors = true;
         ctx->errors->reported = false;
     }
@@ -1401,7 +1377,7 @@ arm_error:
 
             if (chain == TYPED_NO_NODE ||
                 !typed_program_push_child(ctx->program, chain)) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 list_free(&conditions);
                 list_free(&bodies);
@@ -1426,7 +1402,7 @@ arm_error:
                     size_t wrapped;
 
                     if (!typed_program_push_child(ctx->program, chain)) {
-                        error_report(ctx->errors,
+                        error_report_fatal(ctx->errors,
                                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                         list_free(&conditions);
                         list_free(&bodies);
@@ -1440,7 +1416,7 @@ arm_error:
                     wrapper.children_start = wrapper_start;
                     wrapper.children_count = 1;
                     if (!typed_program_push(ctx->program, &wrapper, &wrapped)) {
-                        error_report(ctx->errors,
+                        error_report_fatal(ctx->errors,
                                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                         list_free(&conditions);
                         list_free(&bodies);
@@ -1454,7 +1430,7 @@ arm_error:
             if (!typed_program_push_child(ctx->program, body) ||
                 (chain != TYPED_NO_NODE &&
                  !typed_program_push_child(ctx->program, chain))) {
-                error_report(ctx->errors,
+                error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 list_free(&conditions);
                 list_free(&bodies);
@@ -1468,7 +1444,7 @@ arm_error:
                 chain == TYPED_NO_NODE ? 1 : 2;
         }
         if (!typed_program_push(ctx->program, &lowered, &chain)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             list_free(&conditions);
             list_free(&bodies);
             list_free(&body_types);
@@ -1496,7 +1472,7 @@ arm_error:
         bind.right_child = chain;
         bind.integer_value_u = temporary_index;
         if (!typed_program_push(ctx->program, &bind, &chain)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }

@@ -1,6 +1,7 @@
 /* Lexer errors: what the lexer rejects, and how it reports it. */
 
 #include "compile_support.h"
+#include "lexer.h"
 
 TEST("UTF-8 byte order mark")
 {
@@ -83,4 +84,37 @@ TEST("string: an invalid string escape")
         "var s: String<8> = \"a\\qb\"\n",
         "an invalid string escape",
         MESSAGE_LEXER_INVALID_ESCAPE, 'q');
+}
+
+TEST("keywords and identifiers with keyword prefixes")
+{
+    static const char *const words[] = {
+        "global", "var", "const", "type", "fun", "method", "static", "return",
+        "if", "then", "elseif", "else", "while", "for", "typeof", "is",
+        "match", "with", "in", "do", "break", "continue", "true", "false",
+        "nil", "end"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+        char input[64];
+        LexerResult result;
+        const Token *first;
+        const Token *second;
+        bool ok;
+
+        snprintf(input, sizeof(input), "%s %sx", words[i], words[i]);
+        result = lexer_tokenize(input);
+        first = list_get(&result.tokens, 0);
+        second = list_get(&result.tokens, 1);
+        ok = result.succeeded && first != NULL && second != NULL &&
+             first->type == (TokenType)(TOKEN_KEYWORD_GLOBAL + i) &&
+             second->type == TOKEN_IDENTIFIER;
+        lexer_result_free(&result);
+        if (!ok) {
+            fprintf(stderr, "  incorrect tokenization for %s\n", words[i]);
+            return TEST_FAIL;
+        }
+    }
+    return TEST_PASS;
 }

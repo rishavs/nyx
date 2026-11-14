@@ -35,7 +35,7 @@ bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
                     "    fflush(stdout);\n"
                     "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION
                     "\\n\", file, line, column, offset, \""
-                    MESSAGE_RUNTIME_STRING_BOUNDS "\" + 7);\n"
+                    MESSAGE_RUNTIME_STRING_BOUNDS "\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                     "    exit(1);\n"
                     "}\n\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -88,7 +88,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "{\n"
                    "    if (file == NULL) nyx_string_fail(message);\n"
                    "    fflush(stdout);\n"
-                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + 7);\n"
+                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                    "    exit(1);\n"
                    "}\n\n");
     if (store_count > 0) {

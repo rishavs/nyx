@@ -14,7 +14,7 @@ int32_t nyx_inner_nyx_u_nyx_genfn_0(int32_t nyx_u_x, int32_t nyx_u_n);
 int32_t nyx_u_nyx_genfn_0(int32_t nyx_u_x, int32_t nyx_u_n)
 {
     if (++nyx_depth_nyx_u_nyx_genfn_0 > NIPPY_RECURSION_LIMIT) {
-        fflush(stdout); fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", __FILE__, (size_t)1, (size_t)1, (size_t)0, "nippy: recursion depth exceeded" + 7); exit(1);
+        fflush(stdout); fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", __FILE__, (size_t)1, (size_t)1, (size_t)0, "nippy: recursion depth exceeded" + sizeof("nippy: ") - 1); exit(1);
     }
     int32_t nyx_recursion_result = nyx_inner_nyx_u_nyx_genfn_0(nyx_u_x, nyx_u_n);
     nyx_depth_nyx_u_nyx_genfn_0--;

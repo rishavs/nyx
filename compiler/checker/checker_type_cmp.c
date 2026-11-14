@@ -454,7 +454,7 @@ bool intern_union(CheckContext *ctx, const List *alternatives,
 
                 if (!type_in_list(ctx->program, &unique, nested) &&
                     !list_push(&unique, &nested)) {
-                    error_report(ctx->errors,
+                    error_report_fatal(ctx->errors,
                                  MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                     list_free(&unique);
                     return false;
@@ -462,7 +462,7 @@ bool intern_union(CheckContext *ctx, const List *alternatives,
             }
         } else if (!type_in_list(ctx->program, &unique, alternative) &&
                    !list_push(&unique, &alternative)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             list_free(&unique);
             return false;
         }
@@ -481,7 +481,7 @@ bool intern_union(CheckContext *ctx, const List *alternatives,
     items = nippy_malloc(unique.length * sizeof(size_t));
     if (items == NULL) {
         list_free(&unique);
-        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         return false;
     }
     for (i = 0; i < unique.length; i++) {
@@ -533,7 +533,7 @@ bool intern_union(CheckContext *ctx, const List *alternatives,
             if (!typed_program_add_type_child(ctx->program, items[i])) {
                 free(items);
                 list_free(&unique);
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
                 return false;
             }
         }
@@ -547,7 +547,7 @@ bool intern_union(CheckContext *ctx, const List *alternatives,
         if (!typed_program_add_type(ctx->program, &type, out_index)) {
             free(items);
             list_free(&unique);
-            error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             return false;
         }
     }

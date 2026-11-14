@@ -7,7 +7,7 @@
 static inline void nyx_string_bounds(const char *file, size_t line, size_t column, size_t offset)
 {
     fflush(stdout);
-    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, offset, "nippy: string index out of bounds" + 7);
+    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, offset, "nippy: string index out of bounds" + sizeof("nippy: ") - 1);
     exit(1);
 }
 

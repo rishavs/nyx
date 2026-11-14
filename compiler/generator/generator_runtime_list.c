@@ -20,7 +20,7 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                    "{\n"
                    "    if (file == NULL) nyx_list_fail(message);\n"
                    "    fflush(stdout);\n"
-                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, offset, message + 7);\n"
+                   "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, offset, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                    "    exit(1);\n"
                    "}\n\n");
     for (i = 0; i < program->types.length; i++) {

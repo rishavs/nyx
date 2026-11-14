@@ -525,6 +525,8 @@
     "checker: type '%s' is defined recursively"
 #define MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH \
     "checker: type instantiation nesting exceeds %zu"
+#define MESSAGE_CHECKER_LAYOUT_UNAVAILABLE \
+    "checker: cannot determine by-value type layout"
 
 /* Analyser */
 #define MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE \
@@ -581,23 +583,24 @@
     "generator: out of memory while generating source"
 
 /* Runtime diagnostics embedded in generated C. */
-#define MESSAGE_RUNTIME_OUT_OF_MEMORY "nippy: out of memory"
-#define MESSAGE_RUNTIME_POSITION "nippy: %s:%zu:%zu (byte %zu): %s"
-#define MESSAGE_RUNTIME_STALE_HANDLE "nippy: stale handle"
-#define MESSAGE_RUNTIME_HANDLE_BOUNDS "nippy: handle is out of range"
-#define MESSAGE_RUNTIME_STORE_RANGE "nippy: invalid store id"
-#define MESSAGE_RUNTIME_STRING_BOUNDS "nippy: string index out of bounds"
-#define MESSAGE_RUNTIME_LIST_BOUNDS "nippy: list index out of bounds"
-#define MESSAGE_RUNTIME_ARRAY_FULL "nippy: array capacity exceeded"
-#define MESSAGE_RUNTIME_NEGATIVE_CAPACITY "nippy: capacity cannot be negative"
-#define MESSAGE_RUNTIME_DIVISION_ZERO "nippy: division by zero"
-#define MESSAGE_RUNTIME_INTEGER_OVERFLOW "nippy: integer overflow"
+#define MESSAGE_RUNTIME_PREFIX "nippy: "
+#define MESSAGE_RUNTIME_OUT_OF_MEMORY MESSAGE_RUNTIME_PREFIX "out of memory"
+#define MESSAGE_RUNTIME_POSITION MESSAGE_RUNTIME_PREFIX "%s:%zu:%zu (byte %zu): %s"
+#define MESSAGE_RUNTIME_STALE_HANDLE MESSAGE_RUNTIME_PREFIX "stale handle"
+#define MESSAGE_RUNTIME_HANDLE_BOUNDS MESSAGE_RUNTIME_PREFIX "handle is out of range"
+#define MESSAGE_RUNTIME_STORE_RANGE MESSAGE_RUNTIME_PREFIX "invalid store id"
+#define MESSAGE_RUNTIME_STRING_BOUNDS MESSAGE_RUNTIME_PREFIX "string index out of bounds"
+#define MESSAGE_RUNTIME_LIST_BOUNDS MESSAGE_RUNTIME_PREFIX "list index out of bounds"
+#define MESSAGE_RUNTIME_ARRAY_FULL MESSAGE_RUNTIME_PREFIX "array capacity exceeded"
+#define MESSAGE_RUNTIME_NEGATIVE_CAPACITY MESSAGE_RUNTIME_PREFIX "capacity cannot be negative"
+#define MESSAGE_RUNTIME_DIVISION_ZERO MESSAGE_RUNTIME_PREFIX "division by zero"
+#define MESSAGE_RUNTIME_INTEGER_OVERFLOW MESSAGE_RUNTIME_PREFIX "integer overflow"
 #define MESSAGE_RUNTIME_FOR_MUTATED \
-    "nippy: iterated collection changed length during for loop"
+    MESSAGE_RUNTIME_PREFIX "iterated collection changed length during for loop"
 #define MESSAGE_RUNTIME_RECURSION \
-    "nippy: recursion depth exceeded"
+    MESSAGE_RUNTIME_PREFIX "recursion depth exceeded"
 #define MESSAGE_RUNTIME_CONVERSION \
-    "nippy: numeric conversion out of range"
+    MESSAGE_RUNTIME_PREFIX "numeric conversion out of range"
 
 /* Driver */
 #define MESSAGE_DRIVER_COULD_NOT_OPEN_SOURCE \

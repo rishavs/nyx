@@ -65,7 +65,7 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
         if (!list_push(&children, &pattern) ||
             !list_push(&children, &body)) {
             list_free(&children);
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
         if (token_at(tokens, *cursor) != NULL &&
@@ -77,9 +77,9 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
 
 recover_arm:
         if (errors->length == error_start) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         }
-        if (strstr(errors->message + error_start, "out of memory") != NULL ||
+        if (errors->fatal ||
             errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
             list_free(&children);
             return false;
@@ -145,7 +145,7 @@ recover_arm:
 
         if (!ast_push_child(ast, child)) {
             list_free(&children);
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             return false;
         }
     }
@@ -234,7 +234,7 @@ bool parse_if_expression(const TokenList *tokens,
         size_t children_start = ast->children.length;
 
         if (!ast_push_child(ast, else_expression)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             goto done;
         }
         node.kind = AST_IF_EXPRESSION;
@@ -294,9 +294,9 @@ bool parse_block(
             SourcePos failure = position_at(tokens, *cursor);
 
             if (errors->length == error_start) {
-                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             }
-            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+            if (errors->fatal ||
                 errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
                 list_free(&statements);
                 return false;
@@ -331,7 +331,7 @@ bool parse_block(
             continue;
         }
         if (!list_push(&statements, &statement_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&statements);
             return false;
         }
@@ -342,7 +342,7 @@ bool parse_block(
         size_t statement_index = *(const size_t *)list_get(&statements, i);
 
         if (!ast_push_child(ast, statement_index)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             list_free(&statements);
             return false;
         }
@@ -436,7 +436,7 @@ bool parse_if(
     list_init(&blocks, sizeof(size_t));
     if (!list_push(&conditions, &condition) ||
         !list_push(&blocks, &then_block)) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         goto done;
     }
 
@@ -462,7 +462,7 @@ bool parse_if(
         }
         if (!list_push(&conditions, &condition) ||
             !list_push(&blocks, &then_block)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             goto done;
         }
     }
@@ -494,11 +494,11 @@ bool parse_if(
         if (!make_if_node(ast, *(const size_t *)list_get(&conditions, i - 1),
                           *(const size_t *)list_get(&blocks, i - 1),
                           else_branch, pos, &nested_if)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             goto done;
         }
         if (!wrap_in_block(ast, nested_if, pos, &wrapper)) {
-            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
             goto done;
         }
         else_branch = wrapper;
@@ -507,7 +507,7 @@ bool parse_if(
     if (!make_if_node(ast, *(const size_t *)list_get(&conditions, 0),
                       *(const size_t *)list_get(&blocks, 0), else_branch, pos,
                       out_index)) {
-        error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         goto done;
     }
     ok = true;

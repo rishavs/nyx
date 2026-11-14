@@ -35,7 +35,7 @@ bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
             "{\n"
             "    fflush(stdout);\n"
             "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\",\n"
-            "            file, line, column, offset, message + 7);\n"
+            "            file, line, column, offset, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
             "    exit(1);\n"
             "}\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);

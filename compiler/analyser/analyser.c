@@ -50,6 +50,11 @@ static bool numeric_node_is_valid(const TypedProgram *program,
 }
 
 
+static bool valid_run(size_t start, size_t count, size_t length)
+{
+    return start <= length && count <= length - start;
+}
+
 bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
 {
     size_t i;
@@ -113,9 +118,8 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             return false;
         }
         if (node->children_count != 0 &&
-            (node->children_start >= program->children.length ||
-             node->children_start + node->children_count >
-                 program->children.length)) {
+            !valid_run(node->children_start, node->children_count,
+                       program->children.length)) {
             error_report_at(errors, node->pos,
                             MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
             return false;
@@ -165,6 +169,19 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                                 MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
                 return false;
             }
+        }
+        if (node->kind == TYPED_IF_EXPRESSION &&
+            (node->children_count != 1 || node->left_child == TYPED_NO_NODE ||
+             node->right_child == TYPED_NO_NODE)) {
+            error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+            return false;
+        }
+        if ((node->kind == TYPED_RECORD_SET || node->kind == TYPED_TABLE_SET ||
+             node->kind == TYPED_LIST_SET || node->kind == TYPED_SLICE_CREATE ||
+             node->kind == TYPED_STRING_SLICE) &&
+            (node->children_count != 2 || node->left_child == TYPED_NO_NODE)) {
+            error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+            return false;
         }
         if (node->kind == TYPED_STORE_DECLARATION ||
             node->kind == TYPED_STORE_ALLOC ||
@@ -371,8 +388,8 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 }
             }
             if (type->child_count != 0 &&
-                (type->first_child + type->child_count >
-                     program->type_children.length)) {
+                !valid_run(type->first_child, type->child_count,
+                           program->type_children.length)) {
                 error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
                 return false;
             }
@@ -391,8 +408,8 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             size_t j;
 
             if (type->child_count < 2 ||
-                type->first_child + type->child_count >
-                    program->type_children.length) {
+                !valid_run(type->first_child, type->child_count,
+                           program->type_children.length)) {
                 error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
                 return false;
             }
@@ -403,6 +420,25 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 if (alternative >= program->types.length) {
                     error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
                                  i);
+                    return false;
+                }
+            }
+        }
+        if (type->kind == NIPPY_TYPE_LIST || type->kind == NIPPY_TYPE_FIXED_LIST ||
+            type->kind == NIPPY_TYPE_SLICE || type->kind == NIPPY_TYPE_RECORD ||
+            type->kind == NIPPY_TYPE_TABLE) {
+            size_t j, count = (type->kind == NIPPY_TYPE_RECORD ||
+                               type->kind == NIPPY_TYPE_TABLE) ? 2 : 1;
+            if (type->child_count != count ||
+                !valid_run(type->first_child, count, program->type_children.length)) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
+                return false;
+            }
+            for (j = 0; j < count; j++) {
+                size_t child = *(const size_t *)list_get(&program->type_children,
+                                                         type->first_child + j);
+                if (typed_program_type(program, child) == NULL) {
+                    error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
                     return false;
                 }
             }
@@ -442,8 +478,8 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             size_t j;
 
             if (type->child_count != 3 ||
-                type->first_child + type->child_count >
-                    program->type_children.length) {
+                !valid_run(type->first_child, type->child_count,
+                           program->type_children.length)) {
                 error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
                 return false;
             }
@@ -475,8 +511,8 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
 
         if (signature == NULL ||
             signature->return_type >= program->types.length ||
-            signature->first_parameter + signature->parameter_count >
-                program->signature_parameters.length) {
+            !valid_run(signature->first_parameter, signature->parameter_count,
+                       program->signature_parameters.length)) {
             error_report(errors, MESSAGE_ANALYSER_INVALID_SIGNATURE_LINK, i);
             return false;
         }
