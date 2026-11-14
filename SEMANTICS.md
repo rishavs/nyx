@@ -33,10 +33,31 @@ Either type form may be generic: `type Name<T> = ...` or
 Comments are ignored between tokens. `--` starts a line comment, and `--[` …
 `]--` delimits a multiline comment.
 
-Declarations are processed in order, and a name must be declared before it is
-used. There is no forward reference and no preprocessor. A function may refer to
-itself, because its own name is bound before its body is checked. A generic
-function's body is checked only when an instantiation is needed.
+Type names are available throughout the program, including before their source
+declarations. Values and functions are otherwise processed in declaration
+order. There is no preprocessor. A function may refer to itself, because its own
+name is bound before its body is checked; mutual recursion between functions is
+not supported. A generic function's body is checked only when an instantiation
+is needed.
+
+Struct types can refer to themselves or each other through `Handle<T>`. Every
+recursive cycle must pass through a handle; cycles that contain values by value
+are rejected when the concrete struct type is instantiated. Generic struct
+templates are instantiated on use. Transparent aliases can refer to recursive
+structs but cannot themselves form recursive alias cycles. Type instantiation is
+limited to 64 simultaneously nested struct instantiations.
+
+```nippy
+type Node
+  value: Int64
+  next: Handle<Node> | Nil = nil
+end
+
+global arena: Store = Store(1024)
+var tail = arena.alloc<Node>(Node(2))
+var head = arena.alloc<Node>(Node(1, tail))
+print(head.read().value)  -- 1
+```
 
 A type, value, or function name may not be declared twice. Re-declaring a name
 is an error. Built-in type names (`Int8`, `Int16`, `Int32`, `Int64`, `Uint8`,
@@ -145,7 +166,7 @@ put the data in a Store instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`
 and `Handle` are descriptors and their payload does not count.
 
 `alloc<...>` and `Handle<...>` require a fixed type; they reject allocator-backed
-values directly and transitively through structs/unions. `List`, `Text`, and
+values other than handles, directly and transitively through structs/unions. `List`, `Text`, and
 `TextBuilder` use their dedicated constructors. A collection cannot be an
 `Array`/`List`/`Slice` element; wrap it in a named struct if it must be nested.
 `Text` and `String<N>` are items: `List<Text>` is valid even though `Text` is
@@ -886,13 +907,14 @@ var b: Handle<Byte> = points.alloc<Byte>(7)
 ```
 
 `alloc<T>(value)` copies one fixed value into the arena and returns
-`Handle<T>`. A fixed type contains no allocator-backed field:
+`Handle<T>`. A fixed type may contain checked handles but not other
+allocator-backed fields:
 
 ```text
-fixed: primitives, functions, Error, String<N>,
+fixed: primitives, functions, Error, String<N>, Handle<T>, Range<T>,
        Array<T,N> with fixed elements,
        structs/unions whose fields/alternatives are fixed
-not fixed: Handle, Text, List, Slice, TextBuilder, Record, Table, Store
+not fixed: Text, List, Slice, TextBuilder, Record, Table, Store
 ```
 
 `Text`, `List`, and `TextBuilder` use their dedicated constructors.
@@ -1656,7 +1678,7 @@ If compilation fails with no diagnostic recorded, the message is exactly
   as an expression.
 - Loop labels.
 - Closures and capturing program-level variables.
-- Mutual recursion, because forward references are not accepted.
+- Mutual recursion between functions, because function forward references are not accepted.
 - Explicit type arguments at generic call sites; generic calls infer them.
 - Union type patterns in `typeof`/`match`, and union-subset widening.
 - Function-typed struct fields, because generated type definitions are emitted

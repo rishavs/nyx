@@ -186,15 +186,18 @@ bool emit_union_type(const TypedProgram *program, const TypedType *type,
     return true;
 }
 
-bool emit_type_definitions(const TypedProgram *program,
-                                  const char *effective_source,
-                                  TextBuffer *header, ErrorState *errors)
+static bool emit_types_in_order(const TypedProgram *program,
+                                const char *effective_source,
+                                TextBuffer *header, ErrorState *errors,
+                                const List *order)
 {
     bool emitted_nil = false;
     bool table_emitted = false;
-    size_t i;
+    bool list_emitted = false, slice_emitted = false;
+    size_t i, order_index;
 
-    for (i = 0; i < program->types.length; i++) {
+    for (order_index = 0; order_index < order->length; order_index++) {
+        i = *(const size_t *)list_get(order, order_index);
         const TypedType *type = typed_program_type(program, i);
 
         if (type == NULL || type->kind == NIPPY_TYPE_UNKNOWN) {
@@ -266,18 +269,7 @@ bool emit_type_definitions(const TypedProgram *program,
                 return false;
             }
         } else if (type->kind == NIPPY_TYPE_LIST) {
-            bool emitted = false;
-            size_t j;
-
-            for (j = 0; j < i; j++) {
-                const TypedType *earlier = typed_program_type(program, j);
-
-                if (earlier != NULL && earlier->kind == NIPPY_TYPE_LIST) {
-                    emitted = true;
-                    break;
-                }
-            }
-            if (!emitted &&
+            if (!list_emitted &&
                 !buffer_append(
                     header,
                     "typedef struct {\n"
@@ -288,6 +280,7 @@ bool emit_type_definitions(const TypedProgram *program,
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
+            list_emitted = true;
         } else if (type->kind == NIPPY_TYPE_RECORD) {
             char key_name[NIPPY_IDENTIFIER_MAX + 32];
             char value_name[NIPPY_IDENTIFIER_MAX + 32];
@@ -331,18 +324,7 @@ bool emit_type_definitions(const TypedProgram *program,
             }
             table_emitted = true;
         } else if (type->kind == NIPPY_TYPE_SLICE) {
-            bool emitted = false;
-            size_t j;
-
-            for (j = 0; j < i; j++) {
-                const TypedType *earlier = typed_program_type(program, j);
-
-                if (earlier != NULL && earlier->kind == NIPPY_TYPE_SLICE) {
-                    emitted = true;
-                    break;
-                }
-            }
-            if (!emitted &&
+            if (!slice_emitted &&
                 !buffer_append(
                     header,
                     "typedef struct {\n"
@@ -355,6 +337,7 @@ bool emit_type_definitions(const TypedProgram *program,
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
+            slice_emitted = true;
         } else if (type->kind == NIPPY_TYPE_FIXED_LIST) {
             char element_name[NIPPY_IDENTIFIER_MAX + 32];
             char list_name[NIPPY_IDENTIFIER_MAX + 32];
@@ -480,6 +463,101 @@ bool emit_type_definitions(const TypedProgram *program,
     return true;
 }
 
+
+typedef struct {
+    size_t index;
+    size_t next;
+} TypeOrderFrame;
+
+static bool type_order_dependency(const TypedProgram *program, size_t index,
+                                  size_t at, size_t *dependency, bool *found)
+{
+    const TypedType *type = typed_program_type(program, index);
+    *found = false;
+    if (type == NULL) return false;
+    if (type->kind == NIPPY_TYPE_STRUCT) {
+        const TypedNode *decl = typed_program_node(program, type->declaration_node);
+        const TypedNode *field;
+        size_t field_index;
+        if (decl == NULL) return false;
+        if (at >= decl->children_count) return true;
+        field_index = *(const size_t *)list_get(&program->children,
+                                                decl->children_start + at);
+        field = typed_program_node(program, field_index);
+        if (field == NULL) return false;
+        *dependency = field->type_index;
+    } else if (type->kind == NIPPY_TYPE_UNION ||
+               type->kind == NIPPY_TYPE_FIXED_LIST ||
+               type->kind == NIPPY_TYPE_RECORD || type->kind == NIPPY_TYPE_ERROR) {
+        if (at >= type->child_count) return true;
+        *dependency = *(const size_t *)list_get(&program->type_children,
+                                                type->first_child + at);
+    } else if (type->kind == NIPPY_TYPE_FUNCTION) {
+        const TypedFunctionSignature *signature = typed_program_signature(
+            program, type->signature_index);
+        if (signature == NULL) return false;
+        if (at > signature->parameter_count) return true;
+        *dependency = at == 0 ? signature->return_type :
+            *(const size_t *)list_get(&program->signature_parameters,
+                                      signature->first_parameter + at - 1);
+    } else {
+        return true;
+    }
+    *found = true;
+    return *dependency < program->types.length;
+}
+
+bool emit_type_definitions(const TypedProgram *program,
+                           const char *effective_source,
+                           TextBuffer *header, ErrorState *errors)
+{
+    unsigned char *state = NULL;
+    TypeOrderFrame *stack = NULL;
+    List order;
+    size_t i, depth = 0, count = program->types.length;
+    bool ok = false;
+    list_init(&order, sizeof(size_t));
+    if (count > SIZE_MAX / sizeof(*stack)) goto oom;
+    state = nippy_malloc(count == 0 ? 1 : count);
+    stack = nippy_malloc(count == 0 ? sizeof(*stack) : count * sizeof(*stack));
+    if (state == NULL || stack == NULL) goto oom;
+    memset(state, 0, count);
+    for (i = 0; i < count; i++) {
+        if (state[i] != 0) continue;
+        stack[depth++] = (TypeOrderFrame){i, 0};
+        state[i] = 1;
+        while (depth > 0) {
+            TypeOrderFrame *frame = &stack[depth - 1];
+            size_t dependency;
+            bool found;
+            if (!type_order_dependency(program, frame->index, frame->next++,
+                                       &dependency, &found)) goto invalid;
+            if (!found) {
+                size_t completed = frame->index;
+                state[completed] = 2;
+                depth--;
+                if (!list_push(&order, &completed)) goto oom;
+            } else if (state[dependency] == 1) {
+                goto invalid;
+            } else if (state[dependency] == 0) {
+                state[dependency] = 1;
+                stack[depth++] = (TypeOrderFrame){dependency, 0};
+            }
+        }
+    }
+    ok = emit_types_in_order(program, effective_source, header, errors, &order);
+    goto done;
+oom:
+    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    goto done;
+invalid:
+    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+done:
+    list_free(&order);
+    free(stack);
+    free(state);
+    return ok;
+}
 
 bool emit_function_typedefs(const TypedProgram *program,
                                    TextBuffer *header, ErrorState *errors)

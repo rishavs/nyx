@@ -179,6 +179,28 @@ TEST("recursive generic struct")
                          MESSAGE_CHECKER_RECURSIVE_TYPE, "Box");
 }
 
+TEST("mutually recursive by-value types are rejected")
+{
+    return compile_fails("type A b: B end\ntype B a: A end\n",
+                         "by-value type cycle", MESSAGE_CHECKER_RECURSIVE_TYPE, "A");
+}
+
+TEST("unbounded recursive generic instantiations are rejected")
+{
+    return compile_fails(
+        "type Wrap<T> value: T end\n"
+        "type Grow<T> next: Handle<Grow<Wrap<T>>> | Nil end\n"
+        "var value: Grow<Int64> = Grow(nil)\n",
+        "unbounded recursive generic", MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH,
+        (size_t)64);
+}
+
+TEST("recursive handles still reject allocator-backed targets")
+{
+    return compile_fails("type A b: Handle<B> end\ntype B value: Text end\n",
+                         "handle to nonfixed type", MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
 TEST("incompatible union injection")
 {
     const char *source =

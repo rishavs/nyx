@@ -2,6 +2,57 @@
 
 #include "tool_support.h"
 
+TEST("recursive generic nodes and forward references")
+{
+    return run_generated(
+        "type Node<T> value: T next: Handle<Node<T>> | Nil end\n"
+        "type Owner item: Handle<Item> | Nil end\n"
+        "type Item owner: Owner value: Int64 end\n"
+        "global arena: Store = Store(4096)\n"
+        "var tail = arena.alloc<Node<Int64>>(Node(2, nil))\n"
+        "var head = arena.alloc<Node<Int64>>(Node(1, tail))\n"
+        "var first = head.read()\n"
+        "if typeof first.next is Handle<Node<Int64>> then\n"
+        " var link: Handle<Node<Int64>> = first.next\n"
+        " print(first.value, link.read().value)\n"
+        "end\n"
+        "var item = arena.alloc<Item>(Item(Owner(nil), 42))\n"
+        "var owner = Owner(item)\n"
+        "if typeof owner.item is Handle<Item> then\n"
+        " var link: Handle<Item> = owner.item print(link.read().value)\n"
+        "end\n",
+        "1 2\n42\n", "recursive nodes and forward types");
+}
+
+TEST("recursive node handles remain generation checked")
+{
+    return run_generated_failure(
+        "type Node value: Int64 next: Handle<Node> | Nil end\n"
+        "global first: Store = Store(512)\n"
+        "global second: Store = Store(512)\n"
+        "var tail = first.alloc<Node>(Node(2, nil))\n"
+        "var head = second.alloc<Node>(Node(1, tail))\n"
+        "first.reset()\n"
+        "var item = head.read()\n"
+        "if typeof item.next is Handle<Node> then\n"
+        " var link: Handle<Node> = item.next print(link.read().value)\n"
+        "end\n", "stale", "stale recursive node handle");
+}
+
+TEST("mutual handle types and recursive aliases")
+{
+    return run_generated(
+        "type A other: Handle<B> | Nil = nil end\n"
+        "type B other: Handle<A> | Nil = nil end\n"
+        "type Link = Handle<Node> | Nil\n"
+        "type Node value: Int64 next: Link = nil end\n"
+        "global arena: Store = Store(1024)\n"
+        "var a = arena.alloc<A>(A()) var b = arena.alloc<B>(B(a))\n"
+        "a.write(A(b))\n"
+        "var node = arena.alloc<Node>(Node(7))\n"
+        "print(node.read().value)\n",
+        "7\n", "mutual handles and aliases");
+}
 TEST("lazy ranges support values, steps and loop control")
 {
     return run_generated(

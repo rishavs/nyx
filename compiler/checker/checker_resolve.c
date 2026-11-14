@@ -1,7 +1,7 @@
 #include "checker_internal.h"
 
 
-bool instantiate_struct(CheckContext *ctx, size_t entry_index,
+static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
                                const size_t *arguments, size_t argument_count,
                                size_t *out_type)
 {
@@ -29,7 +29,8 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
                 }
             }
             if (same) {
-                if (record->in_progress) {
+                if (record->in_progress &&
+                    ctx->handle_depth <= record->handle_depth) {
                     error_report(ctx->errors, MESSAGE_CHECKER_RECURSIVE_TYPE,
                                  entry->name);
                     return false;
@@ -61,6 +62,7 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
         record.entry = entry_index;
         record.argument_count = argument_count;
         record.in_progress = true;
+        record.handle_depth = ctx->handle_depth;
         for (i = 0; i < argument_count; i++) {
             record.arguments[i] = arguments[i];
             env.names[i] = entry->parameters[i];
@@ -87,6 +89,35 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             declaration->kind != AST_TYPE_DECLARATION) {
             error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
             return false;
+        }
+        first_argument = ctx->program->type_children.length;
+        for (i = 0; i < argument_count; i++) {
+            if (!typed_program_add_type_child(ctx->program, arguments[i])) {
+                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                return false;
+            }
+        }
+        {
+            TypedType type = {0};
+            size_t source_name = typed_program_copy_symbol(
+                ctx->program, entry->name, strlen(entry->name));
+            if (source_name == TYPED_NO_NODE) {
+                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+                return false;
+            }
+            type.kind = NIPPY_TYPE_STRUCT;
+            type.name_index = name_index;
+            type.signature_index = TYPED_NO_NODE;
+            type.first_child = first_argument;
+            type.child_count = argument_count;
+            type.declaration_node = TYPED_NO_NODE;
+            type.source_name_index = source_name;
+            if (!typed_program_add_type(ctx->program, &type, &type_index)) {
+                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                return false;
+            }
+            ((StructInstantiation *)list_get(ctx->struct_instantiations,
+                                             record_index))->type_index = type_index;
         }
         list_init(&field_nodes, sizeof(size_t));
         for (i = 0; i < declaration->children_count; i++) {
@@ -194,36 +225,8 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             }
         }
 
-        first_argument = ctx->program->type_children.length;
-        for (i = 0; i < argument_count; i++) {
-            if (!typed_program_add_type_child(ctx->program, arguments[i])) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-        }
-
-        {
-            TypedType type = {0};
-            size_t source_name = typed_program_copy_symbol(
-                ctx->program, entry->name, strlen(entry->name));
-
-            if (source_name == TYPED_NO_NODE) {
-                error_report(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-                return false;
-            }
-            type.kind = NIPPY_TYPE_STRUCT;
-            type.name_index = name_index;
-            type.signature_index = TYPED_NO_NODE;
-            type.first_child = first_argument;
-            type.child_count = argument_count;
-            type.declaration_node = declaration_index;
-            type.source_name_index = source_name;
-            if (!typed_program_add_type(ctx->program, &type, &type_index)) {
-                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-        }
+        ((TypedType *)list_get(&ctx->program->types, type_index))->declaration_node =
+            declaration_index;
 
         {
             StructInstantiation *record =
@@ -238,6 +241,23 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
         *out_type = type_index;
         return true;
     }
+}
+
+bool instantiate_struct(CheckContext *ctx, size_t entry_index,
+                        const size_t *arguments, size_t argument_count,
+                        size_t *out_type)
+{
+    bool ok;
+    if (ctx->struct_depth >= NIPPY_TYPE_DEPTH) {
+        error_report(ctx->errors, MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH,
+                     (size_t)NIPPY_TYPE_DEPTH);
+        return false;
+    }
+    ctx->struct_depth++;
+    ok = instantiate_struct_inner(ctx, entry_index, arguments, argument_count,
+                                  out_type);
+    ctx->struct_depth--;
+    return ok;
 }
 
 
@@ -452,11 +472,29 @@ bool resolve_type_application(CheckContext *ctx, const AstNode *node,
             size_t child = *(const size_t *)list_get(
                 &ctx->ast->children, node->children_start);
 
-            if (!resolve_type_in_env(ctx, child, env, owner, &element)) {
+            bool resolved;
+            ctx->handle_depth++;
+            resolved = resolve_type_in_env(ctx, child, env, owner, &element) &&
+                       handle_type(ctx, element, out_index);
+            ctx->handle_depth--;
+            if (!resolved) {
                 return false;
             }
+            if (ctx->handle_depth == 0) {
+                size_t i;
+                bool incomplete = false;
+                for (i = 0; i < ctx->struct_instantiations->length; i++) {
+                    const StructInstantiation *record = list_get(
+                        ctx->struct_instantiations, i);
+                    if (record->in_progress) { incomplete = true; break; }
+                }
+                if (!incomplete && !is_fixed_type(ctx->program, element)) {
+                    error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+                    return false;
+                }
+            }
         }
-        return handle_type(ctx, element, out_index);
+        return true;
     }
     if (strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
         strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||

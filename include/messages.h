@@ -523,6 +523,8 @@
     "checker: generic function '%s' pushes the program past %d instantiations"
 #define MESSAGE_CHECKER_RECURSIVE_TYPE \
     "checker: type '%s' is defined recursively"
+#define MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH \
+    "checker: type instantiation nesting exceeds %zu"
 
 /* Analyser */
 #define MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE \

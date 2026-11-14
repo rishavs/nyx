@@ -3,7 +3,7 @@
 int main(void)
 {
 #line 5 "test.nip"
-    nyx_u_nyx_gen_0 nyx_u_h = (nyx_u_nyx_gen_0){ ((nyx_sum_2){ .tag = 1 }) };
+    nyx_u_nyx_gen_0 nyx_u_h = (nyx_u_nyx_gen_0){ ((nyx_sum_3){ .tag = 1 }) };
     (void)nyx_u_h;
     return 0;
 }

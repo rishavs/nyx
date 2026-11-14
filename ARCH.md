@@ -115,6 +115,13 @@ child for a literal default. The checker validates defaults for each concrete
 struct instantiation and supplies them for omitted constructor fields; later
 stages receive ordinary typed constructor values.
 
+The checker registers type declarations before resolving their fields. It
+creates a struct type shell before checking the fields so a handle can refer
+back to that shell; a recursive path without a handle is rejected. Completed
+handle targets are checked for fixed layout. The generator orders C type
+definitions by their by-value dependencies using an explicit stack; handles
+do not create a by-value dependency on their target.
+
 `range` is lowered to a typed range value containing two bounds and a signed
 step. Its arguments use scoped temporaries to preserve evaluation order. A
 range loop advances its private copy before the body, allowing `continue` while
@@ -241,7 +248,8 @@ Reads the syntax tree through a `const` pointer and writes a separate
   makes store names visible to function bodies without making them values;
   `global` declarations are required to have type Store;
 - types `alloc<T>(value)`, `reset()`, `read()`, and `write(value)`; requires a
-  fixed type for the allocation element (no allocator-backed fields) and builds
+  fixed type for the allocation element (handles are allowed; other
+  allocator-backed fields are not) and builds
   `Handle<T>` records; `Text`, `List`, and `TextBuilder` use their dedicated
   constructors;
 - types integer and floating literals contextually, range-checks integer

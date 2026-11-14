@@ -955,11 +955,14 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     ctx.narrowings = &narrowings;
     ctx.stores = &stores;
     ctx.in_function = false;
+    ctx.predeclaring_types = false;
     ctx.in_expression_statement = false;
     ctx.statement_call_ast = AST_NO_NODE;
     ctx.loop_depth = 0;
     ctx.function_name = NULL;
     ctx.depth = 0;
+    ctx.handle_depth = 0;
+    ctx.struct_depth = 0;
     ctx.generated_names = 0;
     ctx.expected_ast = AST_NO_NODE;
     ctx.expected_type = TYPED_NO_NODE;
@@ -993,6 +996,25 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
         }
     }
 
+    ctx.predeclaring_types = true;
+    for (i = 0; i < ast->roots.length; i++) {
+        size_t root = *(const size_t *)list_get(&ast->roots, i);
+        const AstNode *node = ast_get_node(ast, root);
+        size_t before = types.length, error_start = errors->length;
+        if (*(const bool *)list_get(&invalid_roots, i) || node == NULL ||
+            (node->kind != AST_TYPE_DECLARATION && node->kind != AST_TYPE_ALIAS))
+            continue;
+        errors->reported = false;
+        if (!check_type_declaration(&ctx, node, root)) {
+            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+                errors->length >= ERROR_MESSAGE_CAPACITY - 1) goto done;
+            types.length = before;
+            *(bool *)list_get(&invalid_roots, i) = true;
+            had_errors = true;
+        }
+    }
+    ctx.predeclaring_types = false;
+
     for (i = 0; i < ast->roots.length; i++) {
         size_t ast_root = *(const size_t *)list_get(&ast->roots, i);
         const AstNode *node = ast_get_node(ast, ast_root);
@@ -1021,9 +1043,23 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             checked = check_var_declaration(&ctx, node, ast_root);
             break;
         case AST_TYPE_DECLARATION:
-        case AST_TYPE_ALIAS:
-            checked = check_type_declaration(&ctx, node, ast_root);
+        case AST_TYPE_ALIAS: {
+            const char *name = ast_symbol_text(ast, node->name_index);
+            size_t index = find_type_index(&types, name);
+            const TypeEntry *entry = list_get(&types, index);
+            if (entry != NULL && entry->parameter_count == 0) {
+                size_t resolved;
+                if (entry->kind == TYPE_ENTRY_ALIAS)
+                    checked = expand_alias(&ctx, entry, NULL, 0, &resolved);
+                else
+                    checked = instantiate_struct(&ctx, index, NULL, 0, &resolved);
+                if (checked)
+                    ((TypeEntry *)list_get(&types, index))->type_index = resolved;
+            } else {
+                checked = entry != NULL;
+            }
             break;
+        }
         case AST_FUNCTION_DECLARATION:
             checked = check_function_declaration(&ctx, node, ast_root);
             break;
@@ -1091,6 +1127,31 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
         if (!list_push(&program->roots, &typed_root)) {
             error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
             goto done;
+        }
+    }
+    if (!had_errors) {
+        for (i = 0; i < program->types.length; i++) {
+            const TypedType *type = typed_program_type(program, i);
+            if (type != NULL && type->kind == NIPPY_TYPE_HANDLE &&
+                type->child_count == 1) {
+                size_t element = *(const size_t *)list_get(&program->type_children,
+                                                            type->first_child);
+                if (!is_fixed_type(program, element)) {
+                    error_report(errors, MESSAGE_CHECKER_HANDLE_FIXED);
+                    had_errors = true;
+                    break;
+                }
+            }
+            if (type != NULL && type->kind == NIPPY_TYPE_STRUCT) {
+                const TypedNode *declaration = typed_program_node(
+                    program, type->declaration_node);
+                SourcePos pos = declaration == NULL ? (SourcePos){0, 1, 1}
+                                                    : declaration->pos;
+                if (!check_type_value_size(&ctx, i, pos)) {
+                    had_errors = true;
+                    break;
+                }
+            }
         }
     }
     ok = !had_errors;

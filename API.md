@@ -477,8 +477,11 @@ a `TYPED_STORE_ALLOC` has type `Handle<T>` and its value in `left_child`; a
 `TYPED_HANDLE_WRITE` has type `Nil`, the handle in `left_child`, and the value
 in `right_child`. `TYPED_ASSIGNMENT` has the target variable's type and name, and
 the coerced value in `left_child`. A handle type's element type is its single entry in
-`program->type_children`; the checker accepts a handle only for a fixed type
-with no allocator-backed fields.
+`program->type_children`; the checker accepts a handle only for a fixed type.
+Fixed values may contain handles, whose generation and bounds remain checked
+when used; other allocator-backed fields remain excluded.
+Struct type indices can be referenced by their own fields through a handle;
+completed typed programs contain the resolved declaration for each struct.
 
 `TYPED_STRING_LITERAL` stores an offset and byte length into
 `TypedProgram.bytes`; after contextual typing its type is `Text` (dynamic,

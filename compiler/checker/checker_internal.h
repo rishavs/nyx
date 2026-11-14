@@ -74,6 +74,7 @@ typedef struct {
     size_t argument_count;
     size_t type_index;
     bool in_progress;
+    size_t handle_depth;
 } StructInstantiation;
 
 typedef struct {
@@ -125,11 +126,14 @@ typedef struct {
     List *narrowings;             /* Narrowing, scoped to a then block */
     List *stores;                 /* StoreEntry, program-level global stores */
     bool in_function;
+    bool predeclaring_types;
     bool in_expression_statement;
     size_t statement_call_ast;
     size_t loop_depth;
     const char *function_name;
     size_t depth;
+    size_t handle_depth;
+    size_t struct_depth;
     size_t generated_names;
     size_t expected_ast;
     size_t expected_type;

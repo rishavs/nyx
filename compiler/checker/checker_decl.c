@@ -654,6 +654,7 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
     entry_index = ctx->types->length - 1;
 
     if (entry.kind == TYPE_ENTRY_ALIAS) {
+        if (ctx->predeclaring_types) return true;
         /* A non-generic alias is resolved at its declaration so unknown or
            invalid types are diagnosed even when the alias is never used. It
            has no C type and no root. Generic aliases expand per application. */
@@ -707,6 +708,7 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
             }
         }
     }
+    if (ctx->predeclaring_types) return true;
     if (entry.parameter_count == 0) {
         size_t type_index;
 

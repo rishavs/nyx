@@ -191,6 +191,7 @@ bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
     case NIPPY_TYPE_FUNCTION:
     case NIPPY_TYPE_ERROR:
     case NIPPY_TYPE_RANGE:
+    case NIPPY_TYPE_HANDLE:
         return true;
     case NIPPY_TYPE_FIXED_LIST:
         if (type->child_count != 1) {
@@ -244,7 +245,7 @@ bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
 {
     size_t i;
 
-    if (!is_fixed_type(ctx->program, element)) {
+    if (ctx->handle_depth == 0 && !is_fixed_type(ctx->program, element)) {
         error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
         return false;
     }

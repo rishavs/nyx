@@ -636,11 +636,23 @@ handles, fixed strings, `Text`, and `Error`. Collections are not elements:
 value and is not listable. To nest a collection, wrap it in a named struct.
 
 `alloc<T>` and `Handle<T>` require a **fixed type**. Fixed types contain no
-allocator-backed fields: primitives, function types, `Error`, `String<N>`,
+allocator-backed fields other than handles: primitives, function types, `Error`, `String<N>`, `Handle<T>`, `Range<T>`,
 `Array<T,N>` whose elements are fixed, and structs/unions whose fields or
-alternatives are fixed. `Handle`, `Text`, `List`, `Slice`, `TextBuilder`,
+alternatives are fixed. `Text`, `List`, `Slice`, `TextBuilder`,
 `Record`, and `Table` are not fixed. `List`, `Text`, and `TextBuilder` have dedicated constructors;
 `Array` is fixed and uses `alloc` when arena storage is required.
+
+Structs may refer to themselves or later-declared structs through handles:
+
+```nippy
+type Node value: Int64 next: Handle<Node> | Nil = nil end
+global arena: Store = Store(1024)
+var tail = arena.alloc<Node>(Node(2))
+var head = arena.alloc<Node>(Node(1, tail))
+```
+
+Cycles of fields stored by value are rejected; recursive cycles must pass
+through a handle. Stored handles retain their generation and bounds checks.
 
 By-value types have a compile-time size cap of 64 KiB. A struct, Array, Record,
 String, or union larger than that is rejected; move the data into a Store
