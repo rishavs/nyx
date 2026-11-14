@@ -76,8 +76,23 @@ TEST("stale handle")
         "s.reset()\n"
         "var n: Int32 = h.read()\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale handle");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale handle");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("stale handle write reports its source location")
+{
+    TestResult result = run_generated_failure(
+        "var s: Store = Store(16)\n"
+        "var h: Handle<Int32> = s.alloc<Int32>(1)\n"
+        "s.reset()\nh.write(2)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale handle write location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("two stores")

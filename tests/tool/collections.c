@@ -2,6 +2,24 @@
 
 #include "tool_support.h"
 
+TEST("full fixed array push diagnostic")
+{
+    return run_generated_failure(
+        "var xs: Array<Int32, 1> = [1]\nxs.push(2)\n",
+        MESSAGE_RUNTIME_ARRAY_FULL + 7, "full fixed array push");
+}
+
+TEST("dynamic negative list capacity diagnostic")
+{
+    TestResult result = run_generated_failure(
+        "global s: Store = Store(16)\n"
+        "var n: Int32 = -1\nvar xs = s.list<Int32>(n)\n",
+        MESSAGE_RUNTIME_NEGATIVE_CAPACITY + 7, "negative list capacity");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:3:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("fixed list")
 {
     const char *source =
@@ -28,6 +46,32 @@ TEST("dynamic list")
     return run_generated(source, "14\n", "dynamic list");
 }
 
+TEST("dynamic list access reports its source location")
+{
+    TestResult result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "var i: Int32 = 0\n"
+        "print(xs[i])\n",
+        MESSAGE_RUNTIME_LIST_BOUNDS + 7, "dynamic list bounds location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("stale dynamic list access reports its source location")
+{
+    TestResult result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "arena.reset()\n"
+        "print(xs[0])\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list access location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("list bounds")
 {
     const char *source =
@@ -36,7 +80,7 @@ TEST("list bounds")
         "end\n"
         "var n: Int32 = at([1], 1)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_LIST_BOUNDS,
+    return run_generated_failure(source, MESSAGE_RUNTIME_LIST_BOUNDS + 7,
                                  "fixed list bounds");
 }
 
@@ -49,8 +93,43 @@ TEST("stale list")
         "arena.reset()\n"
         "xs.push(2)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale dynamic list");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale dynamic list");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("stale list length reports its source location")
+{
+    TestResult result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "arena.reset()\nprint(xs.len())\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list length location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("stale list pop and optional get report their source locations")
+{
+    TestResult result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "arena.reset()\nprint(xs.pop())\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list pop location");
+    if (result != TEST_PASS ||
+        !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
+        return TEST_FAIL;
+    result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "arena.reset()\nprint(xs.get(0))\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list get location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("zero-length fixed list")
@@ -81,7 +160,7 @@ TEST("two dynamic list types")
 TEST("inferred list literal")
 {
     const char *source =
-        "var n: Int32 = [1, 2, 3][0] + [1, 2, 3].len()\n";
+        "var n: Int64 = [1, 2, 3][0] + Int64([1, 2, 3].len())\n";
 
     return run_generated(source, "4\n", "inferred list literal");
 }
@@ -159,7 +238,7 @@ TEST("fixed list capacity")
         "end\n"
         "var n: Int32 = full([])\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_LIST_BOUNDS,
+    return run_generated_failure(source, MESSAGE_RUNTIME_ARRAY_FULL + 7,
                                  "fixed list capacity");
 }
 
@@ -246,8 +325,11 @@ TEST("stale slice")
         "arena.reset()\n"
         "var n: Int32 = s[0]\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale slice");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale slice");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:6:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("for fixed list")
@@ -327,7 +409,7 @@ TEST("Table operations")
 {
     const char *source =
         "global arena: Store = Store(1024)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var t: Table<String<8>, Int32> = "
         "arena.table<String<8>, Int32>(1)\n"
         "  t[\"a\"] = 1\n"
@@ -335,7 +417,7 @@ TEST("Table operations")
         "  t[\"c\"] = 3\n"
         "  print(t[\"a\"], t[\"b\"], t[\"c\"], t.has(\"z\"), t.len())\n"
         "  print(t.remove(\"a\"), t.len())\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
     const char *expected =
@@ -351,8 +433,29 @@ TEST("Record full")
         "var x: Record<String<8>, Int32, 1> = {\"a\": 1}\n"
         "x[\"b\"] = 2\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_RECORD_FULL,
-                                 "Record full");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_RECORD_FULL + 7,
+                                              "Record full");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("zero capacity Record produces warning-free C")
+{
+    return run_generated(
+        "var x: Record<String<4>, Int32, 0> = {}\nprint(x.len())\n",
+        "0\n", "empty Record");
+}
+
+TEST("Record missing key reports its location")
+{
+    TestResult result = run_generated_failure(
+        "var x: Record<String<8>, Int32, 1> = {\"a\": 1}\n"
+        "print(x[\"b\"])\n",
+        MESSAGE_RUNTIME_MAP_MISSING + 7, "Record missing key");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("Table missing")
@@ -363,8 +466,11 @@ TEST("Table missing")
         "arena.table<String<8>, Int32>(2)\n"
         "var n: Int32 = t[\"z\"]\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_MAP_MISSING,
-                                 "Table missing key");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_MAP_MISSING + 7,
+                                              "Table missing key");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:3:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("Table stale")
@@ -376,20 +482,23 @@ TEST("Table stale")
         "arena.reset()\n"
         "var n: Int32 = t[\"a\"]\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale Table");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale Table");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("Table print")
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var t: Table<String<8>, Int32> = "
         "arena.table<String<8>, Int32>(1)\n"
         "  t[\"a\"] = 1\n"
         "  print(t)\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
     return run_generated(source, "{a: 1}\n", "Table print");
@@ -416,7 +525,7 @@ TEST("Table iteration")
 {
     const char *source =
         "global arena: Store = Store(256)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var t: Table<String<8>, Int32> = "
         "arena.table<String<8>, Int32>(1)\n"
         "  t[\"a\"] = 1\n"
@@ -432,7 +541,7 @@ TEST("Table iteration")
         "    count = count + 1\n"
         "  end\n"
         "  print(sum, count)\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
     return run_generated(source, "6 6\n", "Table iteration");
@@ -442,14 +551,14 @@ TEST("list get")
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var xs: List<Int32> = arena.list<Int32>(2)\n"
         "  xs.push(10)\n"
         "  var a: Int32 | Nil = xs.get(0)\n"
         "  var b: Int32 | Nil = xs.get(3)\n"
         "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
         "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
 
@@ -459,14 +568,14 @@ TEST("list get")
 TEST("fixed list get")
 {
     const char *source =
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var xs: Array<Int32, 2> = [10, 20]\n"
         "  var i: Int32 = 2\n"
         "  var a: Int32 | Nil = xs.get(1)\n"
         "  var b: Int32 | Nil = xs.get(i)\n"
         "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
         "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
 
@@ -477,7 +586,7 @@ TEST("slice get")
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var xs: List<Int32> = arena.list<Int32>(3)\n"
         "  xs.push(10)\n"
         "  xs.push(20)\n"
@@ -487,7 +596,7 @@ TEST("slice get")
         "  var b: Int32 | Nil = s.get(2)\n"
         "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
         "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
 
@@ -498,7 +607,7 @@ TEST("table get")
 {
     const char *source =
         "global arena: Store = Store(256)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var t: Table<String<8>, Int32> = "
         "arena.table<String<8>, Int32>(2)\n"
         "  t[\"a\"] = 7\n"
@@ -506,7 +615,7 @@ TEST("table get")
         "  var b: Int32 | Nil = t.get(\"b\")\n"
         "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
         "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
 
@@ -517,14 +626,14 @@ TEST("union list get")
 {
     const char *source =
         "global arena: Store = Store(128)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var xs: List<Int32 | Nil> = arena.list<Int32 | Nil>(2)\n"
         "  xs.push(1)\n"
         "  var a: Int32 | Nil = xs.get(0)\n"
         "  var b: Int32 | Nil = xs.get(1)\n"
         "  if typeof a is Int32 then print(a) else print(\"nil\") end\n"
         "  if typeof b is Int32 then print(b) else print(\"nil\") end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
 

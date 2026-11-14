@@ -35,9 +35,16 @@ static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
         const AstNode *node = ast_get_node(ast, i);
         size_t depth = 1;
         size_t j;
-        size_t refs[2] = {node->left_child, node->right_child};
+        size_t refs[3] = {
+            node->left_child,
+            node->right_child,
+            ((node->kind == AST_FUNCTION_DECLARATION &&
+              (node->is_method || node->is_static)) ||
+             (node->kind == AST_CALL && node->is_static))
+                ? node->owner_type_index : AST_NO_NODE
+        };
 
-        for (j = 0; j < 2; j++) {
+        for (j = 0; j < 3; j++) {
             size_t child = refs[j];
 
             if (child == AST_NO_NODE) {

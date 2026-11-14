@@ -9,6 +9,15 @@
 /* Fallback */
 #define MESSAGE_UNKNOWN_ERROR "Unknown Error"
 
+#define MESSAGE_CHECKER_NIL_TYPE \
+    "checker: Nil may only appear as a union alternative"
+#define MESSAGE_CHECKER_NIL_INITIALISER \
+    "checker: a union variable cannot be initialized with nil"
+#define MESSAGE_CHECKER_VOID_RETURN \
+    "checker: a function without a return type cannot return a value"
+#define MESSAGE_CHECKER_VOID_VALUE \
+    "checker: a call without a result cannot be used as a value"
+
 /* Lexer */
 #define MESSAGE_LEXER_INTEGER_OUT_OF_RANGE \
     "lexer: integer literal out of range"
@@ -98,8 +107,6 @@
     "parser: expected ':' after the parameter name"
 #define MESSAGE_PARSER_EXPECTED_PARAMETER_SEPARATOR \
     "parser: expected ',' or ')' after a parameter"
-#define MESSAGE_PARSER_EXPECTED_RETURN_TYPE \
-    "parser: expected ':' and a return type after the parameter list"
 #define MESSAGE_PARSER_EXPECTED_IN \
     "parser: expected 'in' after for bindings"
 #define MESSAGE_PARSER_EXPECTED_DO \
@@ -117,8 +124,6 @@
     "parser: expected '(' in a function type"
 #define MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR \
     "parser: expected ',' or ')' in a function type"
-#define MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_COLON \
-    "parser: expected ':' before a function type's return type"
 #define MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_GT \
     "parser: expected '>' after a function type"
 #define MESSAGE_PARSER_EXPECTED_TYPE_PARAMETER_NAME \
@@ -135,12 +140,22 @@
     "parser: expected '>' after a type argument list"
 #define MESSAGE_PARSER_EXPECTED_UNION_ALTERNATIVE \
     "parser: expected a type alternative after '|'"
-#define MESSAGE_PARSER_MATCH_HEAD \
-    "parser: match scrutinee must be a variable"
 #define MESSAGE_PARSER_EXPECTED_WITH \
     "parser: expected 'with' after match scrutinee"
 #define MESSAGE_PARSER_EXPECTED_ELSE \
     "parser: expression if needs an else branch"
+#define MESSAGE_PARSER_DEFAULT_LITERAL \
+    "parser: a default must be a literal value"
+#define MESSAGE_CHECKER_FIELD_DEFAULT_TYPE \
+    "checker: default for field '%s' has the wrong type"
+#define MESSAGE_CHECKER_RANGE_ARGUMENTS \
+    "checker: range expects two matching integer bounds and an optional Int64 step"
+#define MESSAGE_CHECKER_RANGE_ZERO_STEP \
+    "checker: range step cannot be zero"
+#define MESSAGE_RUNTIME_RANGE_ZERO_STEP \
+    "range step cannot be zero"
+#define MESSAGE_PARSER_MATCH_EXPECTED_ELSE \
+    "parser: expression match needs an else branch"
 #define MESSAGE_PARSER_EXPECTED_MEMBER_NAME \
     "parser: expected a member name after '.'"
 #define MESSAGE_PARSER_EXPECTED_STRING_LENGTH \
@@ -182,6 +197,16 @@
     "checker: declaration is missing a name or type"
 #define MESSAGE_CHECKER_DUPLICATE_FIELD \
     "checker: duplicate field '%s' in type '%s'"
+#define MESSAGE_CHECKER_METHOD_OWNER \
+    "checker: associated functions require a struct type, got '%s'"
+#define MESSAGE_CHECKER_METHOD_OWNER_PARAMETERS \
+    "checker: associated function owner '%s' must list its declared type parameters"
+#define MESSAGE_CHECKER_DUPLICATE_METHOD \
+    "checker: type '%s' already has an associated function named '%s'"
+#define MESSAGE_CHECKER_METHOD_RECEIVER \
+    "checker: method '%s' requires a mutable variable receiver"
+#define MESSAGE_CHECKER_SELF_ASSIGN \
+    "checker: cannot assign to the implicit receiver 'self'"
 #define MESSAGE_CHECKER_TYPE_HAS_NO_FIELDS \
     "checker: type declaration has no fields"
 #define MESSAGE_CHECKER_UNKNOWN_TYPE \
@@ -226,6 +251,8 @@
     "checker: literal index %d is outside the fixed bound %zu"
 #define MESSAGE_CHECKER_NEGATIVE_CAPACITY \
     "checker: capacity cannot be negative"
+#define MESSAGE_CHECKER_TEXT_INDEX \
+    "checker: strings do not support indexing; use byte_at"
 #define MESSAGE_CHECKER_FOR_MUTATION \
     "checker: cannot mutate the iterated list inside its for body"
 #define MESSAGE_CHECKER_DISCARDED_ERROR \
@@ -296,6 +323,10 @@
     "checker: constant shift count is outside the operand width"
 #define MESSAGE_CHECKER_OPERATOR_TYPE \
     "checker: operator '%s' has invalid operand types"
+#define MESSAGE_CHECKER_OPERATOR_TYPES \
+    "checker: operator '%s' has invalid operand types (%s and %s)"
+#define MESSAGE_CHECKER_UNARY_OPERAND \
+    "checker: operator '%s' has invalid operand types (%s)"
 #define MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE \
     "checker: match is not exhaustive and has no else arm"
 #define MESSAGE_CHECKER_MATCH_PATTERN \
@@ -324,8 +355,6 @@
     "checker: string literal needs a String<N> context"
 #define MESSAGE_CHECKER_STRING_TOO_LONG \
     "checker: string literal of %zu bytes does not fit String<%d>"
-#define MESSAGE_CHECKER_STRING_COMPARE_CONTEXT \
-    "checker: string comparison needs a fixed string type"
 #define MESSAGE_CHECKER_STRING_AMBIGUOUS \
     "checker: string literal fits more than one String<N> alternative"
 #define MESSAGE_CHECKER_STRING_INDEX \
@@ -439,7 +468,7 @@
 #define MESSAGE_CHECKER_ERROR_ARGS \
     "checker: Error takes header, description, filename, line, col, pos"
 #define MESSAGE_CHECKER_ERROR_THROW_ARGS \
-    "checker: Error.throw needs a header and a description"
+    "checker: Error::throw needs a header and a description"
 #define MESSAGE_CHECKER_ERROR_ARG_TYPE \
     "checker: Error argument %zu has the wrong type"
 #define MESSAGE_CHECKER_STORE_SIZE \
@@ -476,6 +505,8 @@
     "checker: cannot redefine built-in type 'Nil'"
 #define MESSAGE_CHECKER_DUPLICATE_TYPE_PARAMETER \
     "checker: duplicate type parameter '%s'"
+#define MESSAGE_CHECKER_TOO_MANY_TYPE_PARAMETERS \
+    "checker: '%s' has more than %zu type parameters"
 #define MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT \
     "checker: type '%s' expects %zu type argument(s), got %zu"
 #define MESSAGE_CHECKER_TYPE_NOT_GENERIC \
@@ -549,11 +580,16 @@
 
 /* Runtime diagnostics embedded in generated C. */
 #define MESSAGE_RUNTIME_OUT_OF_MEMORY "nippy: out of memory"
+#define MESSAGE_RUNTIME_POSITION "nippy: %s:%zu:%zu (byte %zu): %s"
 #define MESSAGE_RUNTIME_STALE_HANDLE "nippy: stale handle"
 #define MESSAGE_RUNTIME_HANDLE_BOUNDS "nippy: handle is out of range"
 #define MESSAGE_RUNTIME_STORE_RANGE "nippy: invalid store id"
 #define MESSAGE_RUNTIME_STRING_BOUNDS "nippy: string index out of bounds"
 #define MESSAGE_RUNTIME_LIST_BOUNDS "nippy: list index out of bounds"
+#define MESSAGE_RUNTIME_ARRAY_FULL "nippy: array capacity exceeded"
+#define MESSAGE_RUNTIME_NEGATIVE_CAPACITY "nippy: capacity cannot be negative"
+#define MESSAGE_RUNTIME_DIVISION_ZERO "nippy: division by zero"
+#define MESSAGE_RUNTIME_INTEGER_OVERFLOW "nippy: integer overflow"
 #define MESSAGE_RUNTIME_FOR_MUTATED \
     "nippy: iterated collection changed length during for loop"
 #define MESSAGE_RUNTIME_RECURSION \

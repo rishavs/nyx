@@ -104,6 +104,22 @@ bool numeric_constant_read(const TypedProgram *program, size_t node_index,
     return false;
 }
 
+bool check_default_numeric(CheckContext *ctx, size_t value)
+{
+    NumericConstant constant;
+    const TypedNode *node = typed_program_node(ctx->program, value);
+
+    if (node != NULL && numeric_constant_read(ctx->program, value, false,
+                                               &constant) &&
+        !constant.is_float &&
+        !integer_constant_fits(NIPPY_TYPE_INT64, constant.negative,
+                               constant.magnitude)) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_INTEGER_RANGE);
+        return false;
+    }
+    return true;
+}
+
 
 bool numeric_constant_convert(const NumericConstant *in, NippyType target,
                               NumericConstant *out)

@@ -27,6 +27,7 @@ const char *binary_operator_text(NippyOperator op)
 {
     switch (op) {
     case NIPPY_OPERATOR_EQ:
+    case NIPPY_OPERATOR_STRICT_EQ:
         return "==";
     case NIPPY_OPERATOR_NE:
         return "!=";
@@ -80,6 +81,45 @@ bool emit_expression(const TypedProgram *program, size_t node_index,
     if (node == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
         return false;
+    }
+    if (node->kind == TYPED_MATCH_TEMPORARY) {
+        if (!buffer_appendf(buffer, "nyx_match_%zu",
+                            (size_t)node->integer_value_u)) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == TYPED_RANGE_CREATE) {
+        size_t a = *(const size_t *)list_get(&program->children, node->children_start);
+        size_t b = *(const size_t *)list_get(&program->children, node->children_start + 1);
+        if (!buffer_appendf(buffer, "((nyx_range_%zu){ ", node->type_index) ||
+            !emit_expression(program, a, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, b, buffer, errors) ||
+            !buffer_append(buffer, ", ")) return false;
+        if (node->children_count == 3) {
+            size_t step = *(const size_t *)list_get(&program->children,
+                                                     node->children_start + 2);
+            if (!buffer_append(buffer, "nyx_range_step(") ||
+                !emit_expression(program, step, buffer, errors) ||
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column, node->pos.offset))
+                return false;
+        } else if (!buffer_append(buffer, "INT64_C(1)")) return false;
+        return buffer_append(buffer, " })");
+    }
+    if (node->kind == TYPED_MATCH_BIND_EXPRESSION) {
+        if (!buffer_appendf(buffer, "(nyx_match_%zu = ",
+                            (size_t)node->integer_value_u) ||
+            !emit_expression(program, node->left_child, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
+            !emit_expression(program, node->right_child, buffer, errors) ||
+            !buffer_append(buffer, ")")) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
     }
     if (!emit_expr_literals(program, node, buffer, errors, &handled)) {
         return false;

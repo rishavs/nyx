@@ -1,8 +1,8 @@
 type Marker
-  value: Nil
+  value: Int32 | Nil
 end
 
-fun take(n: Nil): Int32
+fun take(n: Int32 | Nil): Int32
   return 0
 end
 

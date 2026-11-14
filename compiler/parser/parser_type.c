@@ -340,7 +340,7 @@ bool parse_type_primary(
 
         if (next != NULL && next->type == TOKEN_LT) {
             size_t children_start;
-            size_t return_type;
+            size_t return_type = AST_NO_NODE;
             size_t i;
             SourcePos pos = token->pos;
             List parameter_types;
@@ -400,17 +400,12 @@ bool parse_type_primary(
             }
 
             token = token_at(tokens, *cursor);
-            if (token == NULL || token->type != TOKEN_COLON) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_COLON);
-                list_free(&parameter_types);
-                return false;
-            }
-            (*cursor)++;
-
-            if (!parse_type(tokens, string_bytes, ast, cursor, &return_type, errors)) {
-                list_free(&parameter_types);
-                return false;
+            if (token != NULL && token->type == TOKEN_COLON) {
+                (*cursor)++;
+                if (!parse_type(tokens, string_bytes, ast, cursor, &return_type, errors)) {
+                    list_free(&parameter_types);
+                    return false;
+                }
             }
 
             token = token_at(tokens, *cursor);

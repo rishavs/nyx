@@ -3,6 +3,172 @@
 
 #include "compile_support.h"
 
+TEST("struct defaults are checked even when unused")
+{
+    return compile_fails("type Bad x: Bool = 10 end\n",
+                         "incorrect field default", MESSAGE_CHECKER_FIELD_DEFAULT_TYPE,
+                         "x");
+}
+
+TEST("required struct fields cannot be omitted")
+{
+    return compile_fails("type Box x: Int64 = 1 y: Int64 end\n"
+                         "var box = Box(x = 2)\n",
+                         "missing required field", MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG,
+                         "y");
+}
+
+TEST("generic struct defaults are checked per specialization")
+{
+    return compile_fails("type Box<T> value: T = 1 end\n"
+                         "var box: Box<Bool> = Box()\n",
+                         "invalid generic field default", MESSAGE_CHECKER_FIELD_DEFAULT_TYPE,
+                         "value");
+}
+
+TEST("independent declaration errors are reported together")
+{
+    CompilerResult result = compiler_compile(
+        "var a: Int32 = true\n"
+        "var b: Bool = 3\n"
+        "var c: Int8 = 128\n"
+        "var d: String<2> = \"long\"\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "'a'") != NULL &&
+              strstr(result.error_message, "'b'") != NULL &&
+              strstr(result.error_message, "integer literal") != NULL &&
+              strstr(result.error_message, "does not fit String<2>") != NULL;
+
+    if (!ok) {
+        fprintf(stderr, "  missing independent errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent function errors are reported together")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\n"
+        "  var a: Int32 = true\n"
+        "  var b: Bool = 3\n"
+        "  var c: Int8 = 128\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "'a'") != NULL &&
+              strstr(result.error_message, "'b'") != NULL &&
+              strstr(result.error_message, "integer literal") != NULL;
+
+    if (!ok) {
+        fprintf(stderr, "  missing independent errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent errors in both branches are reported")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\n"
+        "  if true then var a: Int32 = true\n"
+        "  else var b: Bool = 3 end\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "'a'") != NULL &&
+              strstr(result.error_message, "'b'") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing branch errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent errors in match arms are reported")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad(x: Bool)\n"
+        "  match x with true then var a: Int32 = true\n"
+        "  with false then var b: Bool = 3\n"
+        "  else var c: Int8 = 128 end\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "'a'") != NULL &&
+              strstr(result.error_message, "'b'") != NULL &&
+              strstr(result.error_message, "integer literal") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing match arm errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent errors in match patterns are reported")
+{
+    CompilerResult result = compiler_compile(
+        "var x: Bool = true\n"
+        "match x with missing_a then print(1)\n"
+        "with missing_b then print(2) else print(3) end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "missing_a") != NULL &&
+              strstr(result.error_message, "missing_b") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing pattern errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent errors in if expression arms are reported")
+{
+    CompilerResult result = compiler_compile(
+        "var result = if true then missing_a else missing_b end\n",
+        &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "missing_a") != NULL &&
+              strstr(result.error_message, "missing_b") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing expression errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent invalid Nil types are reported together")
+{
+    CompilerResult result = compiler_compile(
+        "fun a(x: Nil) end\nfun b(y: Nil) end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:1:") != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing Nil type errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("invalid Nil types do not hide independent checker errors")
+{
+    CompilerResult result = compiler_compile(
+        "var a: Nil = nil\nvar b: Int32 = true\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:1:") != NULL &&
+              strstr(result.error_message, "'b'") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing independent errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("initialiser type mismatch")
 {
     return compile_fails("type P x: Int32 end\nvar p : P = 5\n",
@@ -160,7 +326,7 @@ TEST("assignment: an assignment to a store")
 TEST("assignment: an assignment to a function")
 {
     return compile_fails(
-        "fun f(): Nil\n  return nil\nend\nf = 1\n",
+        "fun f()\n  return\nend\nf = 1\n",
         "an assignment to a function",
         MESSAGE_CHECKER_ASSIGN_TARGET, "f");
 }
@@ -184,7 +350,7 @@ TEST("assignment: an assignment to a built-in type")
 TEST("assignment: assigning a program-level variable inside a function")
 {
     return compile_fails(
-        "var n: Int32 = 1\nfun f(): Nil\n  n = 2\n  return nil\nend\n",
+        "var n: Int32 = 1\nfun f()\n  n = 2\n  return\nend\n",
         "assigning a program-level variable inside a function",
         MESSAGE_CHECKER_GLOBAL_IN_FUNCTION, "n");
 }
@@ -240,7 +406,7 @@ TEST("slice: redefining Slice")
 TEST("local Store")
 {
     return compile_fails(
-        "fun f(): Nil\n  var s: Store = Store(1)\n  return nil\nend\n",
+        "fun f()\n  var s: Store = Store(1)\n  return\nend\n",
         "local Store",
         MESSAGE_CHECKER_LOCAL_STORE);
 }
@@ -277,10 +443,10 @@ TEST("for duplicate binding")
 TEST("for parameter collision")
 {
     return compile_fails(
-        "fun f(x: Int32, xs: Array<Int32, 2>): Nil\n"
+        "fun f(x: Int32, xs: Array<Int32, 2>)\n"
         "  for x in xs do\n"
         "  end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n",
         "for parameter collision",
         MESSAGE_CHECKER_DUPLICATE_NAME, "x");
@@ -310,7 +476,7 @@ TEST("reserved generated prefix")
 
 TEST("reserved entry point")
 {
-    return compile_fails("fun main(): Nil\n  return nil\nend\n",
+    return compile_fails("fun main()\n  return\nend\n",
                          "the generated entry point",
                          MESSAGE_CHECKER_RESERVED_NAME, "main");
 }
@@ -324,7 +490,7 @@ TEST("reserved field name")
 
 TEST("reserved parameter name")
 {
-    return compile_fails("fun f(printf: Int32): Nil\n  return nil\nend\n",
+    return compile_fails("fun f(printf: Int32)\n  return\nend\n",
                          "a reserved parameter name",
                          MESSAGE_CHECKER_RESERVED_NAME, "printf");
 }
@@ -332,7 +498,7 @@ TEST("reserved parameter name")
 TEST("reserved local name")
 {
     return compile_fails(
-        "fun f(): Nil\n  var nyx_value: Int32 = 1\n  return nil\nend\n",
+        "fun f()\n  var nyx_value: Int32 = 1\n  return\nend\n",
         "a reserved local name", MESSAGE_CHECKER_RESERVED_NAME, "nyx_value");
 }
 
@@ -365,14 +531,14 @@ TEST("prefix lookalike")
 TEST("print reserved")
 {
     TestResult result = compile_fails(
-        "fun print(x: Int32): Nil\n  return nil\nend\n",
+        "fun print(x: Int32)\n  return\nend\n",
         "print reserved", MESSAGE_CHECKER_BUILTIN_RESERVED, "print");
 
     if (result != TEST_PASS) {
         return result;
     }
     result = compile_fails(
-        "fun f(print: Int32): Nil\n  return nil\nend\n",
+        "fun f(print: Int32)\n  return\nend\n",
         "print parameter reserved", MESSAGE_CHECKER_BUILTIN_RESERVED, "print");
     if (result != TEST_PASS) {
         return result;
@@ -441,7 +607,7 @@ TEST("assign to const")
 TEST("assign to local const")
 {
     return compile_fails(
-        "fun f(): Nil\n  const x: Int32 = 1\n  x = 2\n  return nil\nend\n",
+        "fun f()\n  const x: Int32 = 1\n  x = 2\n  return\nend\n",
         "assign to local const",
         MESSAGE_CHECKER_CONST_ASSIGN, "x");
 }

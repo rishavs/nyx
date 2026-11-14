@@ -2,4 +2,4 @@ fun first<A, B>(a: A, b: B): A
   return a
 end
 
-var n: Int32 = first(1, true)
+var n: Int32 = first(Int32(1), true)

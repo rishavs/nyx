@@ -2,6 +2,335 @@
 
 #include "tool_support.h"
 
+TEST("lazy ranges support values, steps and loop control")
+{
+    return run_generated(
+        "fun show<T>(r: Range<T>) for n in r do print(n) end end\n"
+        "var r: Range<Int64> = range(0, 4)\n"
+        "show(r) show(range(5, 0, -2))\n"
+        "for i, n in range(0, 5) do\n"
+        " if n == 1 then continue end print(i, n) if n == 3 then break end\n"
+        "end\n"
+        "for n in range(0, 3, -1) do print(n) end\n"
+        "for n in range(Uint64(18446744073709551615), "
+        "Uint64(18446744073709551611), -2) do print(n) end\n",
+        "0\n1\n2\n3\n5\n3\n1\n0 0\n2 2\n3 3\n"
+        "18446744073709551615\n18446744073709551613\n", "lazy ranges");
+}
+
+TEST("ranges handle signed endpoints without overflow")
+{
+    return run_generated(
+        "for n in range(Int64(9223372036854775807), "
+        "Int64(-9223372036854775808), -9223372036854775808) do print(n) end\n",
+        "9223372036854775807\n-1\n", "range signed endpoints");
+}
+
+TEST("range arguments are evaluated once in source order")
+{
+    return run_generated(
+        "fun arg(n: Int64): Int64 print(n) return n end\n"
+        "var r = range(arg(1), arg(4), arg(2))\n"
+        "for n in r do print(n) end\n",
+        "1\n4\n2\n1\n3\n", "range argument evaluation");
+}
+
+TEST("dynamic range zero step reports its source position")
+{
+    return run_generated_failure(
+        "var step: Int64 = 0\nvar r = range(0, 5, step)\n",
+        "test.nip:2:9 (byte 28): range step cannot be zero",
+        "dynamic zero range step");
+}
+
+TEST("struct field literal defaults")
+{
+    return run_generated(
+        "type Rectangle width: Int64 height: Int64 = 10 end\n"
+        "type Label text: String<8> = \"hello\" active: Bool = true end\n"
+        "type Box<T> value: T count: Int64 = 2 end\n"
+        "type DefaultBox<T> value: T = 12 end\n"
+        "type Signed value: Int64 = -3 end\n"
+        "var a = Rectangle(5) var b = Rectangle(width = 3)\n"
+        "var c = Rectangle(height = 4, width = 1)\n"
+        "var label = Label() var box = Box(7)\n"
+        "var inferred = DefaultBox() var signed_value = Signed()\n"
+        "print(a.width, a.height, b.height, c.height)\n"
+        "print(label.text, label.active, box.value, box.count)\n"
+        "print(inferred.value, signed_value.value)\n",
+        "5 10 10 4\nhello true 7 2\n12 -3\n", "struct field defaults");
+}
+
+TEST("union subset narrowing retains values and tags")
+{
+    return run_generated(
+        "fun show(x: Int64 | Bool)\n"
+        "  match typeof x with Int64 then print(x) with Bool then print(x) end\n"
+        "end\n"
+        "fun run(x: Int64 | Bool | String<8>)\n"
+        "  if !(typeof x is String<8>) then\n"
+        "    show(x)\n"
+        "    match typeof x with Int64 then print(x + 2) "
+        "with Bool then print(x) end\n"
+        "    if !(typeof x is Bool) then print(x + 1) end\n"
+        "  end\n"
+        "  if typeof x is Int64 || typeof x is Bool then show(x) end\n"
+        "  if !(typeof x is String<8> || typeof x is Bool) then print(x + 3) end\n"
+        "end\n"
+        "run(42) run(true) run(\"abc\")\n",
+        "42\n44\n43\n42\n45\ntrue\ntrue\ntrue\n", "union subset narrowing");
+}
+
+TEST("union subset narrowing on fields and array elements")
+{
+    return run_generated(
+        "type Box value: Int64 | Bool | String<8> end\n"
+        "fun show(x: Int64 | Bool)\n"
+        "  match typeof x with Int64 then print(x) with Bool then print(x) end\n"
+        "end\n"
+        "var b = Box(true)\n"
+        "var a: Array<Int64 | Bool | String<8>, 1> = [Int64(7)]\n"
+        "if !(typeof b.value is String<8>) then\n"
+        "  show(b.value)\n"
+        "  if !(typeof b.value is Int64) then print(b.value) end\n"
+        "end\n"
+        "if !(typeof a[0] is String<8>) then show(a[0]) end\n",
+        "true\ntrue\n7\n", "union subset field and element narrowing");
+}
+
+TEST("union subset narrowing retains nil")
+{
+    return run_generated(
+        "fun show(x: Int64 | Nil)\n"
+        "  match typeof x with Int64 then print(x) with Nil then print(\"nil\") end\n"
+        "end\n"
+        "fun run(x: Int64 | Bool | Nil)\n"
+        "  if !(typeof x is Bool) then show(x) end\n"
+        "end\n"
+        "var x: Int64 | Bool | Nil = 9\n"
+        "run(x) x = nil run(x)\n",
+        "9\nnil\n", "union subset with nil");
+}
+
+TEST("compound alternatives preserve common narrowing facts")
+{
+    return run_generated(
+        "fun show(x: Int64 | Bool)\n"
+        "  match typeof x with Int64 then print(x) with Bool then print(x) end\n"
+        "end\n"
+        "fun run(a: Int64 | Bool | String<8>, b: Int64 | Bool | String<8>)\n"
+        "  if (typeof a is Int64 && typeof b is Int64) || "
+        "(typeof a is Int64 && typeof b is Bool) then\n"
+        "    print(a + 1) show(b)\n"
+        "  end\n"
+        "end\n"
+        "run(4, 8) run(4, true) run(false, 8)\n",
+        "5\n8\n5\ntrue\n", "common narrowing facts");
+}
+
+TEST("control flow without user identifiers")
+{
+    return run_generated(
+        "if true then print(1) end\n"
+        "if false then print(0) else print(2) end\n"
+        "while false do print(0) end\n",
+        "1\n2\n", "control flow without user identifiers");
+}
+
+TEST("expression arguments and bitwise precedence")
+{
+    return run_generated(
+        "fun id(x: Int64): Int64 return x end\n"
+        "var x: Int32 | Nil = 4\n"
+        "var bits: Int32 = 4\n"
+        "print(typeof x is Int32, id(if true then 3 else 4 end))\n"
+        "print(bits & 1 == 0, bits & 3 < 2, bits | 1 === 5)\n",
+        "true 3\ntrue true true\n", "expression arguments and precedence");
+}
+
+TEST("match evaluates expression scrutinees once")
+{
+    return run_generated(
+        "fun next(): Int64 print(\"called\") return 2 end\n"
+        "fun choose(): Int64\n"
+        "  return match next() with 1 then 10 with 2 then 20 else 30 end\n"
+        "end\n"
+        "print(choose())\n"
+        "match next() with 1 then print(1) with 2 then print(2) else print(3) end\n",
+        "called\n20\ncalled\n2\n", "match expression scrutinees");
+}
+
+TEST("match expression scrutinees in generic and recursive functions")
+{
+    return run_generated(
+        "fun identity<T>(x: T): T return x end\n"
+        "fun choose<T>(x: T): Int64\n"
+        "  return match identity(x) with 1 then 11 else 22 end\n"
+        "end\n"
+        "fun recur(n: Int64): Int64\n"
+        "  if n == 0 then return 0 end\n"
+        "  return match recur(n - 1) with 0 then 1 else 2 end\n"
+        "end\n"
+        "print(choose(1), choose(2), recur(2))\n",
+        "11 22 2\n", "match in generic and recursive functions");
+}
+
+TEST("match expression scrutinees in type tests and loops")
+{
+    return run_generated(
+        "fun maybe(x: Bool): Int32 | Nil\n"
+        "  if x then return Int32(3) else return nil end\nend\n"
+        "fun result(x: Bool): Int64\n"
+        "  match typeof maybe(x) with Int32 then return 1 with Nil then return 2 end\n"
+        "end\n"
+        "fun single(): Int64 match typeof 3 with Int64 then return 9 end end\n"
+        "var n: Int64 = 1\n"
+        "while true do match n + 0 with 1 then break else break end end\n"
+        "print(result(true), result(false), n, single())\n",
+        "1 2 1 9\n", "match type expressions and loop control");
+}
+
+TEST("match retains the original scrutinee across patterns")
+{
+    return run_generated(
+        "type Flag value: Bool end\n"
+        "method Flag.change(): Bool self.value = true return true end\n"
+        "var flag = Flag(false)\n"
+        "var result = match flag.value with flag.change() then 1 with false then 2 else 3 end\n"
+        "print(result, flag.value)\n",
+        "2 true\n", "match scrutinee snapshot");
+}
+
+TEST("match patterns use numeric and string value equality")
+{
+    return run_generated(
+        "var fixed: String<4> = \"hi\"\n"
+        "print(match \"hi\" with \"bye\" then 1 with \"hi\" then 2 else 3 end)\n"
+        "print(match Int32(3) with Int64(3) then 4 else 5 end)\n"
+        "print(match fixed with \"longer\" then 6 with \"hi\" then 7 else 8 end)\n",
+        "2\n4\n7\n", "match value equality");
+}
+
+TEST("narrowing through and and negation")
+{
+    return run_generated(
+        "fun positive(x: Int32 | Nil): Bool\n"
+        "  if typeof x is Int32 && x > 0 then return true end\n"
+        "  return false\nend\n"
+        "fun negative(x: Int32 | Nil): Bool\n"
+        "  if !(typeof x is Nil) then return x < 0 end\n"
+        "  return false\nend\n"
+        "print(positive(2), positive(nil), negative(-2), negative(nil))\n",
+        "true false true false\n", "narrowing through and and negation");
+}
+
+TEST("narrowing through or and its false branch")
+{
+    return run_generated(
+        "fun positive_or_nil(x: Int32 | Nil): Bool\n"
+        "  return typeof x is Nil || x > 0\nend\n"
+        "fun nonnegative(x: Int32 | Nil): Int32\n"
+        "  if !(typeof x is Nil || x < 0) then return x + 1 end\n"
+        "  return 0\nend\n"
+        "fun negative(x: Int32 | Nil): Int32\n"
+        "  if typeof x is Nil || x >= 0 then return 0 else return x end\n"
+        "end\n"
+        "print(positive_or_nil(nil), positive_or_nil(-1), nonnegative(4), negative(-2))\n",
+        "true false 5 -2\n", "or narrowing");
+}
+
+TEST("narrowing after early return and in else")
+{
+    return run_generated(
+        "fun value(x: Int32 | Nil): Int32\n"
+        "  if typeof x is Nil then return 0 end\n"
+        "  return x + 1\nend\n"
+        "fun other(x: Int32 | Nil): Int32\n"
+        "  if typeof x is Nil then return 0 else return x + 2 end\n"
+        "end\n"
+        "fun expr(x: Int32 | Nil): Int32\n"
+        "  return if typeof x is Nil then Int32(0) else x + 1 end\nend\n"
+        "print(value(nil), value(3), other(nil), other(3), expr(3))\n",
+        "0 4 0 5 4\n", "narrowing after early return and in else");
+}
+
+TEST("generic optional inference")
+{
+    return run_generated(
+        "fun pick<T>(x: T | Nil, fallback: T): T\n"
+        "  if typeof x is T then return x end\n"
+        "  return fallback\nend\n"
+        "var value: Int32 | Nil = 5\n"
+        "print(pick(Int32(3), Int32(4)), pick(value, Int32(7)))\n"
+        "value = nil\nprint(pick(value, Int32(7)), pick(nil, Int32(8)))\n",
+        "3 5\n7 8\n", "generic optional inference");
+}
+
+TEST("narrowing fixed array elements and struct fields")
+{
+    return run_generated(
+        "type Box value: Int32 | Nil end\n"
+        "var box = Box(4)\n"
+        "var values: Array<Int32 | Nil, 2> = [3, 4]\n"
+        "var i: Int32 = 1\n"
+        "if typeof box.value is Int32 then print(box.value + 1) end\n"
+        "if typeof values[0] is Int32 then print(values[0] + 2) end\n"
+        "if typeof box.value is Int32 && box.value > 0 then print(box.value) end\n"
+        "if typeof values[0] is Int32 && values[0] > 0 then print(values[0]) end\n"
+        "if typeof values[i] is Int32 then print(values[i] + 1) end\n"
+        "if typeof values[i - 1] is Int32 then print(values[i - 1]) end\n"
+        "if typeof box.value is Int32 then box.value = nil end\n"
+        "if typeof values[0] is Int32 then values[0] = nil end\n"
+        "print(typeof box.value is Nil, typeof values[0] is Nil)\n",
+        "5\n5\n4\n3\n5\n3\ntrue true\n", "narrowing fields and fixed array elements");
+}
+
+TEST("narrowing dynamic list elements")
+{
+    return run_generated(
+        "global arena: Store = Store(64)\n"
+        "var xs: List<Int32 | Nil> = arena.list<Int32 | Nil>(2)\n"
+        "xs.push(Int32(3))\n"
+        "if typeof xs[0] is Int32 && xs[0] > 0 then\n"
+        "  print(xs[0]) print(xs[0] + 1)\n"
+        "end\n"
+        "match typeof xs[0] with Int32 then print(xs[0] + 2) with Nil then print(0) end\n",
+        "3\n4\n5\n", "dynamic list narrowing");
+}
+
+TEST("functions without return annotations")
+{
+    const char *source =
+        "fun show(x: Int32) print(x) end\n"
+        "fun show_generic<T>(x: T) print(x) end\n"
+        "fun apply(f: Fun<(Int32)>, x: Int32) f(x) end\n"
+        "fun apply_generic<T>(f: Fun<(T)>, x: T) f(x) end\n"
+        "type Point x: Int32 end\n"
+        "method Point.show() print(self.x) end\n"
+        "static Point::show_value(x: Int32) print(x) end\n"
+        "var point = Point(3)\n"
+        "show(1) show_generic(true) point.show() Point::show_value(4)\n"
+        "apply(show, 5) apply_generic(show, Int32(6))\n";
+
+    return run_generated(source, "1\ntrue\n3\n4\n5\n6\n",
+                         "functions without return annotations");
+}
+
+TEST("nullable union initializer expression")
+{
+    const char *source =
+        "global arena: Store = Store(32)\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "fun optional(): Int32 | Nil return nil end\n"
+        "var value: Int32 | Nil = xs.pop()\n"
+        "print(value)\n"
+        "value = 3\nvalue = nil\nprint(value)\n"
+        "print(optional())\n";
+
+    return run_generated(source, "nil\nnil\nnil\n",
+                         "nullable union initializer expression");
+}
+
 TEST("union narrowing")
 {
     const char *source =
@@ -150,7 +479,7 @@ TEST("generic assignment")
         "  x = y\n"
         "  return x\n"
         "end\n"
-        "var n: Int32 = choose(1, 2)\n";
+        "var n: Int32 = choose(Int32(1), Int32(2))\n";
 
     return run_generated(source, "2\n", "generic assignment");
 }
@@ -238,9 +567,9 @@ TEST("for mutation")
 {
     const char *source =
         "global arena: Store = Store(64)\n"
-        "fun extend(xs: List<Int32>): Nil\n"
+        "fun extend(xs: List<Int32>)\n"
         "  xs.push(3)\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "fun sum(): Int32\n"
         "  var xs: List<Int32> = arena.list<Int32>(4)\n"
@@ -255,8 +584,11 @@ TEST("for mutation")
         "end\n"
         "var n: Int32 = sum()\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_FOR_MUTATED,
-                                 "for mutation");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_FOR_MUTATED + 7,
+                                              "for mutation");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:11:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("nested structs")
@@ -338,7 +670,7 @@ TEST("const bindings")
 {
     const char *source =
         "const x: Int32 = 3\n"
-        "const y = 4\n"
+        "const y: Int32 = 4\n"
         "print(x + y)\n"
         "fun f(): Int32\n"
         "  const z: Int32 = 5\n"
@@ -427,6 +759,9 @@ TEST("recursion guard")
         "end\n"
         "var n: Int32 = down(1)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_RECURSION,
-                                 "recursion depth guard");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_RECURSION + 7,
+                                              "recursion depth guard");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:1:")
+               ? TEST_PASS : TEST_FAIL;
 }

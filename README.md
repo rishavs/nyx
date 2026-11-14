@@ -8,6 +8,7 @@ C-shaped language with Lua spelling. Braces appear only in record literals.
 This compiler accepts a sequence of top-level declarations and statements:
 struct type declarations, aliases, and unions; variable and `const`
 declarations; global stores; function declarations, including generic ones;
+instance methods and static functions on concrete struct types;
 assignments; `if`, `match`, `for`, and `while` statements; and call statements. It
 implements stores and checked handles, fixed and dynamic strings, string
 builders, arrays/lists/slices, records/tables, errors, printing, generics,
@@ -67,8 +68,15 @@ Program-level consts follow the same visibility rule as other program-level
 variables: they must be passed into functions explicitly.
 
 Struct values are built with `Name(...)`: arguments may be positional or named,
-but not mixed. Named arguments may appear in any order, and every field must be
-supplied. When a variable omits its type, the initialiser's type is used; either
+but not mixed. Named arguments may appear in any order. Fields can declare
+literal defaults, which a constructor uses when those fields are omitted:
+
+```nippy
+type Rectangle width: Int64 height: Int64 = 10 end
+var rectangle = Rectangle(width = 5)
+```
+
+When a variable omits its type, the initialiser's type is used; either
 the left or right side must supply it. The numeric types are `Int8`, `Int16`,
 `Int32`, `Int64`, `Uint8`, `Uint16`, `Uint32`, `Uint64`, `Float32`, and
 `Float64`; `Byte` is an alias for `Uint8`. `Bool`, `Nil`, `Store`, `Handle<T>`,
@@ -79,8 +87,7 @@ may have any non-function value type. Struct and `Error` fields are read with
 stage that refused it. Source-level diagnostics are prefixed with the source
 file, line, column, and byte offset (`file:line:column (byte offset): `).
 
-A function declaration names its parameters and return type, then returns one
-expression:
+A function can declare a return type and return an expression:
 
 ```
 fun adder(x:Int32, y:Int32):Int32
@@ -92,6 +99,53 @@ Calls are expressions, so a function can be used in a variable initialiser:
 
 ```
 var sum : Int32 = adder(1, 2)
+```
+
+Structs can define instance methods and static functions after the type:
+
+```nippy
+method Point.move(dx: Int32, dy: Int32): self
+  self.x = self.x + dx
+  self.y = self.y + dy
+  return self
+end
+
+static Point::midpoint(a: Point, b: Point): Array<Int32, 2>
+  return [(a.x + b.x) / 2, (a.y + b.y) / 2]
+end
+
+var point = Point(1, 2)
+var moved = point.move(3, 4)
+var midpoint = Point::midpoint(point, moved)
+```
+
+An instance method receives a mutable pointer-like `self`; its receiver must be
+a mutable variable or field access. Returning `self` returns a value copy, while
+mutations to its fields affect the receiver. Static functions have no receiver
+and use `Type::name(...)`. Associated functions can declare type parameters,
+which are inferred from their arguments. Their owner must be a previously
+declared struct type. For a generic owner, repeat its type parameters in the
+declaration and specify the owner type at a static call:
+
+```nippy
+type Box<T> value: T end
+
+method Box<T>.replace(value: T): self
+  self.value = value
+  return self
+end
+
+static Box<T>::make(value: T): Box<T>
+  return Box(value)
+end
+
+method Box<T>.choose<U>(fallback: U): U
+  return fallback
+end
+
+var box = Box<Int32>::make(3)
+box.replace(8)
+var label: String<8> = box.choose("ok")
 ```
 
 Functions are first-class values. The type of `adder` is
@@ -109,14 +163,28 @@ var sum2 : Int32 = apply(add, 1, 2)
 Expressions include integer, floating-point, boolean, string, `nil`, list, and
 record literals; names; calls and member calls; struct constructors; indexing and
 member access; arithmetic (`+`, `-`, `*`, `/`, `%`, unary `-`); bitwise (`&`,
-`|`, `^`, `~`, `<<`, `>>`); comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`);
+`|`, `^`, `~`, `<<`, `>>`); comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`, `===`);
 logical operators (`!`, `&&`, `||`); `typeof x is T` tests; `if` and `match`
 expressions; and grouped expressions.
 
 Integer literals are contextually typed: they take the type of the other
 numeric operand or the expected type, and their value must fit that type.
-Floating-point literals default to `Float64` and are contextually typed as
+Without a type context they default to `Int64`. Floating-point literals default to `Float64` and are contextually typed as
 `Float32` where needed. There is no implicit conversion between numeric types.
+Equality is an exception to the same-type operand rule: it compares numeric
+values exactly across types, without rounding integers to floating point.
+
+```nippy
+print(Uint16(3) == Int64(3)) -- true
+print(Int32(-1) == Uint64(1)) -- false
+print(Int32(3) === Int64(3))  -- false: different types
+```
+
+Strings and `Text` compare by content across capacities and types. Structs,
+arrays, lists, records, and tables compare by contents when their types match
+and their fields or elements can be compared. Record and table equality ignores
+insertion order. Handles compare allocation identity; union values cannot be
+compared. Comparing stale handles traps.
 
 Integer literals may be written in hexadecimal, binary, or octal (`0xFF`,
 `0b1010`, `0o755`), and any numeric literal may group its digits with single
@@ -143,7 +211,9 @@ division or modulo by a constant zero are compile errors. `const` integer
 bindings are usable there, and the same evaluator checks `Store(bytes)` and
 constructor capacities.
 `Bool` is the built-in boolean type; `true` and `false` are its literals. `Nil`
-is the unit type; `nil` is its only value.
+is available only as a union alternative. A union variable cannot be initialized
+with a literal `nil`, but can be assigned `nil` later. An initializer expression
+may evaluate to `nil`, as with `var x: Int32 | Nil = xs.pop()`.
 
 ## Local variables and fields
 
@@ -177,7 +247,7 @@ list elements are not supported yet.
 
 ## For loops
 
-`for` iterates Arrays, dynamic arena lists, slices, fixed strings, and
+`for` iterates Arrays, dynamic arena lists, slices, ranges, fixed strings, and
 dynamic strings:
 
 ```nippy
@@ -193,6 +263,15 @@ fun sum(): Int32
 end
 ```
 
+`range` creates a lazy, reusable integer range with an exclusive end. The
+optional third argument is a signed step:
+
+```nippy
+var indices: Range<Int64> = range(0, 5)
+for i in indices do print(i) end       -- 0 through 4
+for i in range(5, 0, -2) do print(i) end  -- 5, 3, 1
+```
+
 An optional index binding comes first:
 
 ```nippy
@@ -202,10 +281,11 @@ end
 ```
 
 - Over lists and slices, the element type is the element type.
+- A `Range<T>` yields values of its integer type `T`.
 - Over `String<N>` and `Text`, the element type is `Byte`.
 - The index is `Int32`.
 - The iterable expression is evaluated once.
-- The length is snapshotted at loop entry.
+- Collection lengths are snapshotted at loop entry.
 - A direct `xs.push` or `xs.pop` on the iterated list inside the body is a
   compile-time error. Indirect mutation still fails deterministically at
   runtime.
@@ -294,6 +374,10 @@ Function    <function>
 ```
 
 Unions print their active payload. Collections and structs print recursively.
+Floating-point values print with enough digits to round-trip. Ordinary notation
+is used for decimal exponents from -6 through 15; outside that range, output
+uses scientific notation. Integral floating-point values in ordinary notation
+have a `.0` suffix, and negative zero prints as `-0.0`.
 The pretty-print depth limit defaults to 16 and is configurable through
 `CompilerConfig.max_print_depth`; deeper values print as `<...>`.
 
@@ -316,9 +400,10 @@ fun identity<T>(x: T): T
 end
 
 var a: MaybeInt = 3
-var b: Option<Int32> = nil
+var b: Option<Int32> = 1
+b = nil
 var c = Pair(1, true)
-var d: Int32 = identity(3)
+var d: Int32 = identity(Int32(3))
 ```
 
 Union alternatives are structural: `Int32 | Bool` and `Bool | Int32` are the
@@ -380,7 +465,7 @@ var w: Int32 = match x with true then 1 else 0 end
 ```
 
 Generic calls infer their type arguments from the value arguments, including
-generic constructors (`Pair(1, true)` is `Pair<Int32, Bool>`). Each concrete
+generic constructors (`Pair(1, true)` is `Pair<Int64, Bool>`). Each concrete
 instantiation is monomorphized into generated C. A generic function cannot be
 used as a value, and there is no explicit call-site type-argument syntax.
 
@@ -428,9 +513,8 @@ Call expressions can be used as statements at program level and inside function
 bodies; the value is discarded:
 
 ```nippy
-fun clear(): Nil
+fun clear()
   points.reset()
-  return nil
 end
 ```
 
@@ -741,8 +825,8 @@ var same: Bool = name == "nyx"
 - String literals are typed by context. `var s: String<16> = "nyx"` is fixed;
   `var s: Text = "nyx"` is a static dynamic string. `var s = "nyx"` is
   rejected because it has no context.
-- A literal longer than a fixed capacity, or a value of a different capacity,
-  is rejected. `Text` and `String<N>` do not convert implicitly.
+- Assigning a literal longer than a fixed capacity, or a value of a different
+  capacity, is rejected. `Text` and `String<N>` do not convert implicitly.
 - `byte_len()` is the byte length; `byte_at(i)` is bounds-checked and returns a
   `Byte`; `==`/`!=` compare content. A literal index that is negative or at
   least `N` is a compile-time error.
@@ -768,10 +852,10 @@ var description: String<128> = e.description
 The compiler can fill the source position:
 
 ```nippy
-var e: Error = Error.throw("E_PARSE", "unexpected token")
+var e: Error = Error::throw("E_PARSE", "unexpected token")
 ```
 
-`Error.throw(header, description)` uses the configured source filename and the
+`Error::throw(header, description)` uses the configured source filename and the
 call-site line, column, and byte offset for the other four fields.
 
 It carries `header: String<32>`, `description: String<128>`,
@@ -816,8 +900,17 @@ end
 ```
 
 `if` conditions and `while` conditions must be `Bool`. `break` and `continue`
-apply to the innermost loop (`while` or `for`). Every function must return on
-every path. A `while true` with no `break` counts as not falling through, so a
+apply to the innermost loop (`while` or `for`). Functions with an explicit
+return type must return on every path. A function without a return annotation
+may fall through:
+
+```nippy
+fun show(value: Int32)
+  print(value)
+end
+```
+
+A `while true` with no `break` counts as not falling through, so a
 function that ends in such a loop is accepted. Statements after `return`,
 `break`, or `continue` are unreachable and rejected. Functions may call earlier
 functions and themselves. Function value scope is closed by design: a function

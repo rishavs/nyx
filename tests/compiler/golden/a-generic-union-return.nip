@@ -2,4 +2,4 @@ fun maybe<T>(x: T): T | Nil
   return x
 end
 
-var m: Int32 | Nil = maybe(3)
+var m: Int32 | Nil = maybe(Int32(3))

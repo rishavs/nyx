@@ -5,6 +5,7 @@ nyx_nil nyx_u_nothing(void)
 {
 #line 2 "test.nip"
     return ((nyx_nil)0);
+    return (nyx_nil)0;
 }
 
 int main(void)

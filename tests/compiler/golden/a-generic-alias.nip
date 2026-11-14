@@ -1,4 +1,5 @@
 type Option<T> = T | Nil
 
 var a: Option<Int32> = 3
-var b: Option<Int32> = nil
+var b: Option<Int32> = 3
+b = nil

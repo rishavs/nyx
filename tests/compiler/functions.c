@@ -3,6 +3,26 @@
 
 #include "compile_support.h"
 
+TEST("return without a value")
+{
+    TestResult result = compile_accepts(
+        "fun f(x: Bool) if x then return end print(x) end\n"
+        "fun apply(f: Fun<(Bool)>) f(true) end\n"
+        "apply(f)\n", "no-result function and function type");
+    if (result != TEST_PASS) return result;
+    result = compile_fails("fun f() return nil end\n",
+                           "no-result function returning nil",
+                           MESSAGE_CHECKER_VOID_RETURN);
+    if (result != TEST_PASS) return result;
+    result = compile_fails("fun f() end\nvar x: Int32 | Nil = f()\n",
+                           "no-result call used as a value",
+                           MESSAGE_CHECKER_VOID_VALUE);
+    if (result != TEST_PASS) return result;
+    return compile_fails("fun f(): Int32 return end\n",
+                         "value-returning function with bare return",
+                         MESSAGE_CHECKER_RETURN_TYPE_MISMATCH, "f");
+}
+
 TEST("unknown call")
 {
     return compile_fails("var p = Foo(1, 2)\n",

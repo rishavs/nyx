@@ -109,14 +109,14 @@ TEST("bounds: nested mutation in for")
 
 TEST("constant overflow")
 {
-    return compile_fails("print(2147483647 + 1)\n",
+    return compile_fails("var x: Int32 = 2147483647 + 1\n",
                          "constant expression overflow",
                          MESSAGE_CHECKER_CONST_OVERFLOW);
 }
 
 TEST("constant shift")
 {
-    return compile_fails("print(1 << 40)\n", "constant shift range",
+    return compile_fails("var x: Int32 = 1 << 40\n", "constant shift range",
                          MESSAGE_CHECKER_SHIFT_RANGE);
 }
 
@@ -200,12 +200,12 @@ TEST("unreachable return")
 TEST("unreachable break")
 {
     return compile_fails(
-        "fun f(): Nil\n"
+        "fun f()\n"
         "  while true do\n"
         "    break\n"
         "    print(1)\n"
         "  end\n"
-        "  return nil\n"
+        "  return\n"
         "end\n",
         "unreachable break", MESSAGE_CHECKER_UNREACHABLE_CODE);
 }
@@ -262,20 +262,20 @@ TEST("by-value size cap")
 TEST("local inference contexts")
 {
     TestResult result = compile_fails(
-        "fun f(): Nil\n  var x = []\n  return nil\nend\n",
+        "fun f()\n  var x = []\n  return\nend\n",
         "local list context", MESSAGE_CHECKER_LIST_INFER);
 
     if (result != TEST_PASS) {
         return result;
     }
     result = compile_fails(
-        "fun f(): Nil\n  var r = {\"a\": 1}\n  return nil\nend\n",
+        "fun f()\n  var r = {\"a\": 1}\n  return\nend\n",
         "local Record context", MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
     if (result != TEST_PASS) {
         return result;
     }
     return compile_fails(
-        "fun f(): Nil\n  var s = \"x\"\n  return nil\nend\n",
+        "fun f()\n  var s = \"x\"\n  return\nend\n",
         "local string context", MESSAGE_CHECKER_STRING_LITERAL_CONTEXT);
 }
 

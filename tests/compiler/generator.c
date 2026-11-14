@@ -161,7 +161,7 @@ TEST("invalid header name")
     make_int_var_program(&program);
     error_init(&errors);
 
-    if (generator_generate(&program, "bad name", "ok.nip", &c_source, &h_source,
+    if (generator_generate(&program, "../bad", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_INVALID_HEADER_NAME)) {
         fprintf(stderr, "  invalid header name did not produce its diagnostic\n");

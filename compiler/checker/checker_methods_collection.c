@@ -69,8 +69,10 @@ bool check_collection_method(CheckContext *ctx, const AstNode *node,
                                                 node->children_start);
             if (!check_expression(ctx, key_ast, &key) ||
                 !inject_into(ctx, key, key_type, &child_index)) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MAP_KEY);
+                if (!ctx->errors->reported) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_MAP_KEY);
+                }
                 return false;
             }
             if (strcmp(method, "remove") == 0) {
@@ -152,32 +154,13 @@ map_len_fallthrough:
             size_t dynamic_type;
             size_t start_node;
             size_t length_node;
-            const TypedNode *start_typed;
-            const TypedNode *length_typed;
-            const TypedType *start_type;
-            const TypedType *length_type;
 
             start_ast = *(const size_t *)list_get(&ctx->ast->children,
                                                   node->children_start);
             length_ast = *(const size_t *)list_get(&ctx->ast->children,
                                                    node->children_start + 1);
-            if (!check_expression(ctx, start_ast, &start_node) ||
-                !check_expression(ctx, length_ast, &length_node)) {
-                return false;
-            }
-            start_typed = typed_program_node(ctx->program, start_node);
-            length_typed = typed_program_node(ctx->program, length_node);
-            start_type = start_typed == NULL
-                             ? NULL
-                             : typed_program_type(ctx->program,
-                                                  start_typed->type_index);
-            length_type = length_typed == NULL
-                              ? NULL
-                              : typed_program_type(ctx->program,
-                                                   length_typed->type_index);
-            if (start_type == NULL || length_type == NULL ||
-                start_type->kind != NIPPY_TYPE_INT32 ||
-                length_type->kind != NIPPY_TYPE_INT32) {
+            if (!check_int32_expression(ctx, start_ast, &start_node) ||
+                !check_int32_expression(ctx, length_ast, &length_node)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_STRING_SLICE_TYPE);
                 return false;
@@ -354,8 +337,10 @@ map_len_fallthrough:
                 &ctx->program->type_children, receiver_type->first_child + 1);
             if (!check_expression(ctx, argument, &key) ||
                 !inject_into(ctx, key, key_type, &coerced)) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MAP_KEY);
+                if (!ctx->errors->reported) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_MAP_KEY);
+                }
                 return false;
             }
             element = value_type;
@@ -365,8 +350,6 @@ map_len_fallthrough:
                    receiver_type->kind == NIPPY_TYPE_FIXED_LIST ||
                    receiver_type->kind == NIPPY_TYPE_SLICE) {
             size_t index;
-            const TypedNode *index_node;
-            const TypedType *index_type;
 
             if (receiver_type->child_count != 1) {
                 error_report_at(ctx->errors, node->pos,
@@ -376,16 +359,10 @@ map_len_fallthrough:
             element = *(const size_t *)list_get(
                 &ctx->program->type_children, receiver_type->first_child);
             if (!check_fixed_index_bounds(ctx, argument,
-                                          receiver_node->type_index) ||
-                !check_expression(ctx, argument, &index)) {
+                                          receiver_node->type_index)) {
                 return false;
             }
-            index_node = typed_program_node(ctx->program, index);
-            index_type = index_node == NULL
-                             ? NULL
-                             : typed_program_type(ctx->program,
-                                                  index_node->type_index);
-            if (index_type == NULL || index_type->kind != NIPPY_TYPE_INT32) {
+            if (!check_int32_expression(ctx, argument, &index)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_LIST_INDEX);
                 return false;

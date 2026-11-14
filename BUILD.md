@@ -153,7 +153,8 @@ There are two suites, each with its own binary:
 - **Tool suite** (`bin/tool-tester`, `tests/tool/`) — tests that need other
   processes: runtime execution of generated programs (strings, collections,
   stores, numbers, traps), plus the driver, file I/O, the `cc` invocation, and
-  the CLI allocation-failure sweep.
+  the CLI allocation-failure sweep. Runtime tests compile generated C with
+  `-Wall -Wextra -Wpedantic -Werror`.
 
 Each file under `tests/<suite>/` is a **group**: `tests/compiler/numeric.c` is
 the group `numeric`. A test is addressed as `group: name`, and that is what a

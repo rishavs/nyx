@@ -3,6 +3,50 @@
 
 #include "compile_support.h"
 
+TEST("operator diagnostic names types")
+{
+    TestResult result = compile_fails("var x: Int32 = 1\nprint(x & true)\n",
+                                      "binary operator operand types",
+                                      MESSAGE_CHECKER_OPERATOR_TYPES,
+                                      "&", "Int32", "Bool");
+    if (result != TEST_PASS) return result;
+    return compile_fails("print(~true)\n", "unary operator operand type",
+                         MESSAGE_CHECKER_UNARY_OPERAND, "~", "Bool");
+}
+
+TEST("strict equality rejects unions")
+{
+    return compile_fails("var a: Int32 | Nil = 3\n"
+                         "print(a === a)\n",
+                         "strict union equality",
+                         MESSAGE_CHECKER_OPERATOR_TYPE, "===");
+}
+
+TEST("default integer type and range")
+{
+    TestResult result = compile_accepts(
+        "var x = 1\nvar y: Int64 = x\n"
+        "var z: Uint64 = 18446744073709551615\n"
+        "var min = -9223372036854775808\n"
+        "var nested: Int32 = (1 + 2) * 3\n"
+        "var small_float: Float32 = 1.5 + 2.5\n"
+        "var wide: Uint64 = 18446744073709551615 - 1\n",
+        "Int64 default and contextual Uint64");
+    if (result != TEST_PASS) return result;
+    result = compile_fails("var x = 9223372036854775808\n",
+                           "inferred integer above Int64",
+                           MESSAGE_CHECKER_INTEGER_RANGE);
+    if (result != TEST_PASS) return result;
+    result = compile_fails("print(9223372036854775808)\n",
+                           "printed integer above Int64",
+                           MESSAGE_CHECKER_INTEGER_RANGE);
+    if (result != TEST_PASS) return result;
+    return compile_fails("fun id<T>(x: T): T return x end\n"
+                         "var x = id(9223372036854775808)\n",
+                         "generic integer above Int64",
+                         MESSAGE_CHECKER_INTEGER_RANGE);
+}
+
 TEST("byte: literal range")
 {
     return compile_fails("var b: Byte = 300\n",
@@ -12,9 +56,8 @@ TEST("byte: literal range")
 
 TEST("safety: Byte comparison range")
 {
-    return compile_fails("var b: Byte = 1\nprint(300 == b)\n",
-                         "Byte literal comparison range",
-                         MESSAGE_CHECKER_BYTE_RANGE, 300);
+    return compile_accepts("var b: Byte = 1\nprint(300 == b)\n",
+                           "numeric equality across integer ranges");
 }
 
 TEST("Int8 literal range")
@@ -81,6 +124,27 @@ TEST("mixed operand types")
         "mixed numeric types", MESSAGE_CHECKER_OPERATOR_TYPE, "+");
 }
 
+TEST("mixed numeric equality stays distinct from ordering")
+{
+    TestResult result = compile_accepts(
+        "var a: Int32 = 3\nvar b: Uint64 = 3\n"
+        "var f: Float64 = 3.0\n"
+        "print(a == b, a != f, 3 == 3.0)\n",
+        "mixed numeric equality");
+    if (result != TEST_PASS) return result;
+    result = compile_fails("var a: Int32 = 3\nvar b: Int64 = 3\n"
+                           "print(a < b)\n",
+                           "mixed numeric ordering",
+                           MESSAGE_CHECKER_OPERATOR_TYPE, "<");
+    if (result != TEST_PASS) return result;
+    result = compile_fails("print(9223372036854775808 == 1)\n",
+                           "out-of-range default integer in equality",
+                           MESSAGE_CHECKER_INTEGER_RANGE);
+    if (result != TEST_PASS) return result;
+    return compile_fails("print(1 == true)\n", "numeric and Bool equality",
+                         MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+}
+
 TEST("Int8 shift width")
 {
     return compile_fails("var a: Int8 = 1\nprint(a << 8)\n",
@@ -109,7 +173,7 @@ TEST("union literal range")
 
 TEST("union literal ambiguity")
 {
-    return compile_fails("var u: Int8 | Int64 = 5\n",
+    return compile_fails("var u: Int8 | Int32 = 5\n",
                          "ambiguous union literal",
                          MESSAGE_CHECKER_NUMERIC_AMBIGUOUS);
 }

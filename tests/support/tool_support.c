@@ -200,7 +200,8 @@ static TestResult build_and_run(const char *source, const char *driver,
         goto finished;
     }
     if (driver == NULL) {
-        snprintf(command, sizeof(command), "cc -std=c11 -o %s %s", program,
+        snprintf(command, sizeof(command),
+                 "cc -std=c11 -Wall -Wextra -Wpedantic -Werror -o %s %s", program,
                  test_path("runtime.c"));
         status = run_command(command, log);
     } else {
@@ -217,7 +218,8 @@ static TestResult build_and_run(const char *source, const char *driver,
         /* The generated translation unit always defines main; rename it so
            the driver's main can call the Nippy functions. */
         snprintf(command, sizeof(command),
-                 "cc -std=c11 -Dmain=nyx_generated_main -c %s -o %s",
+                 "cc -std=c11 -Wall -Wextra -Wpedantic -Werror "
+                 "-Dmain=nyx_generated_main -c %s -o %s",
                  test_path("runtime.c"), object);
         status = run_command(command, log);
         if (status == 0) {
@@ -233,6 +235,14 @@ static TestResult build_and_run(const char *source, const char *driver,
     }
     if (status != 0) {
         fprintf(stderr, "  %s: generated C did not build\n", what);
+        {
+            FILE *build_log = fopen(log, "r");
+            int ch;
+            if (build_log != NULL) {
+                while ((ch = fgetc(build_log)) != EOF) fputc(ch, stderr);
+                fclose(build_log);
+            }
+        }
         goto finished;
     }
     status = run_command(program, log);

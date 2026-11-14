@@ -150,7 +150,7 @@ TEST("reset arguments")
 {
     const char *source =
         "var s: Store = Store(16)\n"
-        "var r: Nil = s.reset(1)\n";
+        "s.reset(1)\n";
 
     return compile_fails(source, "reset with an argument",
                          MESSAGE_CHECKER_MEMBER_ARGS, "reset");
@@ -160,7 +160,7 @@ TEST("reset type argument")
 {
     const char *source =
         "var s: Store = Store(16)\n"
-        "var r: Nil = s.reset<Int32>()\n";
+        "s.reset<Int32>()\n";
 
     return compile_fails(source, "reset with a type argument",
                          MESSAGE_CHECKER_MEMBER_TYPE_ARG, "reset");
@@ -181,7 +181,7 @@ TEST("write type")
     const char *source =
         "var s: Store = Store(16)\n"
         "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
-        "var w: Nil = p.write(true)\n";
+        "p.write(true)\n";
 
     return compile_fails(source, "write with the wrong value type",
                          MESSAGE_CHECKER_WRITE_TYPE);

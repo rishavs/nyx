@@ -2,6 +2,41 @@
 
 #include "compile_support.h"
 
+TEST("Nil is confined to union alternatives")
+{
+    const char *bad[] = {
+        "var x: Nil = nil\n",
+        "var x = nil\n",
+        "type Box value: Array<Nil, 1> end\n",
+        "type Bad<T> value: Nil end\n",
+        "type Bad = Nil | Nil\n",
+        "fun f(x: Nil): Int32 return 0 end\n",
+        "fun f(): Nil return nil end\n",
+        "fun id<T>(x: T): T return x end var x = id(nil)\n"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        TestResult result = compile_fails(bad[i], "standalone Nil type",
+                                          MESSAGE_CHECKER_NIL_TYPE);
+        if (result != TEST_PASS) return result;
+    }
+    return compile_accepts("var x: Int32 | Nil = 1\nx = nil\n"
+                           "if typeof x is Nil then print(x) end\n",
+                           "Nil union alternative");
+}
+
+TEST("union initial nil literal")
+{
+    TestResult result = compile_fails("var x: Int32 | Nil = nil\n",
+                                     "nil union initializer",
+                                     MESSAGE_CHECKER_NIL_INITIALISER);
+    if (result != TEST_PASS) return result;
+    return compile_fails("fun f() var x: Int32 | Nil = nil end\n",
+                         "nil local union initializer",
+                         MESSAGE_CHECKER_NIL_INITIALISER);
+}
+
 TEST("unknown type")
 {
     return compile_fails("var x : Float = 13\n", "an unknown variable type",

@@ -31,6 +31,9 @@ bool argument_looks_like_expression(const Token *token)
             token->type == TOKEN_KEYWORD_TRUE ||
             token->type == TOKEN_KEYWORD_FALSE ||
             token->type == TOKEN_KEYWORD_NIL ||
+            token->type == TOKEN_KEYWORD_IF ||
+            token->type == TOKEN_KEYWORD_TYPEOF ||
+            token->type == TOKEN_KEYWORD_MATCH ||
             token->type == TOKEN_BANG ||
             token->type == TOKEN_MINUS ||
             token->type == TOKEN_TILDE ||
@@ -89,6 +92,39 @@ bool parse_type_test(const TokenList *tokens, const List *string_bytes,
     node.children_start = 0;
     node.children_count = 0;
     return push_node(ast, &node, out_index);
+}
+
+
+static bool generic_static_owner_ahead(const TokenList *tokens, size_t cursor)
+{
+    const Token *token = token_at(tokens, cursor + 1);
+    size_t depth = 0;
+    size_t i;
+
+    if (token == NULL || token->type != TOKEN_LT) {
+        return false;
+    }
+    for (i = cursor + 1; (token = token_at(tokens, i)) != NULL; i++) {
+        if (token->type == TOKEN_LT) {
+            if (++depth > 256) {
+                return false;
+            }
+        } else if (token->type == TOKEN_GT) {
+            if (--depth == 0) {
+                token = token_at(tokens, i + 1);
+                return token != NULL && token->type == TOKEN_DOUBLE_COLON;
+            }
+        } else if (token->type != TOKEN_IDENTIFIER &&
+                   token->type != TOKEN_INTEGER &&
+                   token->type != TOKEN_COMMA &&
+                   token->type != TOKEN_PIPE &&
+                   token->type != TOKEN_LPAREN &&
+                   token->type != TOKEN_RPAREN &&
+                   token->type != TOKEN_COLON) {
+            break;
+        }
+    }
+    return false;
 }
 
 
@@ -271,6 +307,50 @@ bool parse_primary(
     if (token->type == TOKEN_IDENTIFIER) {
         const Token *next = token_at(tokens, *cursor + 1);
 
+        if ((next != NULL && next->type == TOKEN_DOUBLE_COLON) ||
+            generic_static_owner_ahead(tokens, *cursor)) {
+            size_t owner_name_index;
+            size_t owner_type_index = AST_NO_NODE;
+            size_t call_index;
+            const Token *method;
+            const Token *open;
+            AstNode *call;
+
+            if (!intern_token(ast, token, &owner_name_index, errors)) {
+                return false;
+            }
+            if (next->type == TOKEN_LT) {
+                if (!parse_type_primary(tokens, string_bytes, ast, cursor,
+                                        &owner_type_index, errors)) {
+                    return false;
+                }
+                (*cursor)++;
+            } else {
+                *cursor += 2;
+            }
+            method = token_at(tokens, *cursor);
+            open = token_at(tokens, *cursor + 1);
+            if (method == NULL || method->type != TOKEN_IDENTIFIER ||
+                open == NULL || open->type != TOKEN_LPAREN) {
+                error_report_at(errors, position_at(tokens, *cursor),
+                                MESSAGE_PARSER_EXPECTED_ARGUMENT);
+                return false;
+            }
+            if (!parse_call(tokens, string_bytes, ast, cursor, &call_index,
+                            errors)) {
+                return false;
+            }
+            call = (AstNode *)list_get(&ast->nodes, call_index);
+            if (call == NULL) {
+                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                return false;
+            }
+            call->is_static = true;
+            call->second_name_index = owner_name_index;
+            call->owner_type_index = owner_type_index;
+            *out_index = call_index;
+            return true;
+        }
         if (next != NULL && next->type == TOKEN_LPAREN) {
             return parse_call(tokens, string_bytes, ast, cursor, out_index, errors);
         }
@@ -712,7 +792,7 @@ bool parse_relational(
         {TOKEN_GE, NIPPY_OPERATOR_GE}
     };
 
-    return parse_binary_level(parse_shift, operators,
+    return parse_binary_level(parse_bit_or, operators,
                               sizeof(operators) / sizeof(operators[0]), tokens,
                               string_bytes, ast, cursor, out_index, errors);
 }
@@ -725,6 +805,7 @@ bool parse_equality(
 {
     static const BinaryOperator operators[] = {
         {TOKEN_EQEQ, NIPPY_OPERATOR_EQ},
+        {TOKEN_EQEQEQ, NIPPY_OPERATOR_STRICT_EQ},
         {TOKEN_NE, NIPPY_OPERATOR_NE}
     };
 
@@ -743,7 +824,7 @@ bool parse_bit_and(
         {TOKEN_AMP, NIPPY_OPERATOR_BIT_AND}
     };
 
-    return parse_binary_level(parse_equality, operators,
+    return parse_binary_level(parse_shift, operators,
                               sizeof(operators) / sizeof(operators[0]), tokens,
                               string_bytes, ast, cursor, out_index, errors);
 }
@@ -788,7 +869,7 @@ bool parse_logical_and(
         {TOKEN_ANDAND, NIPPY_OPERATOR_AND}
     };
 
-    return parse_binary_level(parse_bit_or, operators,
+    return parse_binary_level(parse_equality, operators,
                               sizeof(operators) / sizeof(operators[0]), tokens,
                               string_bytes, ast, cursor, out_index, errors);
 }

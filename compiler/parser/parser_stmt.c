@@ -1,14 +1,6 @@
 #include "parser_internal.h"
 
 
-bool match_head_ok(const Ast *ast, size_t head)
-{
-    const AstNode *node = ast_get_node(ast, head);
-
-    return node != NULL && node->kind == AST_IDENTIFIER;
-}
-
-
 bool parse_match(const TokenList *tokens, const List *string_bytes,
                         Ast *ast, size_t *cursor, bool expression_form,
                         size_t *out_index, ErrorState *errors)
@@ -30,11 +22,6 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
     if (!parse_expression(tokens, string_bytes, ast, cursor, &head, errors)) {
         return false;
     }
-    if (!match_head_ok(ast, head)) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_MATCH_HEAD);
-        return false;
-    }
     if (token_at(tokens, *cursor) == NULL ||
         token_at(tokens, *cursor)->type != TOKEN_KEYWORD_WITH) {
         error_report_at(errors, position_at(tokens, *cursor),
@@ -46,37 +33,34 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
     for (;;) {
         size_t pattern;
         size_t body;
+        size_t start = *cursor;
+        size_t error_start = errors->length;
         const Token *token;
 
         if (type_match) {
             if (!parse_type(tokens, string_bytes, ast, cursor, &pattern,
                             errors)) {
-                list_free(&children);
-                return false;
+                goto recover_arm;
             }
         } else if (!parse_expression(tokens, string_bytes, ast, cursor,
                                      &pattern, errors)) {
-            list_free(&children);
-            return false;
+            goto recover_arm;
         }
         token = token_at(tokens, *cursor);
         if (token == NULL || token->type != TOKEN_KEYWORD_THEN) {
             error_report_at(errors, position_at(tokens, *cursor),
                             MESSAGE_PARSER_EXPECTED_THEN);
-            list_free(&children);
-            return false;
+            goto recover_arm;
         }
         (*cursor)++;
         if (expression_form) {
             if (!parse_expression(tokens, string_bytes, ast, cursor, &body,
                                   errors)) {
-                list_free(&children);
-                return false;
+                goto recover_arm;
             }
         } else if (!parse_block(tokens, string_bytes, ast, cursor, &body,
                                 errors)) {
-            list_free(&children);
-            return false;
+            goto recover_arm;
         }
         if (!list_push(&children, &pattern) ||
             !list_push(&children, &body)) {
@@ -90,6 +74,42 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
             continue;
         }
         break;
+
+recover_arm:
+        if (errors->length == error_start) {
+            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        }
+        if (strstr(errors->message + error_start, "out of memory") != NULL ||
+            errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
+            list_free(&children);
+            return false;
+        }
+        {
+            size_t scan = start;
+            size_t depth = 0;
+            SourcePos failure = position_at(tokens, *cursor);
+            while ((token = token_at(tokens, scan)) != NULL &&
+                   token->type != TOKEN_EOF) {
+                if (scan >= *cursor &&
+                    (depth == 0 || token->pos.line > failure.line) &&
+                    (token->type == TOKEN_KEYWORD_WITH ||
+                     token->type == TOKEN_KEYWORD_ELSE ||
+                     token->type == TOKEN_KEYWORD_END)) break;
+                if (token_opens_nesting(token->type)) depth++;
+                else if (token_closes_nesting(token->type) && depth > 0) depth--;
+                scan++;
+            }
+            if (token == NULL || token->type == TOKEN_EOF) {
+                list_free(&children);
+                return false;
+            }
+            *cursor = scan;
+            if (token->type == TOKEN_KEYWORD_WITH) {
+                (*cursor)++;
+                continue;
+            }
+            break;
+        }
     }
     if (token_at(tokens, *cursor) != NULL &&
         token_at(tokens, *cursor)->type == TOKEN_KEYWORD_ELSE) {
@@ -107,7 +127,7 @@ bool parse_match(const TokenList *tokens, const List *string_bytes,
         }
     } else if (expression_form) {
         error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_ELSE);
+                        MESSAGE_PARSER_MATCH_EXPECTED_ELSE);
         list_free(&children);
         return false;
     }
@@ -252,6 +272,8 @@ bool parse_block(
     for (;;) {
         const Token *token = token_at(tokens, *cursor);
         size_t statement_index;
+        size_t start = *cursor;
+        size_t error_start = errors->length;
 
         if (token == NULL) {
             error_report_at(errors, pos,
@@ -267,8 +289,46 @@ bool parse_block(
         }
         if (!parse_statement(tokens, string_bytes, ast, cursor,
                              &statement_index, errors)) {
-            list_free(&statements);
-            return false;
+            size_t scan = start;
+            size_t depth = 0;
+            SourcePos failure = position_at(tokens, *cursor);
+
+            if (errors->length == error_start) {
+                error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            }
+            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+                errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
+                list_free(&statements);
+                return false;
+            }
+            while ((token = token_at(tokens, scan)) != NULL &&
+                   token->type != TOKEN_EOF) {
+                if (scan >= *cursor && scan > start &&
+                    (depth == 0 || token->pos.line > failure.line) &&
+                    (token->type == TOKEN_KEYWORD_VAR ||
+                     token->type == TOKEN_KEYWORD_CONST ||
+                     token->type == TOKEN_KEYWORD_RETURN ||
+                     token->type == TOKEN_KEYWORD_IF ||
+                     token->type == TOKEN_KEYWORD_MATCH ||
+                     token->type == TOKEN_KEYWORD_WHILE ||
+                     token->type == TOKEN_KEYWORD_FOR ||
+                     token->type == TOKEN_KEYWORD_BREAK ||
+                     token->type == TOKEN_KEYWORD_CONTINUE ||
+                     token->type == TOKEN_KEYWORD_END ||
+                     token->type == TOKEN_KEYWORD_ELSE ||
+                     token->type == TOKEN_KEYWORD_ELSEIF ||
+                     token->type == TOKEN_KEYWORD_WITH ||
+                     token_starts_recovery_statement(tokens, scan))) break;
+                if (token_opens_nesting(token->type)) depth++;
+                else if (token_closes_nesting(token->type) && depth > 0) depth--;
+                scan++;
+            }
+            *cursor = scan;
+            if (token == NULL || token->type == TOKEN_EOF) {
+                list_free(&statements);
+                return false;
+            }
+            continue;
         }
         if (!list_push(&statements, &statement_index)) {
             error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
@@ -812,14 +872,29 @@ bool parse_statement(
     }
 
     if (token->type == TOKEN_KEYWORD_RETURN) {
-        size_t expression;
+        size_t expression = AST_NO_NODE;
+        SourcePos return_pos = token->pos;
 
         (*cursor)++;
-        if (!parse_expression(tokens, string_bytes, ast, cursor, &expression, errors)) {
+        token = token_at(tokens, *cursor);
+        if (token != NULL &&
+            token->type != TOKEN_KEYWORD_END &&
+            token->type != TOKEN_KEYWORD_ELSE &&
+            token->type != TOKEN_KEYWORD_ELSEIF &&
+            token->type != TOKEN_KEYWORD_WITH &&
+            token->type != TOKEN_KEYWORD_BREAK &&
+            token->type != TOKEN_KEYWORD_CONTINUE &&
+            token->type != TOKEN_KEYWORD_VAR &&
+            token->type != TOKEN_KEYWORD_CONST &&
+            token->type != TOKEN_KEYWORD_WHILE &&
+            token->type != TOKEN_KEYWORD_FOR &&
+            token->type != TOKEN_KEYWORD_RETURN &&
+            token->type != TOKEN_EOF &&
+            !parse_expression(tokens, string_bytes, ast, cursor, &expression, errors)) {
             return false;
         }
         node.kind = AST_RETURN;
-        node.pos = token->pos;
+        node.pos = return_pos;
         node.left_child = expression;
         node.right_child = AST_NO_NODE;
         node.name_index = AST_NO_NODE;

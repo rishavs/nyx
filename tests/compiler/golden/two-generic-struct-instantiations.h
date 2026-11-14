@@ -6,14 +6,14 @@
 
 #line 1 "test.nip"
 typedef struct {
-    int32_t nyx_u_first;
+    int64_t nyx_u_first;
     bool nyx_u_second;
 } nyx_u_nyx_gen_0;
 
 #line 1 "test.nip"
 typedef struct {
     bool nyx_u_first;
-    int32_t nyx_u_second;
+    int64_t nyx_u_second;
 } nyx_u_nyx_gen_1;
 
 #endif

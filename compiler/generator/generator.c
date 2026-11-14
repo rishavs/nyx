@@ -1,5 +1,81 @@
 #include "generator_internal.h"
 
+/* Emit only the mixed-domain helpers needed by numeric equality. */
+static bool emit_numeric_equality(const TypedProgram *program,
+                                  TextBuffer *source, ErrorState *errors)
+{
+    bool signed_unsigned = false;
+    bool signed_float = false;
+    bool unsigned_float = false;
+    size_t i;
+
+    for (i = 0; i < program->nodes.length; i++) {
+        const TypedNode *node = typed_program_node(program, i);
+        const TypedNode *left;
+        const TypedNode *right;
+        const TypedType *a;
+        const TypedType *b;
+
+        if (node == NULL || node->kind != TYPED_BINARY ||
+            (node->op != NIPPY_OPERATOR_EQ && node->op != NIPPY_OPERATOR_NE)) {
+            continue;
+        }
+        left = typed_program_node(program, node->left_child);
+        right = typed_program_node(program, node->right_child);
+        a = left == NULL ? NULL : typed_program_type(program, left->type_index);
+        b = right == NULL ? NULL : typed_program_type(program, right->type_index);
+        if (a == NULL || b == NULL) {
+            continue;
+        }
+        if ((nippy_type_is_signed_integer(a->kind) &&
+             nippy_type_is_unsigned_integer(b->kind)) ||
+            (nippy_type_is_unsigned_integer(a->kind) &&
+             nippy_type_is_signed_integer(b->kind))) {
+            signed_unsigned = true;
+        }
+        if ((nippy_type_is_signed_integer(a->kind) && nippy_type_is_float(b->kind)) ||
+             (nippy_type_is_float(a->kind) && nippy_type_is_signed_integer(b->kind))) {
+            signed_float = true;
+        }
+        if ((nippy_type_is_unsigned_integer(a->kind) && nippy_type_is_float(b->kind)) ||
+             (nippy_type_is_float(a->kind) && nippy_type_is_unsigned_integer(b->kind))) {
+            unsigned_float = true;
+        }
+    }
+    if (signed_unsigned && !buffer_append(source,
+        "static inline bool nyx_eq_su(int64_t s, uint64_t u)\n"
+        "{ return s >= 0 && (uint64_t)s == u; }\n"
+        "static inline bool nyx_eq_us(uint64_t u, int64_t s)\n"
+        "{ return nyx_eq_su(s, u); }\n\n")) {
+        goto fail;
+    }
+    if ((unsigned_float || signed_float) && !buffer_append(source,
+        "static inline bool nyx_eq_uf(uint64_t u, double f)\n"
+        "{\n"
+        "    if (!(f >= 0.0 && f < 18446744073709551616.0)) return false;\n"
+        "    return (uint64_t)f == u && (double)u == f;\n"
+        "}\n"
+        "static inline bool nyx_eq_fu(double f, uint64_t u)\n"
+        "{ return nyx_eq_uf(u, f); }\n\n")) {
+        goto fail;
+    }
+    if (signed_float && !buffer_append(source,
+        "static inline bool nyx_eq_sf(int64_t s, double f)\n"
+        "{\n"
+        "    if (s < 0) return f < 0.0 && nyx_eq_uf((uint64_t)(-(s + 1)) + 1, -f);\n"
+        "    return nyx_eq_uf((uint64_t)s, f);\n"
+        "}\n"
+        "static inline bool nyx_eq_fs(double f, int64_t s)\n"
+        "{ return nyx_eq_sf(s, f); }\n\n")) {
+        goto fail;
+    }
+    return true;
+
+fail:
+    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    return false;
+}
+
 
 bool generator_generate(const TypedProgram *program, const char *header_name,
                         const char *source_name, char **c_source,
@@ -22,6 +98,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     bool uses_print;
     bool uses_recursion;
     bool uses_conversion;
+    bool uses_range = false;
     bool uses_map;
     bool uses_table;
     bool uses_arith_helpers;
@@ -71,6 +148,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
 
         for (type_i = 0; type_i < program->types.length; type_i++) {
             const TypedType *type = typed_program_type(program, type_i);
+            if (type != NULL && type->kind == NIPPY_TYPE_RANGE) uses_range = true;
 
             if (type != NULL && type->kind == NIPPY_TYPE_RECORD) {
                 uses_map = true;
@@ -91,7 +169,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         goto done;
     }
     if (uses_store_or_handle || uses_dynamic_string || uses_list ||
-        uses_slice) {
+        uses_slice || program_uses_string(program)) {
         if (!buffer_append(&header, "#include <stddef.h>\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
@@ -157,6 +235,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                    node->kind == TYPED_TABLE_SET ||
                    node->kind == TYPED_FOR ||
                    node->kind == TYPED_WHILE ||
+                   node->kind == TYPED_MATCH_BIND_STATEMENT ||
                    node->kind == TYPED_IF) {
             /* An assignment changes the printed value instead of replacing the
                program-value entry point. */
@@ -172,13 +251,17 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
 
     if (!has_expression_statement && var_count == 1 &&
         typed_program_type(program, single_var->type_index) != NULL &&
-        typed_program_type(program, single_var->type_index)->kind ==
-            NIPPY_TYPE_INT32) {
+        (typed_program_type(program, single_var->type_index)->kind ==
+             NIPPY_TYPE_INT32 ||
+         typed_program_type(program, single_var->type_index)->kind ==
+             NIPPY_TYPE_INT64)) {
         print_program = true;
     }
 
     if (print_program &&
-        !buffer_append(&header, "int32_t nyx_program_value(void);\n\n")) {
+        !buffer_appendf(&header, "%s nyx_program_value(void);\n\n",
+                        typed_program_type(program, single_var->type_index)->kind ==
+                                NIPPY_TYPE_INT64 ? "int64_t" : "int32_t")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
@@ -194,7 +277,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     if (store_count > 0 || program_uses_string(program) ||
         uses_dynamic_string || uses_list || uses_slice || uses_print ||
         uses_map || uses_arith_helpers || uses_recursion ||
-        uses_conversion) {
+        uses_conversion || uses_range) {
         if (!buffer_append(&source,
                            "#include <stdio.h>\n"
                            "#include <stdlib.h>\n"
@@ -209,6 +292,17 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         }
     } else if (print_program &&
                !buffer_append(&source, "#include <stdio.h>\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        goto done;
+    }
+    if (uses_range && !buffer_append(&source,
+        "static inline int64_t nyx_range_step(int64_t step, const char *file, "
+        "size_t line, size_t col, size_t pos) {\n"
+        "    if (step == 0) { fflush(stdout); "
+        "fprintf(stderr, \"nippy: %s:%zu:%zu (byte %zu): "
+        MESSAGE_RUNTIME_RANGE_ZERO_STEP "\\n\", "
+        "file, line, col, pos); exit(1); }\n"
+        "    return step;\n}\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
@@ -228,6 +322,9 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
+    }
+    if (!emit_numeric_equality(program, &source, errors)) {
+        goto done;
     }
     if ((uses_arith_helpers || uses_conversion) &&
         !emit_arithmetic_runtime(&source, errors)) {
@@ -268,6 +365,9 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     if (uses_map && !emit_map_runtime(program, store_count, &source, errors)) {
         goto done;
     }
+    if (!emit_equality_helpers(program, &source, errors)) {
+        goto done;
+    }
     if (uses_print && !emit_print_helpers(program, &source, errors)) {
         goto done;
     }
@@ -289,7 +389,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         }
     } else {
         if (!buffer_append(&source, "int main(void)\n{\n") ||
-            !emit_store_inits(program, store_count, &source, errors)) {
+            !emit_match_temporaries(program, 0, &source, errors) ||
+            !emit_store_inits(program, store_count, effective_source, &source, errors)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -312,6 +413,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                  node->kind == TYPED_TABLE_SET ||
                  node->kind == TYPED_FOR ||
                  node->kind == TYPED_WHILE ||
+                 node->kind == TYPED_MATCH_BIND_STATEMENT ||
                  node->kind == TYPED_IF) &&
                 !emit_statement(program, root, 1, effective_source, &source,
                                 errors)) {
@@ -380,16 +482,21 @@ bool append_print_program(const TypedProgram *program,
     char name_text[USER_NAME_CAPACITY];
     const char *name = user_c_name(program, var->name_index,
                                   name_text, sizeof(name_text));
+    const TypedType *type = typed_program_type(program, var->type_index);
+    bool wide = type != NULL && type->kind == NIPPY_TYPE_INT64;
 
     if (!valid_identifier(name)) {
         error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
         return false;
     }
 
-    if (!buffer_append(source, "int32_t nyx_program_value(void)\n{\n") ||
+    if (!buffer_appendf(source, "%s nyx_program_value(void)\n{\n",
+                        wide ? "int64_t" : "int32_t") ||
+        !emit_match_temporaries(program, 0, source, errors) ||
         !buffer_appendf(source, "#line %zu \"%s\"\n", var->pos.line,
                         effective_source) ||
-        !buffer_appendf(source, "    int32_t %s = ", name) ||
+        !buffer_appendf(source, "    %s %s = ",
+                        wide ? "int64_t" : "int32_t", name) ||
         !emit_expression(program, var->left_child, source, errors) ||
         !buffer_append(source, ";\n")) {
         if (!errors->reported) {
@@ -404,7 +511,15 @@ bool append_print_program(const TypedProgram *program,
             size_t root = *(const size_t *)list_get(&program->roots, i);
             const TypedNode *node = typed_program_node(program, root);
 
-            if (node != NULL && node->kind == TYPED_ASSIGNMENT &&
+            if (node != NULL &&
+                (node->kind == TYPED_ASSIGNMENT ||
+                 node->kind == TYPED_LIST_SET ||
+                 node->kind == TYPED_MEMBER_WRITE ||
+                 node->kind == TYPED_RECORD_SET ||
+                 node->kind == TYPED_TABLE_SET ||
+                 node->kind == TYPED_FOR || node->kind == TYPED_WHILE ||
+                 node->kind == TYPED_IF ||
+                 node->kind == TYPED_MATCH_BIND_STATEMENT) &&
                 !emit_statement(program, root, 1, effective_source, source,
                                 errors)) {
                 return false;
@@ -413,9 +528,10 @@ bool append_print_program(const TypedProgram *program,
     }
     if (!buffer_appendf(source, "    return %s;\n", name) ||
         !buffer_append(source, "}\n\nint main(void)\n{\n") ||
-        !emit_store_inits(program, store_count, source, errors) ||
-        !buffer_append(source,
-                       "    printf(\"%d\\n\", (int)nyx_program_value());\n") ||
+        !emit_store_inits(program, store_count, effective_source, source, errors) ||
+        !buffer_append(source, wide
+            ? "    printf(\"%lld\\n\", (long long)nyx_program_value());\n"
+            : "    printf(\"%d\\n\", (int)nyx_program_value());\n") ||
         !emit_store_frees(store_count, source, errors) ||
         !buffer_append(source, "    return 0;\n}\n")) {
         if (!errors->reported) {
@@ -428,7 +544,8 @@ bool append_print_program(const TypedProgram *program,
 
 
 bool emit_store_inits(const TypedProgram *program, size_t store_count,
-                             TextBuffer *source, ErrorState *errors)
+                      const char *effective_source, TextBuffer *source,
+                      ErrorState *errors)
 {
     size_t id;
 
@@ -442,9 +559,12 @@ bool emit_store_inits(const TypedProgram *program, size_t store_count,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
             return false;
         }
-        if (!buffer_appendf(source,
-                            "    nyx_store_init(&nyx_stores[%zu], %d);\n",
-                            id, declaration->integer_value)) {
+        if (!buffer_appendf(source, "#line %zu \"%s\"\n",
+                            declaration->pos.line, effective_source) ||
+            !buffer_appendf(source,
+                            "    nyx_store_init_at(&nyx_stores[%zu], %d, __FILE__, %zu, %zu, %zu);\n",
+                            id, declaration->integer_value, declaration->pos.line,
+                            declaration->pos.column, declaration->pos.offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }

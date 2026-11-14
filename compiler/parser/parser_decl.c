@@ -1,5 +1,28 @@
 #include "parser_internal.h"
 
+static bool parse_default_literal(const TokenList *tokens, const List *string_bytes,
+                                  Ast *ast, size_t *cursor, size_t *out,
+                                  ErrorState *errors)
+{
+    const AstNode *value;
+    if (!parse_expression(tokens, string_bytes, ast, cursor, out, errors))
+        return false;
+    value = ast_get_node(ast, *out);
+    if (value != NULL && value->kind == AST_UNARY &&
+        value->op == NIPPY_OPERATOR_NEG) {
+        value = ast_get_node(ast, value->left_child);
+        if (value != NULL && (value->kind == AST_INTEGER_LITERAL ||
+                              value->kind == AST_FLOAT_LITERAL)) return true;
+    } else if (value != NULL &&
+               (value->kind == AST_INTEGER_LITERAL || value->kind == AST_FLOAT_LITERAL ||
+                value->kind == AST_BOOL_LITERAL || value->kind == AST_NIL_LITERAL ||
+                value->kind == AST_STRING_LITERAL)) {
+        return true;
+    }
+    error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_DEFAULT_LITERAL);
+    return false;
+}
+
 bool parse_type_declaration(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     SourcePos declaration_pos, ErrorState *errors
@@ -104,6 +127,15 @@ bool parse_type_declaration(
         field.name_index = field_name_index;
         field.left_child = field_type_index;
         field.right_child = AST_NO_NODE;
+        token = token_at(tokens, *cursor);
+        if (token != NULL && token->type == TOKEN_EQUALS) {
+            (*cursor)++;
+            if (!parse_default_literal(tokens, string_bytes, ast, cursor,
+                                       &field.right_child, errors)) {
+                list_free(&fields);
+                return false;
+            }
+        }
         if (!push_node(ast, &field, &field_index) ||
             !list_push(&fields, &field_index)) {
             error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
@@ -121,6 +153,14 @@ bool parse_type_declaration(
         if (token->type == TOKEN_KEYWORD_END) {
             (*cursor)++;
             break;
+        }
+        if (token->type == TOKEN_COMMA) {
+            (*cursor)++;
+            token = token_at(tokens, *cursor);
+            if (token != NULL && token->type == TOKEN_KEYWORD_END) {
+                (*cursor)++;
+                break;
+            }
         }
         if (token->type != TOKEN_IDENTIFIER) {
             error_report_at(errors, position_at(tokens, *cursor),
@@ -154,23 +194,22 @@ bool parse_type_declaration(
     return push_root(ast, &declaration, errors);
 }
 
+
+static bool parse_function_tail(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    SourcePos declaration_pos, size_t name_index, size_t owner_name_index,
+    size_t owner_type_index, bool is_method, bool is_static, ErrorState *errors
+);
+
+
 bool parse_function_declaration(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     SourcePos declaration_pos, ErrorState *errors
 )
 {
-    const Token *token;
+    const Token *token = token_at(tokens, *cursor);
     size_t name_index;
-    size_t type_parameters_start;
-    size_t type_parameters_count;
-    size_t children_start;
-    size_t return_type_index;
-    size_t body_index;
-    size_t i;
-    List parameters;
-    AstNode declaration = {0};
 
-    token = token_at(tokens, *cursor);
     if (token == NULL || token->type != TOKEN_IDENTIFIER) {
         error_report_at(errors, position_at(tokens, *cursor),
                         MESSAGE_PARSER_EXPECTED_FUNCTION_NAME);
@@ -180,6 +219,74 @@ bool parse_function_declaration(
         return false;
     }
     (*cursor)++;
+    return parse_function_tail(tokens, string_bytes, ast, cursor,
+                               declaration_pos, name_index, AST_NO_NODE,
+                               AST_NO_NODE, false, false, errors);
+}
+
+
+bool parse_method_declaration(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    SourcePos declaration_pos, bool is_static, ErrorState *errors
+)
+{
+    const Token *owner = token_at(tokens, *cursor);
+    const Token *separator;
+    const Token *member;
+    size_t owner_name_index;
+    size_t owner_type_index;
+    size_t method_name_index;
+
+    if (owner == NULL || owner->type != TOKEN_IDENTIFIER) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_TYPE_NAME_AFTER_TYPE);
+        return false;
+    }
+    if (!intern_token(ast, owner, &owner_name_index, errors) ||
+        !parse_type_primary(tokens, string_bytes, ast, cursor,
+                            &owner_type_index, errors)) {
+        return false;
+    }
+    separator = token_at(tokens, *cursor);
+    if (separator == NULL ||
+        (is_static ? separator->type != TOKEN_DOUBLE_COLON
+                   : separator->type != TOKEN_DOT)) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_MEMBER_NAME);
+        return false;
+    }
+    (*cursor)++;
+    member = token_at(tokens, *cursor);
+    if (member == NULL || member->type != TOKEN_IDENTIFIER) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_FUNCTION_NAME);
+        return false;
+    }
+    if (!intern_token(ast, member, &method_name_index, errors)) {
+        return false;
+    }
+    (*cursor)++;
+    return parse_function_tail(tokens, string_bytes, ast, cursor,
+                               declaration_pos, method_name_index,
+                               owner_name_index, owner_type_index, !is_static,
+                               is_static, errors);
+}
+
+static bool parse_function_tail(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    SourcePos declaration_pos, size_t name_index, size_t owner_name_index,
+    size_t owner_type_index, bool is_method, bool is_static, ErrorState *errors
+)
+{
+    const Token *token;
+    size_t type_parameters_start;
+    size_t type_parameters_count;
+    size_t children_start;
+    size_t return_type_index = AST_NO_NODE;
+    size_t body_index;
+    size_t i;
+    List parameters;
+    AstNode declaration = {0};
 
     if (!parse_type_parameters(tokens, string_bytes, ast, cursor,
                                &type_parameters_start,
@@ -269,17 +376,18 @@ bool parse_function_declaration(
     }
 
     token = token_at(tokens, *cursor);
-    if (token == NULL || token->type != TOKEN_COLON) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_RETURN_TYPE);
-        list_free(&parameters);
-        return false;
-    }
-    (*cursor)++;
-
-    if (!parse_type(tokens, string_bytes, ast, cursor, &return_type_index, errors)) {
-        list_free(&parameters);
-        return false;
+    if (token != NULL && token->type == TOKEN_COLON) {
+        (*cursor)++;
+        token = token_at(tokens, *cursor);
+        if (is_method && token != NULL && token->type == TOKEN_IDENTIFIER &&
+            token->length == 4 && memcmp(token->text, "self", 4) == 0) {
+            return_type_index = owner_type_index;
+            (*cursor)++;
+        } else if (!parse_type(tokens, string_bytes, ast, cursor,
+                               &return_type_index, errors)) {
+            list_free(&parameters);
+            return false;
+        }
     }
 
     if (!parse_block(tokens, string_bytes, ast, cursor, &body_index, errors)) {
@@ -298,6 +406,29 @@ bool parse_function_declaration(
     /* Parameters are appended after the body so a parameter type that is
        itself a function type cannot split the run. */
     children_start = ast->children.length;
+    if (is_method) {
+        AstNode self_parameter = {0};
+        size_t self_name_index;
+        self_name_index = ast_intern_symbol(ast, "self", 4);
+        if (self_name_index == AST_NO_NODE) {
+            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_RECORDING_NAME);
+            list_free(&parameters);
+            return false;
+        }
+        self_parameter.kind = AST_PARAMETER;
+        self_parameter.pos = declaration_pos;
+        self_parameter.name_index = self_name_index;
+        self_parameter.left_child = owner_type_index;
+        self_parameter.right_child = AST_NO_NODE;
+        self_parameter.is_self = true;
+        if (!push_node(ast, &self_parameter, &i) ||
+            !ast_push_child(ast, i)) {
+            error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            list_free(&parameters);
+            return false;
+        }
+        declaration.children_count = 1;
+    }
     for (i = 0; i < parameters.length; i++) {
         size_t parameter_index = *(const size_t *)list_get(&parameters, i);
 
@@ -307,12 +438,16 @@ bool parse_function_declaration(
             return false;
         }
     }
-    declaration.children_count = parameters.length;
+    declaration.children_count += parameters.length;
     list_free(&parameters);
 
     declaration.kind = AST_FUNCTION_DECLARATION;
     declaration.pos = declaration_pos;
     declaration.name_index = name_index;
+    declaration.second_name_index = owner_name_index;
+    declaration.owner_type_index = owner_type_index;
+    declaration.is_method = is_method;
+    declaration.is_static = is_static;
     declaration.left_child = body_index;
     declaration.right_child = return_type_index;
     declaration.children_start = children_start;

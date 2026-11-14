@@ -55,6 +55,13 @@ bool emit_expr_literals(const TypedProgram *program, const TypedNode *node,
     }
     if (node->kind == TYPED_IDENTIFIER) {
         *handled = true;
+        if (node->is_self) {
+            if (!buffer_append(buffer, "(*nyx_self)")) {
+                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            return true;
+        }
         char name_text[USER_NAME_CAPACITY];
     const char *name = user_c_name(program, node->name_index,
                                   name_text, sizeof(name_text));

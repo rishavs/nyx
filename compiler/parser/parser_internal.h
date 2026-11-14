@@ -33,6 +33,9 @@ typedef struct {
 /* Internal helpers shared by the parser modules. */
 
 const Token *token_at(const TokenList *tokens, size_t index);
+bool token_opens_nesting(TokenType type);
+bool token_closes_nesting(TokenType type);
+bool token_starts_recovery_statement(const TokenList *tokens, size_t cursor);
 SourcePos position_at(const TokenList *tokens, size_t index);
 bool intern_token(Ast *ast, const Token *token, size_t *out_index, ErrorState *errors);
 bool push_node(Ast *ast, const AstNode *node, size_t *out_index);
@@ -52,7 +55,6 @@ bool parse_record_literal(const TokenList *tokens, const List *string_bytes, Ast
     size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_type_test(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
-bool match_head_ok(const Ast *ast, size_t head);
 bool parse_match(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, bool expression_form, size_t *out_index, ErrorState *errors);
 bool parse_if_expression(const TokenList *tokens, const List *string_bytes, Ast *ast,
@@ -120,6 +122,9 @@ bool parse_type_declaration(const TokenList *tokens, const List *string_bytes,
     Ast *ast, size_t *cursor, SourcePos declaration_pos, ErrorState *errors);
 bool parse_function_declaration(const TokenList *tokens, const List *string_bytes,
     Ast *ast, size_t *cursor, SourcePos declaration_pos, ErrorState *errors);
+bool parse_method_declaration(const TokenList *tokens, const List *string_bytes,
+    Ast *ast, size_t *cursor, SourcePos declaration_pos, bool is_static,
+    ErrorState *errors);
 bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
     ErrorState *errors);
 

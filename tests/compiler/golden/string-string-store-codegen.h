@@ -23,6 +23,6 @@ typedef struct {
     uint32_t length;
 } nyx_string_8;
 
-static uint8_t nyx_string_8_at(nyx_string_8 s, int32_t i);
+static inline uint8_t nyx_string_8_at(nyx_string_8 s, int32_t i, const char *file, size_t line, size_t column, size_t offset);
 
 #endif

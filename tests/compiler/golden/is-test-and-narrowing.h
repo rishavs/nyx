@@ -14,6 +14,13 @@ typedef struct {
     } value;
 } nyx_sum_3;
 
+typedef struct {
+    uint32_t tag;
+    union {
+        bool v0;
+    } value;
+} nyx_sum_5;
+
 typedef int32_t (*nyx_fun_0)(nyx_sum_3);
 
 int32_t nyx_program_value(void);

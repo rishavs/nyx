@@ -19,7 +19,7 @@ int32_t nyx_u_choose(bool nyx_u_flag)
 int32_t nyx_program_value(void)
 {
 #line 9 "test.nip"
-    int32_t nyx_u_n = nyx_u_choose((((!((1 == 2))) && (2 < 3)) || false));
+    int32_t nyx_u_n = nyx_u_choose((((!((((int64_t)1ULL) == ((int64_t)2ULL)))) && (((int64_t)2ULL) < ((int64_t)3ULL))) || false));
     return nyx_u_n;
 }
 

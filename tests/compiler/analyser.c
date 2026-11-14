@@ -256,6 +256,35 @@ TEST("invalid type child")
     return TEST_PASS;
 }
 
+TEST("invalid range element type")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    size_t bool_index, range_index;
+    char expected[256];
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = NIPPY_TYPE_BOOL;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &type, &bool_index) ||
+        !typed_program_add_type_child(&program, bool_index)) return TEST_ERROR;
+    type.kind = NIPPY_TYPE_RANGE;
+    type.first_child = 0;
+    type.child_count = 1;
+    if (!typed_program_add_type(&program, &type, &range_index)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                   range_index);
+    if (analyser_analyse(&program, &errors) || !error_contains(&errors, expected)) {
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
 TEST("invalid declaration")
 {
     TypedProgram program;

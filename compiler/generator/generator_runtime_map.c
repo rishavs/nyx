@@ -23,7 +23,7 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         return false;
     }
     if (!buffer_appendf(source,
-        "static uint64_t nyx_record_%zu_hash(%s key)\n"
+        "static inline uint64_t nyx_record_%zu_hash(%s key)\n"
         "{\n"
         "    uint64_t h = 14695981039346656037ULL;\n"
         "    for (size_t i = 0; i < key.length; i++) {\n"
@@ -32,12 +32,12 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "    }\n"
         "    return h;\n"
         "}\n\n"
-        "static bool nyx_record_%zu_eq(%s a, %s b)\n"
+        "static inline bool nyx_record_%zu_eq(%s a, %s b)\n"
         "{\n"
         "    return a.length == b.length &&\n"
         "           memcmp(a.data, b.data, a.length) == 0;\n"
         "}\n\n"
-        "static size_t nyx_record_%zu_find(const %s *r, %s key)\n"
+        "static inline size_t nyx_record_%zu_find(const %s *r, %s key)\n"
         "{\n"
         "    size_t start = (size_t)(nyx_record_%zu_hash(key) %% %zu);\n"
         "    for (size_t p = 0; p < %zu; p++) {\n"
@@ -48,26 +48,26 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "    }\n"
         "    return SIZE_MAX;\n"
         "}\n\n"
-        "static bool nyx_record_%zu_get(const %s *r, %s key, %s *out)\n"
+        "static inline bool nyx_record_%zu_get(const %s *r, %s key, %s *out)\n"
         "{\n"
         "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i == SIZE_MAX) return false;\n"
         "    *out = r->values[i];\n"
         "    return true;\n"
         "}\n\n"
-        "static bool nyx_record_%zu_has(const %s *r, %s key)\n"
+        "static inline bool nyx_record_%zu_has(const %s *r, %s key)\n"
         "{\n"
         "    return nyx_record_%zu_find(r, key) != SIZE_MAX;\n"
         "}\n\n"
-        "static int32_t nyx_record_%zu_len(const %s *r)\n"
+        "static inline int32_t nyx_record_%zu_len(const %s *r)\n"
         "{\n"
         "    return (int32_t)r->length;\n"
         "}\n\n"
-        "static void nyx_record_%zu_set(%s *r, %s key, %s value)\n"
+        "static inline void nyx_record_%zu_set(%s *r, %s key, %s value, const char *file, size_t line, size_t column, size_t pos)\n"
         "{\n"
         "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i != SIZE_MAX) { r->values[i] = value; return; }\n"
-        "    if (r->length >= %zu) nyx_map_fail(\"%s\");\n"
+        "    if (r->length %s %zu) nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
         "    size_t start = (size_t)(nyx_record_%zu_hash(key) %% %zu);\n"
         "    for (size_t p = 0; p < %zu; p++) {\n"
         "        size_t j = (start + p) %% %zu;\n"
@@ -79,9 +79,9 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "            return;\n"
         "        }\n"
         "    }\n"
-        "    nyx_map_fail(\"%s\");\n"
+        "    nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
         "}\n\n"
-        "static bool nyx_record_%zu_remove(%s *r, %s key)\n"
+        "static inline bool nyx_record_%zu_remove(%s *r, %s key)\n"
         "{\n"
         "    size_t i = nyx_record_%zu_find(r, key);\n"
         "    if (i == SIZE_MAX) return false;\n"
@@ -89,18 +89,18 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         "    r->length--;\n"
         "    return true;\n"
         "}\n\n"
-        "static %s nyx_record_%zu_get_required(const %s *r, %s key)\n"
+        "static inline %s nyx_record_%zu_get_required(const %s *r, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
         "{\n"
         "    %s out;\n"
         "    if (!nyx_record_%zu_get(r, key, &out)) "
-        "nyx_map_fail(\"%s\");\n"
+        "nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
         "    return out;\n"
         "}\n\n"
-        "static %s nyx_record_%zu_literal(%s *keys, %s *values, size_t n)\n"
+        "static inline %s nyx_record_%zu_literal(%s *keys, %s *values, size_t n, const char *file, size_t line, size_t column, size_t pos)\n"
         "{\n"
         "    %s r = {0};\n"
         "    for (size_t i = 0; i < n; i++) "
-        "nyx_record_%zu_set(&r, keys[i], values[i]);\n"
+        "nyx_record_%zu_set(&r, keys[i], values[i], file, line, column, pos);\n"
         "    return r;\n"
         "}\n\n",
         type_index, key_name,
@@ -111,7 +111,7 @@ bool emit_record_runtime(const TypedProgram *program, size_t type_index,
         type_index, record_name, key_name, type_index,
         type_index, record_name,
         type_index, record_name, key_name, value_name, type_index,
-        capacity, MESSAGE_RUNTIME_RECORD_FULL,
+        capacity == 0 ? "==" : ">=", capacity, MESSAGE_RUNTIME_RECORD_FULL,
         type_index, buckets, buckets, buckets,
         MESSAGE_RUNTIME_RECORD_FULL,
         type_index, record_name, key_name, type_index,
@@ -144,9 +144,17 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
         return true;
     }
     if (!buffer_append(source,
-        "static void nyx_map_fail(const char *message)\n"
+        "static inline void nyx_map_fail(const char *message)\n"
         "{\n"
+        "    fflush(stdout);\n"
         "    fprintf(stderr, \"%s\\n\", message);\n"
+        "    exit(1);\n"
+        "}\n\n"
+        "static inline void nyx_map_fail_at(const char *message, const char *file, size_t line, size_t column, size_t pos)\n"
+        "{\n"
+        "    if (file == NULL) nyx_map_fail(message);\n"
+        "    fflush(stdout);\n"
+        "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + 7);\n"
         "    exit(1);\n"
         "}\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -191,7 +199,7 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    size_t values_offset;\n"
             "    size_t states_offset;\n"
             "} nyx_table_state_%zu;\n\n"
-            "static uint64_t nyx_table_%zu_hash(%s key)\n"
+            "static inline uint64_t nyx_table_%zu_hash(%s key)\n"
             "{\n"
             "    uint64_t h = 14695981039346656037ULL;\n"
             "    for (size_t i = 0; i < key.length; i++) {\n"
@@ -200,35 +208,37 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    }\n"
             "    return h;\n"
             "}\n\n"
-            "static bool nyx_table_%zu_eq(%s a, %s b)\n"
+            "static inline bool nyx_table_%zu_eq(%s a, %s b)\n"
             "{\n"
             "    return a.length == b.length &&\n"
             "           memcmp(a.data, b.data, a.length) == 0;\n"
             "}\n\n"
-            "static nyx_table_state_%zu *nyx_table_%zu_state(nyx_table t)\n"
+            "static inline nyx_table_state_%zu *nyx_table_%zu_state_at(nyx_table t, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
             "    nyx_store *store;\n"
             "    if (t.store >= (uint32_t)NIPPY_STORE_COUNT) "
-            "nyx_map_fail(\"%s\");\n"
+            "nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
             "    store = &nyx_stores[t.store];\n"
             "    if (store->generation != t.generation) "
-            "nyx_map_fail(\"%s\");\n"
+            "nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
             "    if (t.offset > store->used ||\n"
             "        sizeof(nyx_table_state_%zu) > store->used - t.offset) "
-            "nyx_map_fail(\"%s\");\n"
+            "nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
             "    return (nyx_table_state_%zu *)(void *)(store->data + "
             "t.offset);\n"
-            "}\n\n",
+            "}\n\n"
+            "static inline nyx_table_state_%zu *nyx_table_%zu_state(nyx_table t)\n"
+            "{ return nyx_table_%zu_state_at(t, NULL, 0, 0, 0); }\n\n",
             i, i, key_name, i, key_name, key_name,
             i, i, MESSAGE_RUNTIME_STORE_RANGE, MESSAGE_RUNTIME_STALE_HANDLE,
-            i, MESSAGE_RUNTIME_HANDLE_BOUNDS, i)) {
+            i, MESSAGE_RUNTIME_HANDLE_BOUNDS, i, i, i, i)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         /* The real finder needs the descriptor's store; use a helper with the
            descriptor so it can locate both the state and the arrays. */
         if (!buffer_appendf(source,
-            "static size_t nyx_table_%zu_find_in(nyx_table t, "
+            "static inline size_t nyx_table_%zu_find_in(nyx_table t, "
             "nyx_table_state_%zu *s, %s key)\n"
             "{\n"
             "    nyx_store *store = &nyx_stores[t.store];\n"
@@ -250,9 +260,9 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-            "static bool nyx_table_%zu_get(nyx_table t, %s key, %s *out)\n"
+            "static inline bool nyx_table_%zu_get_at(nyx_table t, %s key, %s *out, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    nyx_table_state_%zu *s = nyx_table_%zu_state(t);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state_at(t, file, line, column, pos);\n"
             "    nyx_store *store = &nyx_stores[t.store];\n"
             "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
             "    size_t p = nyx_table_%zu_find_in(t, s, key);\n"
@@ -260,24 +270,27 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    *out = values[p];\n"
             "    return true;\n"
             "}\n\n"
-            "static bool nyx_table_%zu_has(nyx_table t, %s key)\n"
+            "static inline bool nyx_table_%zu_get(nyx_table t, %s key, %s *out)\n"
+            "{ return nyx_table_%zu_get_at(t, key, out, NULL, 0, 0, 0); }\n\n"
+            "static inline bool nyx_table_%zu_has(nyx_table t, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    nyx_table_state_%zu *s = nyx_table_%zu_state(t);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state_at(t, file, line, column, pos);\n"
             "    return nyx_table_%zu_find_in(t, s, key) != SIZE_MAX;\n"
             "}\n\n"
-            "static int32_t nyx_table_%zu_len(nyx_table t)\n"
+            "static inline int32_t nyx_table_%zu_len(nyx_table t, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    return (int32_t)nyx_table_%zu_state(t)->length;\n"
+            "    return (int32_t)nyx_table_%zu_state_at(t, file, line, column, pos)->length;\n"
             "}\n\n",
             i, key_name, value_name, i, i, value_name, value_name, i,
+            i, key_name, value_name, i,
             i, key_name, i, i, i, i, i)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         if (!buffer_appendf(source,
-            "static void nyx_table_%zu_grow(nyx_table *t)\n"
+            "static inline void nyx_table_%zu_grow(nyx_table *t, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state_at(*t, file, line, column, pos);\n"
             "    nyx_store *store = &nyx_stores[t->store];\n"
             "    size_t old_buckets = s->buckets;\n"
             "    size_t old_length = s->length;\n"
@@ -286,17 +299,17 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    size_t old_states = s->states_offset;\n"
             "    size_t new_capacity = s->capacity == 0 ? 1 : s->capacity * 2;\n"
             "    size_t new_buckets = new_capacity * 2 + 1;\n"
-            "    size_t new_keys = nyx_store_alloc_bytes_aligned(store, "
-            "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
-            "    size_t new_values = nyx_store_alloc_bytes_aligned(store, "
-            "t->store, sizeof(%s) * new_buckets, _Alignof(%s));\n"
-            "    size_t new_states = nyx_store_alloc_bytes_aligned(store, "
-            "t->store, new_buckets, 1);\n"
+            "    size_t new_keys = nyx_store_alloc_bytes_aligned_at(store, "
+            "t->store, sizeof(%s) * new_buckets, _Alignof(%s), file, line, column, pos);\n"
+            "    size_t new_values = nyx_store_alloc_bytes_aligned_at(store, "
+            "t->store, sizeof(%s) * new_buckets, _Alignof(%s), file, line, column, pos);\n"
+            "    size_t new_states = nyx_store_alloc_bytes_aligned_at(store, "
+            "t->store, new_buckets, 1, file, line, column, pos);\n"
             "    %s *keys;\n"
             "    %s *values;\n"
             "    uint8_t *states;\n"
             "    memset(store->data + new_states, 0, new_buckets);\n"
-            "    s = nyx_table_%zu_state(*t);\n"
+            "    s = nyx_table_%zu_state_at(*t, file, line, column, pos);\n"
             "    keys = (%s *)(void *)(store->data + new_keys);\n"
             "    values = (%s *)(void *)(store->data + new_values);\n"
             "    states = (uint8_t *)(void *)(store->data + new_states);\n"
@@ -325,9 +338,9 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    s->values_offset = new_values;\n"
             "    s->states_offset = new_states;\n"
             "}\n\n"
-            "static void nyx_table_%zu_set(nyx_table *t, %s key, %s value)\n"
+            "static inline void nyx_table_%zu_set(nyx_table *t, %s key, %s value, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state_at(*t, file, line, column, pos);\n"
             "    size_t p = nyx_table_%zu_find_in(*t, s, key);\n"
             "    if (p != SIZE_MAX) {\n"
             "        nyx_store *store = &nyx_stores[t->store];\n"
@@ -336,8 +349,8 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "        values[p] = value;\n"
             "        return;\n"
             "    }\n"
-            "    if (s->length >= s->capacity) { nyx_table_%zu_grow(t); "
-            "s = nyx_table_%zu_state(*t); }\n"
+            "    if (s->length >= s->capacity) { nyx_table_%zu_grow(t, file, line, column, pos); "
+            "s = nyx_table_%zu_state_at(*t, file, line, column, pos); }\n"
             "    nyx_store *store = &nyx_stores[t->store];\n"
             "    %s *keys = (%s *)(void *)(store->data + s->keys_offset);\n"
             "    %s *values = (%s *)(void *)(store->data + s->values_offset);\n"
@@ -353,7 +366,7 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "            return;\n"
             "        }\n"
             "    }\n"
-            "    nyx_map_fail(\"%s\");\n"
+            "    nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
             "}\n\n",
             i, i, i, key_name, key_name, value_name, value_name, key_name,
             value_name, i, key_name, value_name, key_name, key_name,
@@ -365,9 +378,9 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             return false;
         }
         if (!buffer_appendf(source,
-            "static bool nyx_table_%zu_remove(nyx_table *t, %s key)\n"
+            "static inline bool nyx_table_%zu_remove(nyx_table *t, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
-            "    nyx_table_state_%zu *s = nyx_table_%zu_state(*t);\n"
+            "    nyx_table_state_%zu *s = nyx_table_%zu_state_at(*t, file, line, column, pos);\n"
             "    size_t p = nyx_table_%zu_find_in(*t, s, key);\n"
             "    nyx_store *store;\n"
             "    uint8_t *states;\n"
@@ -378,28 +391,28 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
             "    s->length--;\n"
             "    return true;\n"
             "}\n\n"
-            "static %s nyx_table_%zu_get_required(nyx_table t, %s key)\n"
+            "static inline %s nyx_table_%zu_get_required(nyx_table t, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
             "    %s out;\n"
-            "    if (!nyx_table_%zu_get(t, key, &out)) "
-            "nyx_map_fail(\"%s\");\n"
+            "    if (!nyx_table_%zu_get_at(t, key, &out, file, line, column, pos)) "
+            "nyx_map_fail_at(\"%s\", file, line, column, pos);\n"
             "    return out;\n"
             "}\n\n"
-            "static nyx_table nyx_table_%zu_create(nyx_store *store, "
-            "uint32_t id, int32_t cap)\n"
+            "static inline nyx_table nyx_table_%zu_create(nyx_store *store, "
+            "uint32_t id, int32_t cap, const char *file, size_t line, size_t column, size_t pos)\n"
             "{\n"
             "    nyx_table_state_%zu *s;\n"
             "    nyx_table result;\n"
             "    size_t capacity = cap < 0 ? 0 : (size_t)cap;\n"
             "    size_t buckets = capacity == 0 ? 1 : capacity * 2 + 1;\n"
-            "    size_t state_offset = nyx_store_alloc_bytes_aligned(store, "
-            "id, sizeof(nyx_table_state_%zu), _Alignof(nyx_table_state_%zu));\n"
-            "    size_t keys_offset = nyx_store_alloc_bytes_aligned(store, "
-            "id, sizeof(%s) * buckets, _Alignof(%s));\n"
-            "    size_t values_offset = nyx_store_alloc_bytes_aligned(store, "
-            "id, sizeof(%s) * buckets, _Alignof(%s));\n"
-            "    size_t states_offset = nyx_store_alloc_bytes_aligned(store, "
-            "id, buckets, 1);\n"
+            "    size_t state_offset = nyx_store_alloc_bytes_aligned_at(store, "
+            "id, sizeof(nyx_table_state_%zu), _Alignof(nyx_table_state_%zu), file, line, column, pos);\n"
+            "    size_t keys_offset = nyx_store_alloc_bytes_aligned_at(store, "
+            "id, sizeof(%s) * buckets, _Alignof(%s), file, line, column, pos);\n"
+            "    size_t values_offset = nyx_store_alloc_bytes_aligned_at(store, "
+            "id, sizeof(%s) * buckets, _Alignof(%s), file, line, column, pos);\n"
+            "    size_t states_offset = nyx_store_alloc_bytes_aligned_at(store, "
+            "id, buckets, 1, file, line, column, pos);\n"
             "    memset(store->data + states_offset, 0, buckets);\n"
             "    s = (nyx_table_state_%zu *)(void *)(store->data + "
             "state_offset);\n"
@@ -470,10 +483,10 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
                 if (!buffer_appendf(
                         &body,
                         "static NIPPY_UNUSED nyx_nil "
-                        "nyx_table_%zu_get_optional_%zu(nyx_table t, %s key)\n"
+                        "nyx_table_%zu_get_optional_%zu(nyx_table t, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
                         "{\n"
                         "    %s value;\n"
-                        "    (void)nyx_table_%zu_get(t, key, &value);\n"
+                        "    (void)nyx_table_%zu_get_at(t, key, &value, file, line, column, pos);\n"
                         "    return (nyx_nil)0;\n"
                         "}\n\n",
                         receiver->type_index, n, key_name, value_name,
@@ -509,11 +522,11 @@ bool emit_map_runtime(const TypedProgram *program, size_t store_count,
                 !buffer_appendf(
                     &body,
                     "static NIPPY_UNUSED %s nyx_table_%zu_get_optional_%zu("
-                    "nyx_table t, %s key)\n"
+                    "nyx_table t, %s key, const char *file, size_t line, size_t column, size_t pos)\n"
                     "{\n"
                     "    %s result;\n"
                     "    %s value;\n\n"
-                    "    if (!nyx_table_%zu_get(t, key, &value)) {\n"
+                    "    if (!nyx_table_%zu_get_at(t, key, &value, file, line, column, pos)) {\n"
                     "        result = (%s){ .tag = %zu };\n"
                     "        return result;\n"
                     "    }\n",

@@ -4,35 +4,36 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void nyx_string_bounds(void)
+static inline void nyx_string_bounds(const char *file, size_t line, size_t column, size_t offset)
 {
-    fprintf(stderr, "nippy: string index out of bounds\n");
+    fflush(stdout);
+    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, offset, "nippy: string index out of bounds" + 7);
     exit(1);
 }
 
-static uint8_t nyx_string_32_at(nyx_string_32 s, int32_t i)
+static inline uint8_t nyx_string_32_at(nyx_string_32 s, int32_t i, const char *file, size_t line, size_t column, size_t offset)
 {
     if (i < 0 || (uint32_t)i >= s.length) {
-        nyx_string_bounds();
+        nyx_string_bounds(file, line, column, offset);
     }
     return s.data[i];
 }
 
-static bool nyx_string_32_equal(nyx_string_32 a, nyx_string_32 b)
+static inline bool nyx_string_32_equal(nyx_string_32 a, nyx_string_32 b)
 {
     return a.length == b.length &&
            memcmp(a.data, b.data, a.length) == 0;
 }
 
-static uint8_t nyx_string_128_at(nyx_string_128 s, int32_t i)
+static inline uint8_t nyx_string_128_at(nyx_string_128 s, int32_t i, const char *file, size_t line, size_t column, size_t offset)
 {
     if (i < 0 || (uint32_t)i >= s.length) {
-        nyx_string_bounds();
+        nyx_string_bounds(file, line, column, offset);
     }
     return s.data[i];
 }
 
-static bool nyx_string_128_equal(nyx_string_128 a, nyx_string_128 b)
+static inline bool nyx_string_128_equal(nyx_string_128 a, nyx_string_128 b)
 {
     return a.length == b.length &&
            memcmp(a.data, b.data, a.length) == 0;

@@ -2,6 +2,12 @@
 
 #include "compile_support.h"
 
+TEST("Text index diagnostic")
+{
+    return compile_fails("var s: Text = \"hi\"\nprint(s[0])\n",
+                         "Text indexing", MESSAGE_CHECKER_TEXT_INDEX);
+}
+
 TEST("dynamic to fixed conversion")
 {
     return compile_fails(
@@ -28,10 +34,9 @@ TEST("a string literal without a String<N> context")
 
 TEST("comparing two uncontextual string literals")
 {
-    return compile_fails(
+    return compile_accepts(
         "var ok: Bool = \"a\" == \"b\"\n",
-        "comparing two uncontextual string literals",
-        MESSAGE_CHECKER_STRING_COMPARE_CONTEXT);
+        "comparing two uncontextual string literals");
 }
 
 TEST("a literal that fits two union alternatives")
@@ -60,11 +65,10 @@ TEST("assigning a String<8> to a String<16>")
 
 TEST("comparing different Text capacities")
 {
-    return compile_fails(
+    return compile_accepts(
         "var a: String<8> = \"hi\"\nvar b: String<16> = \"hi\"\nvar ok: Bool "
         "= a == b\n",
-        "comparing different Text capacities",
-        MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+        "comparing different Text capacities");
 }
 
 TEST("byte_len with an argument")
@@ -178,10 +182,9 @@ TEST("slice with a non-Int32 start")
 
 TEST("comparing fixed and dynamic strings")
 {
-    return compile_fails(
+    return compile_accepts(
         "var f: String<8> = \"x\"\nvar s: Text = \"x\"\nvar ok: Bool = f == s\n",
-        "comparing fixed and dynamic strings",
-        MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+        "comparing fixed and dynamic strings");
 }
 
 TEST("builder: builder with a non-Int32 capacity")
@@ -227,7 +230,7 @@ TEST("builder: builder finish with an argument")
 TEST("Error field write")
 {
     return compile_fails(
-        "fun f(e: Error): Nil\n  e.line = 1\n  return nil\nend\n",
+        "fun f(e: Error)\n  e.line = 1\n  return\nend\n",
         "Error field write",
         MESSAGE_CHECKER_FIELD_LVALUE);
 }
@@ -240,10 +243,18 @@ TEST("bare String")
         MESSAGE_CHECKER_STRING_ARGS);
 }
 
-TEST("Error.throw argument count")
+TEST("Error::throw argument count")
 {
     return compile_fails(
-        "var e: Error = Error.throw(\"E\")\n",
-        "Error.throw argument count",
+        "var e: Error = Error::throw(\"E\")\n",
+        "Error::throw argument count",
         MESSAGE_CHECKER_ERROR_THROW_ARGS);
+}
+
+TEST("Error.throw requires static syntax")
+{
+    return compile_fails(
+        "var e: Error = Error.throw(\"E\", \"description\")\n",
+        "the old Error.throw syntax",
+        MESSAGE_CHECKER_UNKNOWN_MEMBER, "throw");
 }

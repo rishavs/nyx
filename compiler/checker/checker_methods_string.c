@@ -391,21 +391,13 @@ bool check_string_method(CheckContext *ctx, const AstNode *node,
             size_t argument_ast = *(const size_t *)list_get(
                 &ctx->ast->children, node->children_start);
             size_t index;
-            const TypedNode *index_node;
-            const TypedType *index_type;
             size_t byte_type;
 
             if (!check_fixed_index_bounds(ctx, argument_ast,
-                                          receiver_node->type_index) ||
-                !check_expression(ctx, argument_ast, &index)) {
+                                          receiver_node->type_index)) {
                 return false;
             }
-            index_node = typed_program_node(ctx->program, index);
-            index_type = index_node == NULL
-                             ? NULL
-                             : typed_program_type(ctx->program,
-                                                  index_node->type_index);
-            if (index_type == NULL || index_type->kind != NIPPY_TYPE_INT32) {
+            if (!check_int32_expression(ctx, argument_ast, &index)) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_STRING_INDEX);
                 return false;

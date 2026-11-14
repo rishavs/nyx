@@ -37,12 +37,37 @@ static const char *const oom_source =
     "var p: Something = 3\n"
     "var q: Point = Point(1, 2)\n"
     "var r = Pair(1, true)\n"
-    "var s: Int32 = identity(7)\n"
+    "var s: Int32 = identity(Int32(7))\n"
     "var t: Int32 = classify(true)\n"
     "var u: Int32 = add(1, 2)\n"
     "var arena: Store = Store(16)\n"
     "var stored: Handle<Int32> = arena.alloc<Int32>(1)\n"
     "var byte_value: Byte = 7\n";
+
+TEST("paths with spaces")
+{
+    char source[1024];
+    char output[1024];
+    char log[1024];
+    char command[4096];
+
+    snprintf(source, sizeof(source), "%s", test_path("source file.nip"));
+    snprintf(output, sizeof(output), "%s", test_path("binary file"));
+    snprintf(log, sizeof(log), "%s", test_path("compiler.log"));
+    if (!write_text(source, "print(3)\n")) return TEST_ERROR;
+    snprintf(command, sizeof(command), "%s '%s' '%s' > '%s' 2>&1",
+             nippy_binary(), source, output, log);
+    if (system(command) != 0) {
+        fprintf(stderr, "  source or output path with spaces failed\n");
+        return TEST_FAIL;
+    }
+    snprintf(command, sizeof(command), "'%s'", output);
+    if (run_command(command, log) != 0 || !file_contains(log, "3\n")) {
+        fprintf(stderr, "  output with spaces did not run\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
 
 TEST("could not open source")
 {

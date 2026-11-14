@@ -67,6 +67,8 @@ bool emit_children_expressions(const TypedProgram *program, const TypedNode *nod
 const char *binary_operator_text(NippyOperator op);
 bool emit_expression(const TypedProgram *program, size_t node_index,
     TextBuffer *buffer, ErrorState *errors);
+bool emit_match_temporaries(const TypedProgram *program, size_t scope,
+    TextBuffer *source, ErrorState *errors);
 size_t find_struct_declaration(const TypedProgram *program, const TypedType *type);
 bool struct_emitted_before(const TypedProgram *program, size_t index,
     size_t declaration_node, size_t name_index);
@@ -104,7 +106,7 @@ bool emit_dynamic_string_literals(const TypedProgram *program, TextBuffer *sourc
 bool emit_store_runtime(TextBuffer *source, size_t store_count,
     bool needs_bytes_alloc, bool needs_aligned_alloc, ErrorState *errors);
 bool emit_store_inits(const TypedProgram *program, size_t store_count,
-    TextBuffer *source, ErrorState *errors);
+    const char *effective_source, TextBuffer *source, ErrorState *errors);
 bool emit_store_frees(size_t store_count, TextBuffer *source, ErrorState *errors);
 bool emit_var_to_main(const TypedProgram *program, const TypedNode *node,
     const char *effective_source, TextBuffer *source, ErrorState *errors);
@@ -129,6 +131,8 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
     size_t type_index, ErrorState *errors);
 bool emit_print_helpers(const TypedProgram *program, TextBuffer *source,
     ErrorState *errors);
+bool emit_equality_helpers(const TypedProgram *program, TextBuffer *source,
+                           ErrorState *errors);
 bool emit_print_statement(const TypedProgram *program, const TypedNode *node,
     TextBuffer *source, ErrorState *errors, size_t depth);
 bool map_key_names(const TypedProgram *program, size_t key_type, size_t value_type,

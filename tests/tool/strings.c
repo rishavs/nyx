@@ -24,7 +24,7 @@ TEST("string bounds")
         "end\n"
         "var b: Byte = bad(\"abc\", 5)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS,
+    return run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS + 7,
                                  "string bounds");
 }
 
@@ -115,8 +115,11 @@ TEST("stale dynamic string")
         "arena.reset()\n"
         "var b: Byte = s.byte_at(0)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale dynamic string");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale dynamic string");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("dynamic string bounds")
@@ -127,8 +130,11 @@ TEST("dynamic string bounds")
         "end\n"
         "var b: Byte = at(\"hi\")\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS,
-                                 "dynamic string bounds");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS + 7,
+                                              "dynamic string bounds");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("stale dynamic string length")
@@ -139,8 +145,22 @@ TEST("stale dynamic string length")
         "arena.reset()\n"
         "var n: Int32 = s.byte_len()\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
+    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                  "stale dynamic string length");
+}
+
+TEST("copying a stale string reports the copy location")
+{
+    TestResult result = run_generated_failure(
+        "global a: Store = Store(16)\n"
+        "global b: Store = Store(16)\n"
+        "var s: Text = a.copy(\"hi\")\n"
+        "a.reset()\n"
+        "var copy: Text = b.copy(s)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale string copy location");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("dynamic Text union")
@@ -181,8 +201,11 @@ TEST("stale TextBuilder")
         "arena.reset()\n"
         "b.append(\"x\")\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE,
-                                 "stale TextBuilder");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                              "stale TextBuilder");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("TextBuilder content")
@@ -308,13 +331,13 @@ TEST("for arena strings")
     return run_generated(source, "13\n", "for over arena strings");
 }
 
-TEST("Error.throw")
+TEST("Error::throw")
 {
     const char *source =
-        "var e: Error = Error.throw(\"E\", \"desc\")\n"
+        "var e: Error = Error::throw(\"E\", \"desc\")\n"
         "print(e)\n";
     const char *expected =
-        "Error(E, desc, test.nip, 1, 22, 21)\n";
+        "Error(E, desc, test.nip, 1, 23, 22)\n";
 
-    return run_generated(source, expected, "Error.throw");
+    return run_generated(source, expected, "Error::throw");
 }

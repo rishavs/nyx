@@ -6,4 +6,4 @@ fun wrap<T>(x: T): T
   return identity(x)
 end
 
-var n: Int32 = wrap(3)
+var n: Int32 = wrap(Int32(3))

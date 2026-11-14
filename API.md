@@ -224,6 +224,7 @@ and to names by index.
 typedef struct {
     List nodes;
     List symbols;
+    NameIndex symbol_index; /* owned hash index into symbols */
     List roots;           /* indices into nodes */
     List children;        /* indices into nodes, for variable-arity children */
     List type_parameters; /* indices into nodes, for generic declarations */
@@ -233,6 +234,7 @@ typedef struct {
 typedef struct {
     List nodes;
     List symbols;
+    NameIndex symbol_index;    /* owned hash index into symbols */
     List roots;
     List children;
     List types;                /* TypedType records */
@@ -241,6 +243,8 @@ typedef struct {
     List type_children;        /* indices into types: union alternatives and
                                   struct type arguments */
     List bytes;                /* decoded string-literal bytes */
+    List match_temporaries;    /* TypedMatchTemporary records */
+    List match_scopes;         /* per-function heads into match_temporaries */
     int error_header_capacity;      /* built-in Error field capacities */
     int error_description_capacity;
     int error_filename_capacity;
@@ -259,14 +263,34 @@ typedef struct {
 owning `children` list. `AstNode` additionally carries
 `type_parameters_start`/`type_parameters_count`, indexing `Ast.type_parameters`
 (used by generic struct, alias, and function declarations; 0/0 when absent).
-`second_name_index` is meaningful only for `AST_FOR`/`TYPED_FOR`, where it
-holds the optional second binding.
+The lexer represents `===` with `TOKEN_EQEQEQ`; binary AST and typed nodes
+retain it as `NIPPY_OPERATOR_STRICT_EQ`.
+For `AST_FUNCTION_DECLARATION` and `AST_TYPE_FUNCTION`, `right_child` is
+`AST_NO_NODE` when the source omits a return type. For `AST_RETURN`, `left_child`
+is `AST_NO_NODE` for a bare return. The typed representation uses internal
+`Nil` results for no-result functions.
+For `AST_FIELD`, `left_child` is the type and `right_child` is its optional
+literal default, or `AST_NO_NODE` when absent.
+`AstNode.second_name_index` is used by `AST_FOR` for its optional second
+binding, by associated function declarations for the owner type, and by static
+calls for the owner type. `TypedNode.second_name_index` is used by
+`TYPED_FOR` for its optional second binding.
+`NIPPY_TYPE_RANGE` has one integer type child. `TYPED_RANGE_CREATE` has
+two or three expression children for its bounds and optional `Int64` step;
+the checker sequences those expressions using scoped temporaries.
 `AST_MEMBER_CALL` stores its receiver in `left_child`, its optional type
 argument in `right_child`, its method name in `name_index`, and its positional
 arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
 expression in `left_child`; the checker accepts it only for call expressions.
+For `Type::name(...)`, `AST_CALL` stores the owner name in
+`second_name_index` and sets `is_static`.
+Associated declarations store their owner type syntax in `owner_type_index`;
+static calls use it for an explicitly specialized owner, or `AST_NO_NODE` for
+a bare owner name.
 `AST_DECLARATION` sets `is_global` for a `global` declaration and `is_const`
-for a `const` declaration. `AST_ASSIGNMENT`
+for a `const` declaration. Associated function declaration nodes set
+`is_method` or `is_static`; a static `AST_CALL` sets `is_static`. `AST_PARAMETER`
+sets `is_self` for the implicit instance-method receiver. `AST_ASSIGNMENT`
 stores the target name in `name_index` and the value in `left_child`. `AST_STRING_LITERAL` stores an offset and byte length into `Ast.bytes`;
 `AST_TYPE_FIXED_STRING` stores its capacity in `integer_value`.
 `AST_TYPE_LIST` has its element type in `left_child`; `AST_TYPE_FIXED_LIST`
@@ -286,6 +310,14 @@ binding in `second_name_index`.
 `while`, `for`, and `match` bodies are block nodes; block statements and `if`
 branches are stored in `children`.
 `TYPED_NO_NODE`/`AST_NO_NODE` means "no node".
+
+`TYPED_FUNCTION_DECLARATION.is_method` marks an instance method whose first
+parameter is emitted as a pointer. `TYPED_PARAMETER.is_self` and
+`TYPED_IDENTIFIER.is_self` mark the implicit receiver parameter and its uses.
+`TYPED_FUNCTION_CALL.is_method_call` marks calls whose first child is the
+receiver; the generator passes its address. Static functions are emitted as
+ordinary function declarations and calls after the checker resolves their
+owner and name.
 
 Resolved types are records in `TypedProgram.types`:
 
@@ -340,6 +372,10 @@ typedef struct {
 ```
 
 Lifecycle and access helpers:
+
+The symbol indexes are owned by the artifacts and maintained by their interning
+functions. Callers must not modify their slots or mutate the symbols lists
+directly.
 
 ```c
 void ast_init(Ast *ast);
@@ -408,8 +444,14 @@ payload projection, `integer_value` is the alternative's canonical tag.
 `integer_value`; a statically decided test is emitted as a boolean literal, not
 a tag comparison. `TYPED_IF_EXPRESSION` has the condition in `left_child`, the
 then expression in `right_child`, and the else expression in a one-child run.
-`match` and `typeof` tests are lowered by the parser/checker into `if` chains and
-`TYPED_IS` nodes, so there is no separate typed match node.
+`match` arms are lowered into `if` chains and `TYPED_IS` or equality nodes.
+`TYPED_MATCH_TEMPORARY` reads the saved scrutinee; a
+`TYPED_MATCH_BIND_EXPRESSION` or `TYPED_MATCH_BIND_STATEMENT` evaluates the
+scrutinee in `left_child` once before evaluating the lowered chain in
+`right_child`. Their `integer_value_u` is an index in `match_temporaries`.
+Each temporary stores its type and the next temporary in its function's chain;
+`match_scopes` stores the heads, with scope zero for top-level code. Function
+declarations store their scope index in `integer_value_u`.
 
 `TYPED_NUMERIC_CONVERSION` has the target type in `type_index`, the source type
 in `auxiliary_type`, and the converted value in `left_child`. A conversion of a

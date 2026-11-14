@@ -33,13 +33,15 @@ COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c \
 	compiler/generator/generator_expr_collection.c \
 	compiler/generator/generator_expr_access.c \
 	compiler/generator/generator_expr_operator.c \
+	compiler/generator/generator_equality.c \
 	compiler/generator/generator_stmt.c compiler/generator/generator_print.c \
 	compiler/generator/generator_runtime_string.c \
 	compiler/generator/generator_runtime_store.c \
 	compiler/generator/generator_runtime_list.c \
 	compiler/generator/generator_runtime_map.c \
 	compiler/generator/generator_arith.c \
-	compiler/ast.c compiler/typed_program.c compiler/error.c compiler/list.c
+	compiler/ast.c compiler/typed_program.c compiler/error.c compiler/list.c \
+	compiler/name_index.c
 # Everything except the command-line driver, linked into the test binaries so
 # tests can exercise stages directly (not only through the nippy executable).
 COMPILER_LIB_SOURCES = $(filter-out compiler/main.c,$(COMPILER_SOURCES))

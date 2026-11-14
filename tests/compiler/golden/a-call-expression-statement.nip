@@ -1,6 +1,6 @@
 var s: Store = Store(16)
 
-fun clear(): Nil
+fun clear()
   s.reset()
-  return nil
+  return
 end

@@ -20,6 +20,23 @@ bool check_generic_constructor(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
         return false;
     }
+    if (ctx->expected_ast == ast_index) {
+        const TypedType *expected = typed_program_type(ctx->program,
+                                                       ctx->expected_type);
+        const char *source_name = expected == NULL ||
+                                  expected->source_name_index == TYPED_NO_NODE
+                                      ? NULL : typed_program_symbol_text(
+                                          ctx->program,
+                                          expected->source_name_index);
+
+        if (expected != NULL && expected->kind == NIPPY_TYPE_STRUCT &&
+            source_name != NULL && strcmp(source_name, entry->name) == 0 &&
+            expected->child_count == entry->parameter_count) {
+            concrete = *entry;
+            concrete.type_index = ctx->expected_type;
+            return check_constructor(ctx, node, &concrete, ast_index);
+        }
+    }
     for (i = 0; i < entry->parameter_count; i++) {
         infer.names[i] = entry->parameters[i];
         infer.types[i] = TYPED_NO_NODE;
@@ -35,7 +52,7 @@ bool check_generic_constructor(CheckContext *ctx, const AstNode *node,
     }
 
     if (!named) {
-        if (node->children_count != declaration->children_count) {
+        if (node->children_count > declaration->children_count) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT,
                             entry->name, declaration->children_count,
@@ -44,19 +61,31 @@ bool check_generic_constructor(CheckContext *ctx, const AstNode *node,
         }
         for (i = 0; i < declaration->children_count; i++) {
             const AstNode *field = template_field(ctx, declaration, i, NULL);
-            size_t argument_ast = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start + i);
+            size_t argument_ast = i < node->children_count
+                ? *(const size_t *)list_get(&ctx->ast->children,
+                                            node->children_start + i)
+                : field == NULL ? AST_NO_NODE : field->right_child;
             size_t value;
             const TypedNode *value_node;
 
-            if (field == NULL || !check_expression(ctx, argument_ast, &value)) {
+            if (field == NULL || argument_ast == AST_NO_NODE) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT,
+                                entry->name, declaration->children_count,
+                                node->children_count);
+                return false;
+            }
+            if (!check_expression(ctx, argument_ast, &value)) {
                 return false;
             }
             value_node = typed_program_node(ctx->program, value);
             if (value_node == NULL ||
-                !infer_ast_type(ctx, field->left_child,
-                                value_node->type_index, &infer,
-                                entry->name)) {
+                (ast_type_has_unbound(ctx, field->left_child, &infer,
+                                      NIPPY_TYPE_DEPTH) &&
+                 (!check_default_numeric(ctx, value) ||
+                  !infer_ast_type(ctx, field->left_child,
+                                  value_node->type_index, &infer,
+                                  entry->name)))) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_CANNOT_INFER_TYPE,
                                 infer_first_unbound(&infer), entry->name);
@@ -126,23 +155,30 @@ bool check_generic_constructor(CheckContext *ctx, const AstNode *node,
                 }
             }
             if (found == NULL) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG,
-                                field_name);
-                return false;
+                if (field == NULL || field->right_child == AST_NO_NODE) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG,
+                                    field_name);
+                    return false;
+                }
             }
             {
                 size_t value;
                 const TypedNode *value_node;
 
-                if (!check_expression(ctx, found->left_child, &value)) {
+                if (!check_expression(ctx, found == NULL ? field->right_child
+                                                          : found->left_child,
+                                      &value)) {
                     return false;
                 }
                 value_node = typed_program_node(ctx->program, value);
                 if (value_node == NULL ||
-                    !infer_ast_type(ctx, field->left_child,
-                                    value_node->type_index, &infer,
-                                    entry->name)) {
+                    (ast_type_has_unbound(ctx, field->left_child, &infer,
+                                          NIPPY_TYPE_DEPTH) &&
+                     (!check_default_numeric(ctx, value) ||
+                      !infer_ast_type(ctx, field->left_child,
+                                      value_node->type_index, &infer,
+                                      entry->name)))) {
                     error_report_at(ctx->errors, node->pos,
                                     MESSAGE_CHECKER_CANNOT_INFER_TYPE,
                                     infer_first_unbound(&infer), entry->name);
@@ -177,6 +213,7 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
     size_t decl_index = struct_declaration_node(ctx, entry);
     const TypedNode *type_decl = typed_program_node(ctx->program, decl_index);
     size_t field_count;
+    const AstNode *declaration = ast_get_node(ctx->ast, entry->ast_index);
     bool named = false;
     size_t i;
     List values;
@@ -204,19 +241,32 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
     list_init(&values, sizeof(size_t));
 
     if (!named) {
-        if (node->children_count != field_count) {
+        if (node->children_count > field_count) {
             error_report_at(ctx->errors, node->pos,
                             MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT,
                             entry->name, field_count, node->children_count);
             goto done;
         }
         for (i = 0; i < field_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start + i);
+            const AstNode *field = template_field(ctx, declaration, i, NULL);
+            size_t child;
             size_t value;
             size_t coerced;
+            size_t field_type = struct_field_type(
+                ctx->program, typed_program_node(ctx->program, decl_index), i);
 
-            if (!check_expression(ctx, child, &value)) {
+            if (i < node->children_count) {
+                child = *(const size_t *)list_get(&ctx->ast->children,
+                                                  node->children_start + i);
+            } else if (field != NULL && field->right_child != AST_NO_NODE) {
+                child = field->right_child;
+            } else {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_CONSTRUCTOR_ARG_COUNT,
+                                entry->name, field_count, node->children_count);
+                goto done;
+            }
+            if (!check_expression_expected(ctx, child, field_type, &value)) {
                 goto done;
             }
             if (!constructor_value_fits(ctx, value, entry, i, i + 1,
@@ -290,16 +340,35 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
                 }
             }
             if (found == NULL) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG,
-                                field_name);
-                goto done;
+                const AstNode *field = template_field(ctx, declaration, i, NULL);
+                size_t value, coerced;
+                size_t field_type = struct_field_type(
+                    ctx->program, typed_program_node(ctx->program, decl_index), i);
+                if (field == NULL || field->right_child == AST_NO_NODE) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_MISSING_CONSTRUCTOR_ARG,
+                                    field_name);
+                    goto done;
+                }
+                if (!check_expression_expected(ctx, field->right_child,
+                                               field_type, &value) ||
+                    !constructor_value_fits(ctx, value, entry, i, i + 1,
+                                            node->pos, &coerced)) goto done;
+                if (!list_push(&values, &coerced)) {
+                    error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                    goto done;
+                }
+                continue;
             }
             {
                 size_t value;
                 size_t coerced;
+                size_t field_type = struct_field_type(
+                    ctx->program, typed_program_node(ctx->program, decl_index),
+                    i);
 
-                if (!check_expression(ctx, found->left_child, &value)) {
+                if (!check_expression_expected(ctx, found->left_child,
+                                               field_type, &value)) {
                     goto done;
                 }
                 if (!constructor_value_fits(ctx, value, entry, i, i + 1,

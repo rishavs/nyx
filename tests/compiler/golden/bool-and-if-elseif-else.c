@@ -12,7 +12,7 @@ int32_t nyx_u_classify(int32_t nyx_u_x)
         return 1;
     } else {
 #line 2 "test.nip"
-        if ((nyx_u_x == 0)) {
+        if ((nyx_u_x == ((int64_t)0ULL))) {
 #line 5 "test.nip"
             return 2;
         } else {

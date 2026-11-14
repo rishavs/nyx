@@ -2,5 +2,5 @@ fun identity<T>(x: T): T
   return x
 end
 
-var a: Int32 = identity(1)
+var a: Int32 = identity(Int32(1))
 var b: Bool = identity(true)

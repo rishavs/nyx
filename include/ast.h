@@ -3,6 +3,7 @@
 
 #include "identifier.h"
 #include "list.h"
+#include "name_index.h"
 #include "operator.h"
 #include "source_pos.h"
 
@@ -81,9 +82,12 @@ typedef struct {
     double float_value;
     NippyOperator op;
     size_t name_index;
-    /* AST_FOR: the value binding when an index binding is present. */
+    /* AST_FOR: optional value binding; associated functions: owner name. */
     size_t second_name_index;
+    /* Associated declaration or static call: owner type syntax. */
+    size_t owner_type_index;
     size_t left_child;
+    /* AST_FIELD: optional literal default; AST_NO_NODE when absent. */
     size_t right_child;
     size_t children_start;
     size_t children_count;
@@ -93,6 +97,12 @@ typedef struct {
     bool is_global;
     /* AST_DECLARATION: declared with `const` rather than `var`. */
     bool is_const;
+    /* AST_FUNCTION_DECLARATION: an instance method. */
+    bool is_method;
+    /* AST_FUNCTION_DECLARATION or AST_CALL: a static associated function. */
+    bool is_static;
+    /* The implicit receiver parameter in an AST method declaration. */
+    bool is_self;
     /* AST_STRING_LITERAL points into Ast.bytes. */
     size_t string_offset;
     size_t string_length;
@@ -101,6 +111,7 @@ typedef struct {
 typedef struct {
     List nodes;
     List symbols;
+    NameIndex symbol_index;
     /* Indices into `nodes` of the top-level declarations, in source order. */
     List roots;
     /* Indices into `nodes` for variable-arity children: type declaration

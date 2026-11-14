@@ -1,9 +1,186 @@
 #include "checker_internal.h"
 
+static bool validate_source_type_depth(CheckContext *ctx, size_t index,
+                                       bool union_alternative, size_t depth)
+{
+    const AstNode *node = ast_get_node(ctx->ast, index);
+    size_t i;
+
+    if (node == NULL) {
+        return true;
+    }
+    if (depth == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_PARSER_TREE_DEPTH_LIMIT, 256);
+        return false;
+    }
+    if (node->kind == AST_TYPE_NAME) {
+        const char *name = ast_symbol_text(ctx->ast, node->name_index);
+
+        if (!union_alternative && name != NULL && strcmp(name, "Nil") == 0) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+            return false;
+        }
+        return true;
+    }
+    if (node->kind == AST_TYPE_UNION || node->kind == AST_TYPE_APPLICATION ||
+        node->kind == AST_TYPE_FUNCTION) {
+        bool only_nil = node->kind == AST_TYPE_UNION;
+
+        for (i = 0; i < node->children_count; i++) {
+            size_t child = *(const size_t *)list_get(
+                &ctx->ast->children, node->children_start + i);
+            const AstNode *alternative = ast_get_node(ctx->ast, child);
+            const char *name = alternative != NULL &&
+                                       alternative->kind == AST_TYPE_NAME
+                                   ? ast_symbol_text(ctx->ast,
+                                                     alternative->name_index)
+                                   : NULL;
+
+            if (name == NULL || strcmp(name, "Nil") != 0) {
+                only_nil = false;
+            }
+            if (!validate_source_type_depth(ctx, child,
+                                            node->kind == AST_TYPE_UNION,
+                                            depth - 1)) {
+                return false;
+            }
+        }
+        if (only_nil) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+            return false;
+        }
+    }
+    if ((node->kind == AST_TYPE_LIST || node->kind == AST_TYPE_FIXED_LIST ||
+         node->kind == AST_TYPE_SLICE || node->kind == AST_TYPE_RECORD ||
+         node->kind == AST_TYPE_TABLE) &&
+        !validate_source_type_depth(ctx, node->left_child, false, depth - 1)) {
+        return false;
+    }
+    if ((node->kind == AST_TYPE_RECORD || node->kind == AST_TYPE_TABLE ||
+         node->kind == AST_TYPE_FUNCTION) &&
+        !validate_source_type_depth(ctx, node->right_child, false, depth - 1)) {
+        return false;
+    }
+    return true;
+}
+
+static bool validate_source_type(CheckContext *ctx, size_t index,
+                                 bool union_alternative)
+{
+    return validate_source_type_depth(ctx, index, union_alternative, 256);
+}
+
+static bool mark_invalid_root(CheckContext *ctx, List *invalid_roots, SourcePos pos)
+{
+    size_t low = 0;
+    size_t high = ctx->ast->roots.length;
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        size_t index = *(const size_t *)list_get(&ctx->ast->roots, mid);
+        const AstNode *root = ast_get_node(ctx->ast, index);
+        if (root == NULL) return false;
+        if (root->pos.offset <= pos.offset) low = mid + 1;
+        else high = mid;
+    }
+    if (low == 0) return false;
+    *(bool *)list_get(invalid_roots, low - 1) = true;
+    return true;
+}
+
+static bool validate_source_types(CheckContext *ctx, List *invalid_roots)
+{
+    size_t i;
+    bool valid = true;
+
+    for (i = 0; i < ctx->ast->nodes.length; i++) {
+        const AstNode *node = ast_get_node(ctx->ast, i);
+        size_t index = AST_NO_NODE;
+
+        if (node->kind == AST_FIELD || node->kind == AST_PARAMETER) {
+            index = node->left_child;
+        } else if (node->kind == AST_DECLARATION ||
+                   node->kind == AST_FUNCTION_DECLARATION ||
+                   node->kind == AST_TYPE_ALIAS ||
+                   node->kind == AST_MEMBER_CALL) {
+            index = node->right_child;
+        } else if (node->kind == AST_CALL && node->is_static) {
+            index = node->owner_type_index;
+        } else if (node->kind == AST_IS) {
+            if (!validate_source_type(ctx, node->right_child, true)) {
+                valid = false;
+                if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
+            }
+        } else if ((node->kind == AST_MATCH ||
+                    node->kind == AST_MATCH_EXPRESSION) &&
+                   node->integer_value != 0) {
+            size_t j;
+
+            for (j = 0; j < node->children_count; j += 2) {
+                size_t pattern = *(const size_t *)list_get(
+                    &ctx->ast->children, node->children_start + j);
+                if (!validate_source_type(ctx, pattern, true)) {
+                    valid = false;
+                    if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
+                }
+            }
+        }
+        if (index != AST_NO_NODE && !validate_source_type(ctx, index, false)) {
+            valid = false;
+            if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
+        }
+    }
+    return valid;
+}
+
 
 size_t *mapping_slot(List *mapping, size_t index)
 {
     return (size_t *)list_get(mapping, index);
+}
+
+bool check_int32_expression(CheckContext *ctx, size_t ast_index, size_t *out)
+{
+    size_t value;
+    size_t type;
+
+    return check_expression(ctx, ast_index, &value) &&
+           builtin_type(ctx, NIPPY_TYPE_INT32, &type) &&
+           inject_into(ctx, value, type, out);
+}
+
+bool check_expression_coerced(CheckContext *ctx, size_t ast_index,
+                              size_t expected, size_t *out)
+{
+    size_t value;
+
+    if (!check_expression_expected(ctx, ast_index, expected, &value)) {
+        return false;
+    }
+    if (expected != TYPED_NO_NODE) {
+        return inject_into(ctx, value, expected, out);
+    }
+    if (!check_default_numeric(ctx, value)) {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+bool check_expression_expected(CheckContext *ctx, size_t ast_index,
+                               size_t expected_type, size_t *out_typed)
+{
+    size_t previous_ast = ctx->expected_ast;
+    size_t previous_type = ctx->expected_type;
+    bool ok;
+
+    ctx->expected_ast = ast_index;
+    ctx->expected_type = expected_type;
+    ok = check_expression(ctx, ast_index, out_typed);
+    ctx->expected_ast = previous_ast;
+    ctx->expected_type = previous_type;
+    return ok;
 }
 
 
@@ -17,6 +194,7 @@ bool check_expression(CheckContext *ctx, size_t ast_index,
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
         return false;
     }
+    invalidate_accesses_for_expression(ctx, ast_index);
     slot = mapping_slot(ctx->mapping, ast_index);
     if (*slot != TYPED_NO_NODE) {
         *out_typed = *slot;
@@ -83,7 +261,34 @@ bool check_expression(CheckContext *ctx, size_t ast_index,
             return false;
         }
         if (ok) {
+            if ((node->kind == AST_MEMBER_ACCESS || node->kind == AST_INDEX) &&
+                ast_index != ctx->assignment_target_ast &&
+                !apply_access_narrowing(ctx, ast_index)) {
+                return false;
+            }
+            if (node->kind == AST_MEMBER_CALL) {
+                invalidate_access_narrowing(ctx, node->left_child);
+            }
+            if (node->kind == AST_MEMBER_CALL || node->kind == AST_CALL) {
+                const char *called = node->kind == AST_CALL
+                    ? ast_symbol_text(ctx->ast, node->name_index) : NULL;
+                if (called == NULL || strcmp(called, "print") != 0)
+                    invalidate_aliased_narrowings(ctx);
+            }
             *out_typed = *slot;
+            if ((node->kind == AST_CALL || node->kind == AST_MEMBER_CALL) &&
+                ast_index != ctx->statement_call_ast) {
+                const TypedNode *result = typed_program_node(ctx->program,
+                                                             *out_typed);
+                const TypedType *type = result == NULL ? NULL :
+                    typed_program_type(ctx->program, result->type_index);
+
+                if (type != NULL && type->kind == NIPPY_TYPE_NIL) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_VOID_VALUE);
+                    return false;
+                }
+            }
         }
         return ok;
     }
@@ -96,6 +301,7 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
     const AstNode *node = ast_get_node(ctx->ast, ast_index);
     TypedNode typed = {0};
 
+    typed.name_index = TYPED_NO_NODE;
     if (node == NULL) {
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
         return false;
@@ -104,10 +310,44 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
     if (node->kind == AST_RETURN) {
         size_t expression;
         const TypedNode *expression_node;
+        const TypedType *result = typed_program_type(ctx->program, return_type);
 
         size_t coerced;
 
-        if (!check_expression(ctx, node->left_child, &expression)) {
+        if (result != NULL && result->kind == NIPPY_TYPE_NIL) {
+            TypedNode unit = {0};
+
+            if (node->left_child != AST_NO_NODE) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_VOID_RETURN);
+                return false;
+            }
+            unit.kind = TYPED_NIL_LITERAL;
+            unit.type_index = return_type;
+            unit.pos = node->pos;
+            unit.name_index = TYPED_NO_NODE;
+            unit.left_child = TYPED_NO_NODE;
+            unit.right_child = TYPED_NO_NODE;
+            if (!typed_program_push(ctx->program, &unit, &expression)) {
+                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                return false;
+            }
+            typed.kind = TYPED_RETURN;
+            typed.type_index = return_type;
+            typed.pos = node->pos;
+            typed.left_child = expression;
+            typed.right_child = TYPED_NO_NODE;
+            return emit_node(ctx, &typed, ast_index, out_typed);
+        }
+        if (node->left_child == AST_NO_NODE) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_RETURN_TYPE_MISMATCH,
+                            ctx->function_name == NULL ? "function"
+                                                       : ctx->function_name);
+            return false;
+        }
+        if (!check_expression_expected(ctx, node->left_child, return_type,
+                                       &expression)) {
             return false;
         }
         expression_node = typed_program_node(ctx->program, expression);
@@ -133,6 +373,12 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
         size_t then_block;
         size_t else_block = TYPED_NO_NODE;
         size_t children_start;
+        bool then_ok;
+        size_t error_start;
+        size_t types_before;
+        size_t functions_before;
+        size_t structs_before;
+        size_t instances_before;
 
         size_t narrowing_count;
 
@@ -148,23 +394,45 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
         if (!push_if_narrowing(ctx, node->left_child)) {
             return false;
         }
+        error_start = ctx->errors->length;
+        types_before = ctx->types->length;
+        functions_before = ctx->functions->length;
+        structs_before = ctx->struct_instantiations->length;
+        instances_before = ctx->function_instantiations->length;
         {
             size_t then_ast = *(const size_t *)list_get(
                 &ctx->ast->children, node->children_start);
 
-            if (!check_block(ctx, then_ast, return_type, &then_block)) {
-                ctx->narrowings->length = narrowing_count;
-                return false;
-            }
+            then_ok = check_block(ctx, then_ast, return_type, &then_block);
         }
         ctx->narrowings->length = narrowing_count;
+        if (!then_ok) {
+            if (strstr(ctx->errors->message + error_start, "out of memory") != NULL ||
+                ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) return false;
+            ctx->types->length = types_before;
+            ctx->functions->length = functions_before;
+            ctx->struct_instantiations->length = structs_before;
+            ctx->function_instantiations->length = instances_before;
+            name_index_rebuild(&ctx->function_index, ctx->functions);
+        }
         if (node->children_count > 1) {
             size_t else_ast = *(const size_t *)list_get(
                 &ctx->ast->children, node->children_start + 1);
 
-            if (!check_block(ctx, else_ast, return_type, &else_block)) {
+            if (!then_ok) ctx->errors->reported = false;
+            if (!push_else_narrowing(ctx, node->left_child)) {
+                ctx->narrowings->length = narrowing_count;
                 return false;
             }
+            if (!check_block(ctx, else_ast, return_type, &else_block)) {
+                ctx->narrowings->length = narrowing_count;
+                return false;
+            }
+            ctx->narrowings->length = narrowing_count;
+        }
+        if (!then_ok) {
+            ctx->errors->reported = true;
+            return false;
         }
 
         children_start = ctx->program->children.length;
@@ -652,8 +920,10 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     List function_instantiations;
     List narrowings;
     List stores;
+    List invalid_roots;
     size_t i;
     bool ok = false;
+    bool had_errors = false;
 
     if (ast->roots.length == 0) {
         error_report(errors, MESSAGE_CHECKER_MISSING_AST_ROOT);
@@ -669,6 +939,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     list_init(&function_instantiations, sizeof(FunctionInstantiation));
     list_init(&narrowings, sizeof(Narrowing));
     list_init(&stores, sizeof(StoreEntry));
+    list_init(&invalid_roots, sizeof(bool));
 
     ctx.ast = ast;
     ctx.program = program;
@@ -676,6 +947,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     ctx.mapping = &mapping;
     ctx.types = &types;
     ctx.functions = &functions;
+    name_index_init(&ctx.function_index);
     ctx.globals = &globals;
     ctx.locals = &locals;
     ctx.struct_instantiations = &struct_instantiations;
@@ -684,11 +956,33 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
     ctx.stores = &stores;
     ctx.in_function = false;
     ctx.in_expression_statement = false;
+    ctx.statement_call_ast = AST_NO_NODE;
     ctx.loop_depth = 0;
     ctx.function_name = NULL;
     ctx.depth = 0;
     ctx.generated_names = 0;
+    ctx.expected_ast = AST_NO_NODE;
+    ctx.expected_type = TYPED_NO_NODE;
+    ctx.assignment_target_ast = AST_NO_NODE;
+    ctx.match_scope = 0;
     ctx.env = &empty_env;
+
+    {
+        size_t empty_scope = TYPED_NO_NODE;
+        if (!list_push(&program->match_scopes, &empty_scope)) {
+            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+            goto done;
+        }
+    }
+
+    for (i = 0; i < ast->roots.length; i++) {
+        bool valid = false;
+        if (!list_push(&invalid_roots, &valid)) {
+            error_report(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            goto done;
+        }
+    }
+    if (!validate_source_types(&ctx, &invalid_roots)) had_errors = true;
 
     for (i = 0; i < ast->nodes.length; i++) {
         size_t none = TYPED_NO_NODE;
@@ -704,6 +998,18 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
         const AstNode *node = ast_get_node(ast, ast_root);
         size_t typed_root;
         bool checked = false;
+        size_t types_before = types.length;
+        size_t functions_before = functions.length;
+        size_t globals_before = globals.length;
+        size_t stores_before = stores.length;
+        size_t structs_before = struct_instantiations.length;
+        size_t instances_before = function_instantiations.length;
+        size_t narrowing_before = narrowings.length;
+        size_t error_start = errors->length;
+
+        if (*(const bool *)list_get(&invalid_roots, i)) continue;
+
+        errors->reported = false;
 
         if (node == NULL) {
             error_report(errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_root);
@@ -752,7 +1058,24 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             goto done;
         }
         if (!checked) {
-            goto done;
+            if (!errors->reported) {
+                error_unknown_if_none(errors);
+            }
+            /* Allocation failure leaves no reliable state for recovery. */
+            if (strstr(errors->message + error_start, "out of memory") != NULL ||
+                errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
+                goto done;
+            }
+            types.length = types_before;
+            functions.length = functions_before;
+            globals.length = globals_before;
+            stores.length = stores_before;
+            struct_instantiations.length = structs_before;
+            function_instantiations.length = instances_before;
+            narrowings.length = narrowing_before;
+            name_index_rebuild(&ctx.function_index, &functions);
+            had_errors = true;
+            continue;
         }
         if (node->kind == AST_TYPE_DECLARATION ||
             node->kind == AST_TYPE_ALIAS) {
@@ -770,17 +1093,22 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             goto done;
         }
     }
-    ok = true;
+    ok = !had_errors;
+    if (had_errors) {
+        errors->reported = true;
+    }
 
 done:
     list_free(&mapping);
     list_free(&types);
     list_free(&functions);
+    name_index_free(&ctx.function_index);
     list_free(&globals);
     list_free(&locals);
     list_free(&struct_instantiations);
     list_free(&function_instantiations);
     list_free(&narrowings);
     list_free(&stores);
+    list_free(&invalid_roots);
     return ok;
 }

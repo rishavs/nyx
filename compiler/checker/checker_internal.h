@@ -41,11 +41,16 @@ typedef struct {
 
 typedef struct {
     char name[NIPPY_IDENTIFIER_MAX];
+    char owner_name[NIPPY_IDENTIFIER_MAX];
+    char method_name[NIPPY_IDENTIFIER_MAX];
     size_t type_index; /* TYPED_NO_NODE for a generic template */
     bool generic;
+    bool is_method;
+    bool is_static;
     size_t ast_index;
     char parameters[NIPPY_MAX_TYPE_PARAMETERS][NIPPY_IDENTIFIER_MAX];
     size_t parameter_count;
+    size_t owner_parameter_count;
 } FunctionEntry;
 
 typedef struct {
@@ -54,6 +59,7 @@ typedef struct {
     bool is_const;
     bool has_constant;
     int constant_value;
+    bool is_self_pointer;
 } VariableEntry;
 
 typedef struct {
@@ -89,9 +95,12 @@ typedef struct {
 
 typedef struct {
     const char *name;
+    size_t path_ast; /* AST_NO_NODE for a bare variable */
     size_t type_index; /* narrowed type */
+    size_t original_type; /* type of the underlying storage */
     size_t tag;
     bool active;
+    bool alias_sensitive;
 } Narrowing;
 
 typedef struct {
@@ -108,6 +117,7 @@ typedef struct {
     List *mapping;
     List *types;                  /* TypeEntry */
     List *functions;              /* FunctionEntry */
+    NameIndex function_index;
     List *globals;                /* VariableEntry, program-level names */
     List *locals;                 /* VariableEntry, current function's parameters */
     List *struct_instantiations;  /* StructInstantiation */
@@ -116,21 +126,30 @@ typedef struct {
     List *stores;                 /* StoreEntry, program-level global stores */
     bool in_function;
     bool in_expression_statement;
+    size_t statement_call_ast;
     size_t loop_depth;
     const char *function_name;
     size_t depth;
     size_t generated_names;
+    size_t expected_ast;
+    size_t expected_type;
+    size_t assignment_target_ast;
+    size_t match_scope;
     const TypeEnv *env; /* concrete substitutions while checking a generic body */
 } CheckContext;
 
 
 /* Internal helpers shared by the checker modules. */
 
+bool emit_narrowed_value(CheckContext *ctx, size_t source,
+                         const Narrowing *narrowing, size_t *out);
 size_t *mapping_slot(List *mapping, size_t index);
 size_t find_type_index(const List *types, const char *name);
 const TypeEntry *find_type(const List *types, const char *name);
-const FunctionEntry *find_function(const List *functions, const char *name);
-size_t find_function_index(const List *functions, const char *name);
+const FunctionEntry *find_function(const CheckContext *ctx, const char *name);
+const FunctionEntry *find_associated_function(const List *functions,
+    const char *owner_name, const char *method_name);
+size_t find_function_index(const CheckContext *ctx, const char *name);
 const VariableEntry *find_variable(const List *variables, const char *name);
 const StoreEntry *find_store(const List *stores, const char *name);
 bool identifier_is_reserved(const char *name);
@@ -155,6 +174,7 @@ bool map_type(CheckContext *ctx, size_t key_type, size_t value_type, bool fixed,
 bool list_type(CheckContext *ctx, size_t element_type, bool fixed, size_t capacity,
     size_t *out_index);
 bool slice_type(CheckContext *ctx, size_t element_type, size_t *out_index);
+bool range_type(CheckContext *ctx, size_t element_type, size_t *out_index);
 bool add_function_type(CheckContext *ctx, const List *parameter_types,
     size_t return_type, size_t *out_index);
 bool same_type_depth(const TypedProgram *program, size_t a, size_t b, unsigned depth);
@@ -189,6 +209,10 @@ bool check_nil_literal(CheckContext *ctx, const AstNode *node, size_t ast_index)
 bool push_injection(CheckContext *ctx, size_t value, size_t target, size_t tag,
     size_t *out_value);
 bool inject_into(CheckContext *ctx, size_t value, size_t target, size_t *out_value);
+bool check_int32_expression(CheckContext *ctx, size_t ast_index, size_t *out);
+bool check_expression_coerced(CheckContext *ctx, size_t ast_index,
+                              size_t expected, size_t *out);
+bool check_default_numeric(CheckContext *ctx, size_t value);
 bool lookup_field(CheckContext *ctx, size_t receiver_type, const char *name,
     size_t *out_type, bool *out_error);
 bool field_is_lvalue(const Ast *ast, size_t ast_index);
@@ -203,6 +227,8 @@ bool check_list_literal(CheckContext *ctx, const AstNode *node, size_t ast_index
 bool check_string_literal(CheckContext *ctx, const AstNode *node, size_t ast_index);
 bool check_is(CheckContext *ctx, const AstNode *node, size_t ast_index);
 bool check_literal(CheckContext *ctx, const AstNode *node, size_t ast_index);
+bool equality_type_supported(const TypedProgram *program, size_t type_index,
+                             unsigned depth);
 bool check_identifier(CheckContext *ctx, const AstNode *node, size_t ast_index);
 const char *operator_text(NippyOperator op);
 bool add_builtin_type(CheckContext *ctx, NippyType kind, size_t *out_index);
@@ -250,7 +276,11 @@ bool check_generic_call(CheckContext *ctx, const AstNode *node, size_t function_
 bool member_store(CheckContext *ctx, const AstNode *node, const char *method,
     const StoreEntry **out_store);
 bool check_member_call(CheckContext *ctx, const AstNode *node, size_t ast_index);
+bool check_associated_function_call(CheckContext *ctx, const AstNode *node,
+    const FunctionEntry *function, size_t ast_index, bool is_method);
 bool check_expression(CheckContext *ctx, size_t ast_index, size_t *out_typed);
+bool check_expression_expected(CheckContext *ctx, size_t ast_index,
+    size_t expected_type, size_t *out_typed);
 bool eval_const_int(CheckContext *ctx, size_t ast_index, int *out);
 bool check_store_declaration(CheckContext *ctx, const AstNode *node, const char *name,
     size_t ast_index, size_t store_type);
@@ -261,7 +291,12 @@ bool typed_statement_returns(const TypedProgram *program, size_t index);
 bool typed_statement_terminates(const TypedProgram *program, size_t index);
 bool typed_block_returns(const TypedProgram *program, size_t index);
 bool push_if_narrowing(CheckContext *ctx, size_t condition_ast);
+bool push_else_narrowing(CheckContext *ctx, size_t condition_ast);
 void invalidate_narrowing(CheckContext *ctx, const char *name);
+void invalidate_access_narrowing(CheckContext *ctx, size_t ast_index);
+bool apply_access_narrowing(CheckContext *ctx, size_t ast_index);
+void invalidate_accesses_for_expression(CheckContext *ctx, size_t ast_index);
+void invalidate_aliased_narrowings(CheckContext *ctx);
 bool is_builtin_type_name(const char *name);
 bool check_assignment(CheckContext *ctx, const AstNode *node, size_t ast_index,
     size_t *out_typed);

@@ -3,6 +3,47 @@
 
 #include "compile_support.h"
 
+TEST("symbol interning recovers after index allocation failure")
+{
+    Ast ast;
+    TypedProgram program;
+    size_t i;
+    char name[32];
+
+    ast_init(&ast);
+    typed_program_init(&program);
+    for (i = 0; i < 16; i++) {
+        snprintf(name, sizeof(name), "name%zu", i);
+        if (ast_intern_symbol(&ast, name, strlen(name)) != i ||
+            typed_program_copy_symbol(&program, name, strlen(name)) != i) {
+            ast_free(&ast);
+            typed_program_free(&program);
+            return TEST_FAIL;
+        }
+    }
+    nippy_alloc_fail_after(1);
+    i = ast_intern_symbol(&ast, "new", 3);
+    nippy_alloc_reset();
+    if (i != AST_NO_NODE || ast_intern_symbol(&ast, "new", 3) != 16 ||
+        ast_intern_symbol(&ast, "name0", 5) != 0) {
+        ast_free(&ast);
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    nippy_alloc_fail_after(1);
+    i = typed_program_copy_symbol(&program, "new", 3);
+    nippy_alloc_reset();
+    if (i != TYPED_NO_NODE || typed_program_copy_symbol(&program, "new", 3) != 16 ||
+        typed_program_copy_symbol(&program, "name0", 5) != 0) {
+        ast_free(&ast);
+        typed_program_free(&program);
+        return TEST_FAIL;
+    }
+    ast_free(&ast);
+    typed_program_free(&program);
+    return TEST_PASS;
+}
+
 TEST("compiler: source string is null")
 {
     CompilerResult result = compiler_compile(NULL, NULL);

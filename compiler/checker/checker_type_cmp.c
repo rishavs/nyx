@@ -32,7 +32,7 @@ bool same_type_depth(const TypedProgram *program, size_t a, size_t b,
     }
     if (left->kind == NIPPY_TYPE_LIST ||
         left->kind == NIPPY_TYPE_FIXED_LIST ||
-        left->kind == NIPPY_TYPE_SLICE) {
+        left->kind == NIPPY_TYPE_SLICE || left->kind == NIPPY_TYPE_RANGE) {
         size_t left_element;
         size_t right_element;
 
@@ -191,6 +191,8 @@ int type_rank(NippyType kind)
         return 12;
     case NIPPY_TYPE_SLICE:
         return 13;
+    case NIPPY_TYPE_RANGE:
+        return 27;
     case NIPPY_TYPE_RECORD:
         return 17;
     case NIPPY_TYPE_TABLE:
@@ -218,7 +220,7 @@ int type_rank(NippyType kind)
     case NIPPY_TYPE_FLOAT64:
         return 26;
     default:
-        return 27;
+        return 28;
     }
 }
 
@@ -301,7 +303,7 @@ int type_compare_depth(const TypedProgram *program, size_t a, size_t b,
     }
     if (left->kind == NIPPY_TYPE_LIST ||
         left->kind == NIPPY_TYPE_FIXED_LIST ||
-        left->kind == NIPPY_TYPE_SLICE) {
+        left->kind == NIPPY_TYPE_SLICE || left->kind == NIPPY_TYPE_RANGE) {
         size_t left_element;
         size_t right_element;
         int by_element;

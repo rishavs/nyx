@@ -56,9 +56,10 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             }
             return true;
         }
-        if (!buffer_append(buffer, "nyx_list_len(") ||
+        if (!buffer_append(buffer, "nyx_list_len_at(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -87,6 +88,10 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
+            ((receiver_type->kind == NIPPY_TYPE_LIST ||
+              receiver_type->kind == NIPPY_TYPE_SLICE) &&
+             !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
+                             node->pos.line, node->pos.column, node->pos.offset)) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -119,7 +124,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                 !emit_expression(program, node->left_child, buffer, errors) ||
                 !buffer_append(buffer, ", ") ||
                 !emit_expression(program, node->right_child, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 if (!errors->reported) {
                     error_report(errors,
                                  MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -128,12 +135,14 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data_at(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s)))", element_name)) {
+            !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu))",
+                            element_name, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -175,7 +184,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                 !buffer_appendf(buffer, "(*nyx_list_%zu_at(&%s, ",
                                 receiver->type_index, name) ||
                 !emit_expression(program, index, buffer, errors) ||
-                !buffer_append(buffer, ") = ") ||
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu) = ",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset) ||
                 !emit_expression(program, value, buffer, errors) ||
                 !buffer_append(buffer, ")")) {
                 if (!errors->reported) {
@@ -186,12 +197,14 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             }
             return true;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_list_data_at(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, index, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s)) = ", element_name) ||
+            !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu) = ",
+                            element_name, node->pos.line, node->pos.column,
+                            node->pos.offset) ||
             !emit_expression(program, value, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
@@ -227,7 +240,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             if (!buffer_appendf(buffer, "nyx_list_%zu_push(&%s, ",
                                 receiver->type_index, name) ||
                 !emit_expression(program, node->right_child, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 if (!errors->reported) {
                     error_report(errors,
                                  MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -239,8 +254,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
         if (!buffer_appendf(buffer, "nyx_list_push(%s, (%s[]){ ", name,
                             element_name) ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s))",
-                            element_name, element_name)) {
+            !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
+                            element_name, element_name, node->pos.line,
+                            node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -277,7 +293,10 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
-        if (!buffer_append(buffer, ")")) {
+        if ((receiver_type->kind == NIPPY_TYPE_LIST &&
+             !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
+                             node->pos.line, node->pos.column, node->pos.offset)) ||
+            !buffer_append(buffer, ")")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -300,8 +319,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                             "nyx_list_create(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s), _Alignof(%s))",
-                            element_name, element_name)) {
+            !buffer_appendf(buffer, ", sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
+                            element_name, element_name, node->pos.line,
+                            node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -340,7 +360,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, start, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, length, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s))", element_name)) {
+            !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu)",
+                            element_name, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -350,9 +372,10 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
     }
     if (node->kind == TYPED_SLICE_LEN) {
         *handled = true;
-        if (!buffer_append(buffer, "nyx_slice_len(") ||
+        if (!buffer_append(buffer, "nyx_slice_len_at(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -369,12 +392,14 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nyx_slice_data(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_slice_data_at(",
                             element_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s)))", element_name)) {
+            !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu))",
+                            element_name, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -449,7 +474,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                 return false;
             }
         }
-        if (!buffer_appendf(buffer, " }, %zu)", node->children_count / 2)) {
+        if (!buffer_appendf(buffer, " }, %zu, __FILE__, %zu, %zu, %zu)",
+                            node->children_count / 2, node->pos.line,
+                            node->pos.column, node->pos.offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -461,7 +488,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                             "nyx_table_%zu_create(&nyx_stores[%zu], %zu, ",
                             node->type_index, node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -480,7 +508,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -499,7 +528,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -527,7 +557,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             if (!buffer_appendf(buffer, "nyx_table_%zu_len(",
                                 receiver->type_index) ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column, node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -541,7 +572,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
                  !buffer_append(buffer, ")")) ||
                 !buffer_append(buffer, ", ") ||
                 !emit_expression(program, node->right_child, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column, node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -568,7 +600,8 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, "), ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }

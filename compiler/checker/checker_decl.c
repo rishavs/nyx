@@ -319,7 +319,7 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     if (find_variable(ctx->globals, name) != NULL ||
-        find_function(ctx->functions, name) != NULL ||
+        find_function(ctx, name) != NULL ||
         find_type(ctx->types, name) != NULL ||
         find_store(ctx->stores, name) != NULL ||
         is_builtin_type_name(name) || is_builtin_function_name(name)) {
@@ -361,7 +361,8 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_GLOBAL_DECLARATION, name);
         return false;
     }
-    if (!check_expression(ctx, node->left_child, &initialiser)) {
+    if (!check_expression_expected(ctx, node->left_child, declared_type,
+                                   &initialiser)) {
         return false;
     }
     initialiser_node = typed_program_node(ctx->program, initialiser);
@@ -371,7 +372,28 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
 
+    {
+        const TypedType *type = typed_program_type(
+            ctx->program, declared_type == TYPED_NO_NODE
+                              ? initialiser_node->type_index : declared_type);
+        const AstNode *initial_ast = ast_get_node(ctx->ast, node->left_child);
+
+        if (type != NULL && type->kind == NIPPY_TYPE_NIL) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+            return false;
+        }
+        if (type != NULL && type->kind == NIPPY_TYPE_UNION &&
+            initial_ast != NULL && initial_ast->kind == AST_NIL_LITERAL) {
+            error_report_at(ctx->errors, initial_ast->pos,
+                            MESSAGE_CHECKER_NIL_INITIALISER);
+            return false;
+        }
+    }
+
     if (declared_type == TYPED_NO_NODE) {
+        if (!check_default_numeric(ctx, initialiser)) {
+            return false;
+        }
         const TypedNode *inferred = typed_program_node(ctx->program,
                                                        initialiser);
 
@@ -406,11 +428,13 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
         if (!inject_into(ctx, initialiser, declared_type, &coerced)) {
             char declared_text[128];
 
-            type_ast_text(ctx->ast, node->right_child, declared_text,
-                          sizeof(declared_text));
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, name,
-                            declared_text);
+            if (!ctx->errors->reported) {
+                type_ast_text(ctx->ast, node->right_child, declared_text,
+                              sizeof(declared_text));
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, name,
+                                declared_text);
+            }
             return false;
         }
         initialiser = coerced;
@@ -558,7 +582,8 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     if (strcmp(name, "Byte") == 0 || strcmp(name, "Store") == 0 ||
-        strcmp(name, "Handle") == 0 || strcmp(name, "Int8") == 0 ||
+        strcmp(name, "Handle") == 0 || strcmp(name, "Range") == 0 ||
+        strcmp(name, "Int8") == 0 ||
         strcmp(name, "Int16") == 0 || strcmp(name, "Int64") == 0 ||
         strcmp(name, "Uint8") == 0 || strcmp(name, "Uint16") == 0 ||
         strcmp(name, "Uint32") == 0 || strcmp(name, "Uint64") == 0 ||
@@ -573,7 +598,7 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     if (find_variable(ctx->globals, name) != NULL ||
-        find_function(ctx->functions, name) != NULL ||
+        find_function(ctx, name) != NULL ||
         find_store(ctx->stores, name) != NULL) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name);

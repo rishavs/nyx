@@ -23,6 +23,12 @@ static TokenType keyword_type(const char *text, size_t length)
     if (length == 3 && memcmp(text, "fun", 3) == 0) {
         return TOKEN_KEYWORD_FUN;
     }
+    if (length == 6 && memcmp(text, "method", 6) == 0) {
+        return TOKEN_KEYWORD_METHOD;
+    }
+    if (length == 6 && memcmp(text, "static", 6) == 0) {
+        return TOKEN_KEYWORD_STATIC;
+    }
     if (length == 6 && memcmp(text, "return", 6) == 0) {
         return TOKEN_KEYWORD_RETURN;
     }
@@ -372,6 +378,12 @@ LexerResult lexer_tokenize(const char *code)
     list_init(&result.errors, sizeof(LexerError));
     list_init(&result.string_bytes, sizeof(unsigned char));
 
+    if ((unsigned char)code[0] == 0xef &&
+        (unsigned char)code[1] == 0xbb &&
+        (unsigned char)code[2] == 0xbf) {
+        cursor = 3;
+    }
+
     while (code[cursor] != '\0') {
         unsigned char current = (unsigned char)code[cursor];
 
@@ -554,26 +566,37 @@ LexerResult lexer_tokenize(const char *code)
 
         if (current == ':') {
             SourcePos start = {cursor, line, column};
+            bool doubled = code[cursor + 1] == ':';
 
-            if (!push_token(&result.tokens, TOKEN_COLON, start)) {
+            if (!push_token(&result.tokens,
+                            doubled ? TOKEN_DOUBLE_COLON : TOKEN_COLON,
+                            start)) {
                 result.out_of_memory = true;
                 goto failed;
             }
             advance(code, &cursor, &line, &column);
+            if (doubled) {
+                advance(code, &cursor, &line, &column);
+            }
             continue;
         }
 
         if (current == '=') {
             SourcePos start = {cursor, line, column};
             bool doubled = code[cursor + 1] == '=';
+            bool tripled = doubled && code[cursor + 2] == '=';
 
             if (!push_token(&result.tokens,
+                            tripled ? TOKEN_EQEQEQ :
                             doubled ? TOKEN_EQEQ : TOKEN_EQUALS, start)) {
                 result.out_of_memory = true;
                 goto failed;
             }
             advance(code, &cursor, &line, &column);
             if (doubled) {
+                advance(code, &cursor, &line, &column);
+            }
+            if (tripled) {
                 advance(code, &cursor, &line, &column);
             }
             continue;

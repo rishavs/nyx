@@ -6,6 +6,7 @@ void ast_init(Ast *ast)
 {
     list_init(&ast->nodes, sizeof(AstNode));
     list_init(&ast->symbols, sizeof(AstSymbol));
+    name_index_init(&ast->symbol_index);
     list_init(&ast->roots, sizeof(size_t));
     list_init(&ast->children, sizeof(size_t));
     list_init(&ast->type_parameters, sizeof(size_t));
@@ -19,6 +20,7 @@ void ast_free(Ast *ast)
     }
     list_free(&ast->nodes);
     list_free(&ast->symbols);
+    name_index_free(&ast->symbol_index);
     list_free(&ast->roots);
     list_free(&ast->children);
     list_free(&ast->type_parameters);
@@ -45,14 +47,9 @@ size_t ast_intern_symbol(Ast *ast, const char *text, size_t length)
         return AST_NO_NODE;
     }
 
-    /* Re-interning the same spelling keeps the symbol table small and makes
-       emitted names stable across repeated parses. */
-    for (i = 0; i < ast->symbols.length; i++) {
-        const AstSymbol *existing = list_get(&ast->symbols, i);
-        if (existing != NULL && strlen(existing->text) == length &&
-            memcmp(existing->text, text, length) == 0) {
-            return i;
-        }
+    i = name_index_find(&ast->symbol_index, &ast->symbols, text, length);
+    if (i != AST_NO_NODE) {
+        return i;
     }
 
     {
@@ -60,6 +57,11 @@ size_t ast_intern_symbol(Ast *ast, const char *text, size_t length)
         memset(&symbol, 0, sizeof(symbol));
         memcpy(symbol.text, text, length);
         if (!list_push(&ast->symbols, &symbol)) {
+            return AST_NO_NODE;
+        }
+        if (!name_index_insert(&ast->symbol_index, &ast->symbols,
+                               ast->symbols.length - 1)) {
+            ast->symbols.length--;
             return AST_NO_NODE;
         }
         return ast->symbols.length - 1;

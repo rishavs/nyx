@@ -12,7 +12,7 @@ int32_t nyx_u_classify(nyx_sum_3 nyx_u_x)
         return (nyx_u_x.value.v0);
     } else {
 #line 2 "test.nip"
-        if ((nyx_u_x.tag == 1)) {
+        if ((((nyx_u_x.tag == 1) ? ((nyx_sum_5){ .tag = 0, .value.v0 = (nyx_u_x.value.v1) }) : ((nyx_sum_5){ .tag = 1 })).tag == 0)) {
 #line 5 "test.nip"
             if ((nyx_u_x.value.v1)) {
 #line 6 "test.nip"

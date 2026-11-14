@@ -210,6 +210,18 @@ bool emit_type_definitions(const TypedProgram *program,
                 }
                 emitted_nil = true;
             }
+        } else if (type->kind == NIPPY_TYPE_RANGE) {
+            size_t element = *(const size_t *)list_get(&program->type_children,
+                                                        type->first_child);
+            char element_name[NIPPY_IDENTIFIER_MAX + 32];
+            if (!format_c_type(program, element, element_name, sizeof(element_name),
+                               errors) ||
+                !buffer_appendf(header,
+                    "typedef struct { %s start, end; int64_t step; } nyx_range_%zu;\n\n",
+                    element_name, i)) {
+                if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
         } else if (type->kind == NIPPY_TYPE_STRUCT) {
             size_t declaration_node = find_struct_declaration(program, type);
 
@@ -412,8 +424,8 @@ bool emit_type_definitions(const TypedProgram *program,
                      type->fixed_length + 1, type->fixed_length) ||
                  !buffer_appendf(
                      header,
-                     "static uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
-                     "int32_t i);\n\n",
+                     "static inline uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
+                     "int32_t i, const char *file, size_t line, size_t column, size_t offset);\n\n",
                      type->fixed_length, type->fixed_length))) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;

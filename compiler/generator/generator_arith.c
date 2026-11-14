@@ -30,9 +30,12 @@ bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
 
     if (!buffer_append(
             source,
-            "static void nyx_arith_fail(const char *message)\n"
+            "static void nyx_arith_fail_at(const char *message, const char *file,\n"
+            "                              size_t line, size_t column, size_t offset)\n"
             "{\n"
-            "    fprintf(stderr, \"%s\\n\", message);\n"
+            "    fflush(stdout);\n"
+            "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\",\n"
+            "            file, line, column, offset, message + 7);\n"
             "    exit(1);\n"
             "}\n\n")) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -44,9 +47,9 @@ bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
 
         if (!buffer_appendf(
                 source,
-                "static NIPPY_UNUSED %s nyx_div_%s(%s a, %s b)\n"
+                "static NIPPY_UNUSED %s nyx_div_%s(%s a, %s b, const char *file, size_t line, size_t column, size_t offset)\n"
                 "{\n"
-                "    if (b == 0) nyx_arith_fail(\"division by zero\");\n",
+                "    if (b == 0) nyx_arith_fail_at(\"" MESSAGE_RUNTIME_DIVISION_ZERO "\", file, line, column, offset);\n",
                 type->type, type->suffix, type->type, type->type)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -54,7 +57,7 @@ bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
         if (type->is_signed &&
             !buffer_appendf(source,
                             "    if (a == %s && b == -1) "
-                            "nyx_arith_fail(\"integer overflow\");\n",
+                            "nyx_arith_fail_at(\"" MESSAGE_RUNTIME_INTEGER_OVERFLOW "\", file, line, column, offset);\n",
                             type->minimum)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -62,10 +65,10 @@ bool emit_arithmetic_runtime(TextBuffer *source, ErrorState *errors)
         if (!buffer_appendf(source,
                             "    return a / b;\n"
                             "}\n\n"
-                            "static NIPPY_UNUSED %s nyx_mod_%s(%s a, %s b)\n"
+                            "static NIPPY_UNUSED %s nyx_mod_%s(%s a, %s b, const char *file, size_t line, size_t column, size_t offset)\n"
                             "{\n"
-                            "    if (b == 0) nyx_arith_fail("
-                            "\"division by zero\");\n",
+                            "    if (b == 0) nyx_arith_fail_at("
+                            "\"" MESSAGE_RUNTIME_DIVISION_ZERO "\", file, line, column, offset);\n",
                             type->type, type->suffix, type->type, type->type)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -115,7 +118,8 @@ static bool emit_integer_conversion(TextBuffer *source,
     bool narrow = type->width < 64;
 
     if (!buffer_appendf(source,
-                        "static NIPPY_UNUSED %s %s%s(%s value)\n{\n",
+                        "static NIPPY_UNUSED %s %s%s(%s value, const char *file, size_t line, size_t column, size_t offset)\n{\n"
+                        "    (void)file; (void)line; (void)column; (void)offset;\n",
                         type->type, prefix, type->suffix, domain)) {
         return false;
     }
@@ -123,31 +127,31 @@ static bool emit_integer_conversion(TextBuffer *source,
         if (type->is_signed && narrow &&
             !buffer_appendf(source,
                             "    if (value < (int64_t)%s) "
-                            "nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION
-                            "\");\n",
+                            "nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION
+                            "\", file, line, column, offset);\n",
                             type->minimum)) {
             return false;
         }
         if (!type->is_signed &&
             !buffer_append(source,
                            "    if (value < 0) "
-                           "nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION
-                           "\");\n")) {
+                           "nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION
+                           "\", file, line, column, offset);\n")) {
             return false;
         }
         if (narrow &&
             !buffer_appendf(source,
                             "    if (value > (int64_t)%s) "
-                            "nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION
-                            "\");\n",
+                            "nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION
+                            "\", file, line, column, offset);\n",
                             type->maximum)) {
             return false;
         }
     } else if ((type->is_signed || narrow) &&
                !buffer_appendf(source,
                                "    if (value > (uint64_t)%s) "
-                               "nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION
-                               "\");\n",
+                               "nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION
+                               "\", file, line, column, offset);\n",
                                type->maximum)) {
         return false;
     }
@@ -189,10 +193,10 @@ bool emit_conversion_runtime(TextBuffer *source, ErrorState *errors)
     for (i = 0; i < sizeof(conversions) / sizeof(conversions[0]); i++) {
         if (!buffer_appendf(
                 source,
-                "static NIPPY_UNUSED %s nyx_f2i_%s(double value)\n"
+                "static NIPPY_UNUSED %s nyx_f2i_%s(double value, const char *file, size_t line, size_t column, size_t offset)\n"
                 "{\n"
                 "    if (!(%s && value < %s)) {\n"
-                "        nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION "\");\n"
+                "        nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION "\", file, line, column, offset);\n"
                 "    }\n"
                 "    return (%s)value;\n"
                 "}\n\n",
@@ -207,11 +211,11 @@ bool emit_conversion_runtime(TextBuffer *source, ErrorState *errors)
        and NaN pass through; `value - value == 0.0` is true only for finite. */
     if (!buffer_append(
             source,
-            "static NIPPY_UNUSED float nyx_f2f_f32(double value)\n"
+            "static NIPPY_UNUSED float nyx_f2f_f32(double value, const char *file, size_t line, size_t column, size_t offset)\n"
             "{\n"
             "    if ((value > FLT_MAX || value < -FLT_MAX) &&\n"
             "        value - value == 0.0) {\n"
-            "        nyx_arith_fail(\"" MESSAGE_RUNTIME_CONVERSION "\");\n"
+            "        nyx_arith_fail_at(\"" MESSAGE_RUNTIME_CONVERSION "\", file, line, column, offset);\n"
             "    }\n"
             "    return (float)value;\n"
             "}\n\n")) {

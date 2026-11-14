@@ -1,5 +1,15 @@
 #include "generator_internal.h"
 
+static bool emit_inline_failure(TextBuffer *source, SourcePos pos,
+                                const char *message)
+{
+    return buffer_append(source,
+                         "fflush(stdout); fprintf(stderr, \""
+                         MESSAGE_RUNTIME_POSITION "\\n\", __FILE__, ") &&
+           buffer_appendf(source, "(size_t)%zu, (size_t)%zu, (size_t)%zu, \"%s\" + 7); exit(1);",
+                          pos.line, pos.column, pos.offset, message);
+}
+
 
 bool emit_map_for(const TypedProgram *program, const TypedNode *node,
                           const TypedType *iterable_type, size_t depth,
@@ -109,8 +119,9 @@ bool emit_map_for(const TypedProgram *program, const TypedNode *node,
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
                             "nyx_table_state_%zu *nyx_for_state_%zu = "
-                            "nyx_table_%zu_state(nyx_for_src_%zu);\n",
-                            table_type, offset, table_type, offset) ||
+                            "nyx_table_%zu_state_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu);\n",
+                            table_type, offset, table_type, offset,
+                            node->pos.line, node->pos.column, node->pos.offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
                             "if (nyx_for_i_%zu >= "
@@ -219,6 +230,26 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
                         effective_source)) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;
+    }
+
+    if (node->kind == TYPED_MATCH_BIND_STATEMENT) {
+        if (!append_indent(source, depth) ||
+            !buffer_append(source, "{\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "nyx_match_%zu = ",
+                            (size_t)node->integer_value_u) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "(void)nyx_match_%zu;\n",
+                            (size_t)node->integer_value_u) ||
+            !emit_statement(program, node->right_child, depth + 1,
+                            effective_source, source, errors) ||
+            !append_indent(source, depth) || !buffer_append(source, "}\n")) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
     }
 
     if (node->kind == TYPED_RETURN) {
@@ -346,6 +377,70 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
         }
         value_c = value_name;
         index_c = index_name;
+        if (iterable_type->kind == NIPPY_TYPE_RANGE) {
+            const TypedType *element = typed_program_type(program, node->auxiliary_type);
+            bool is_signed = element != NULL && nippy_type_is_signed_integer(element->kind);
+            if (element == NULL || !append_indent(source, depth) ||
+                !buffer_append(source, "{\n") || !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "%s nyx_range_%zu = ", iterable_name, offset) ||
+                !emit_expression(program, node->left_child, source, errors) ||
+                !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "%s nyx_cur_%zu = nyx_range_%zu.start;\n",
+                                element_name, offset, offset) ||
+                !append_indent(source, depth + 1) ||
+                !buffer_appendf(source,
+                    "uint64_t nyx_idx_%zu = 0;\n", offset) ||
+                !append_indent(source, depth + 1) ||
+                !buffer_appendf(source,
+                    "bool nyx_active_%zu = nyx_range_%zu.step > 0 ? "
+                    "nyx_cur_%zu < nyx_range_%zu.end : nyx_cur_%zu > nyx_range_%zu.end;\n",
+                    offset, offset, offset, offset, offset, offset) ||
+                !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "for (; (void)nyx_idx_%zu, nyx_active_%zu; "
+                                        "nyx_idx_%zu++) {\n",
+                                offset, offset, offset) || !append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "%s %s = nyx_cur_%zu; (void)%s;\n",
+                                element_name, value_c, offset, value_c) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source,
+                    "uint64_t nyx_dist_%zu = nyx_range_%zu.step > 0 ? "
+                    "(uint64_t)nyx_range_%zu.end - (uint64_t)nyx_cur_%zu : "
+                    "(uint64_t)nyx_cur_%zu - (uint64_t)nyx_range_%zu.end;\n",
+                    offset, offset, offset, offset, offset, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source,
+                    "uint64_t nyx_mag_%zu = nyx_range_%zu.step > 0 ? "
+                    "(uint64_t)nyx_range_%zu.step : UINT64_C(0) - "
+                    "(uint64_t)nyx_range_%zu.step;\n", offset, offset, offset, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source,
+                    "if (nyx_mag_%zu >= nyx_dist_%zu) nyx_active_%zu = false;\n",
+                    offset, offset, offset) || !append_indent(source, depth + 2))
+                goto range_error;
+            if (is_signed) {
+                if (!buffer_appendf(source,
+                    "else nyx_cur_%zu = (%s)((int64_t)nyx_cur_%zu + nyx_range_%zu.step);\n",
+                    offset, element_name, offset, offset)) goto range_error;
+            } else if (!buffer_appendf(source,
+                    "else nyx_cur_%zu = (%s)(nyx_range_%zu.step > 0 ? "
+                    "(uint64_t)nyx_cur_%zu + nyx_mag_%zu : "
+                    "(uint64_t)nyx_cur_%zu - nyx_mag_%zu);\n",
+                    offset, element_name, offset, offset, offset, offset, offset))
+                goto range_error;
+            if (index_c != NULL &&
+                (!append_indent(source, depth + 2) ||
+                 !buffer_appendf(source, "int32_t %s = (int32_t)nyx_idx_%zu; (void)%s;\n",
+                                 index_c, offset, index_c))) goto range_error;
+            if (!emit_block(program, node->right_child, depth + 2,
+                            effective_source, source, errors) ||
+                !append_indent(source, depth + 1) || !buffer_append(source, "}\n") ||
+                !append_indent(source, depth) || !buffer_append(source, "}\n"))
+                goto range_error;
+            return true;
+range_error:
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
         check_length = iterable_type->kind == NIPPY_TYPE_LIST ||
                        iterable_type->kind == NIPPY_TYPE_FIXED_LIST;
 
@@ -365,8 +460,10 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             return false;
         }
         if (iterable_type->kind == NIPPY_TYPE_LIST) {
-            if (!buffer_appendf(source, "nyx_list_len(nyx_for_src_%zu)",
-                                offset)) {
+            if (!buffer_appendf(source,
+                                "nyx_list_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
+                                offset, node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -379,14 +476,18 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
-            if (!buffer_appendf(source, "nyx_slice_len(nyx_for_src_%zu)",
-                                offset)) {
+            if (!buffer_appendf(source,
+                                "nyx_slice_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
+                                offset, node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_appendf(source, "nyx_string_len(nyx_for_src_%zu)",
-                                offset)) {
+            if (!buffer_appendf(source,
+                                "nyx_string_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
+                                offset, node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -410,22 +511,22 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
         if (check_length) {
             if (iterable_type->kind == NIPPY_TYPE_LIST) {
                 if (!buffer_appendf(source,
-                                    "if ((size_t)nyx_list_len("
-                                    "nyx_for_src_%zu) != "
-                                    "nyx_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
-                                    "exit(1); }\n",
-                                    offset, offset,
-                                    MESSAGE_RUNTIME_FOR_MUTATED)) {
+                                    "if ((size_t)nyx_list_len_at("
+                                    "nyx_for_src_%zu, __FILE__, %zu, %zu, %zu) != "
+                                    "nyx_for_len_%zu) { ",
+                                    offset, node->pos.line, node->pos.column,
+                                    node->pos.offset, offset) ||
+                    !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
+                    !buffer_append(source, " }\n")) {
                     error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                     return false;
                 }
             } else if (!buffer_appendf(source,
                                        "if ((size_t)(nyx_for_src_%zu).length "
-                                       "!= nyx_for_len_%zu) { "
-                                       "fprintf(stderr, \"%s\\n\"); "
-                                       "exit(1); }\n",
-                                       offset, offset,
-                                       MESSAGE_RUNTIME_FOR_MUTATED)) {
+                                       "!= nyx_for_len_%zu) { ",
+                                       offset, offset) ||
+                       !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
+                       !buffer_append(source, " }\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -440,38 +541,47 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
         }
         if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST) {
             if (!buffer_appendf(source, "nyx_list_%zu_get(nyx_for_src_%zu, "
-                                        "nyx_for_i_%zu)",
-                                iterable_node->type_index, offset, offset)) {
+                                        "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
+                                iterable_node->type_index, offset, offset,
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_LIST) {
             if (!buffer_appendf(source,
-                                "(*(%s *)nyx_list_data(nyx_for_src_%zu, "
-                                "nyx_for_i_%zu, sizeof(%s)))",
-                                element_name, offset, offset, element_name)) {
+                                "(*(%s *)nyx_list_data_at(nyx_for_src_%zu, "
+                                "nyx_for_i_%zu, sizeof(%s), __FILE__, %zu, %zu, %zu))",
+                                element_name, offset, offset, element_name,
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
             if (!buffer_appendf(source,
-                                "(*(%s *)nyx_slice_data(nyx_for_src_%zu, "
-                                "nyx_for_i_%zu, sizeof(%s)))",
-                                element_name, offset, offset, element_name)) {
+                                "(*(%s *)nyx_slice_data_at(nyx_for_src_%zu, "
+                                "nyx_for_i_%zu, sizeof(%s), __FILE__, %zu, %zu, %zu))",
+                                element_name, offset, offset, element_name,
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_STRING) {
             if (!buffer_appendf(source, "nyx_string_%zu_at(nyx_for_src_%zu, "
-                                        "nyx_for_i_%zu)",
-                                iterable_type->fixed_length, offset, offset)) {
+                                        "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
+                                iterable_type->fixed_length, offset, offset,
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
         } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
             if (!buffer_appendf(source, "nyx_string_byte_at(nyx_for_src_%zu, "
-                                        "nyx_for_i_%zu)",
-                                offset, offset)) {
+                                        "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
+                                offset, offset, node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -479,14 +589,18 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
             return false;
         }
-        if (!buffer_append(source, ";\n")) {
+        if (!buffer_append(source, ";\n") ||
+            !append_indent(source, depth + 2) ||
+            !buffer_appendf(source, "(void)%s;\n", value_c)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         if (index_c != NULL) {
             if (!append_indent(source, depth + 2) ||
                 !buffer_appendf(source, "int32_t %s = (int32_t)nyx_for_i_%zu;\n",
-                                index_c, offset)) {
+                                index_c, offset) ||
+                !append_indent(source, depth + 2) ||
+                !buffer_appendf(source, "(void)%s;\n", index_c)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -502,22 +616,22 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             }
             if (iterable_type->kind == NIPPY_TYPE_LIST) {
                 if (!buffer_appendf(source,
-                                    "if ((size_t)nyx_list_len("
-                                    "nyx_for_src_%zu) != "
-                                    "nyx_for_len_%zu) { fprintf(stderr, \"%s\\n\"); "
-                                    "exit(1); }\n",
-                                    offset, offset,
-                                    MESSAGE_RUNTIME_FOR_MUTATED)) {
+                                    "if ((size_t)nyx_list_len_at("
+                                    "nyx_for_src_%zu, __FILE__, %zu, %zu, %zu) != "
+                                    "nyx_for_len_%zu) { ",
+                                    offset, node->pos.line, node->pos.column,
+                                    node->pos.offset, offset) ||
+                    !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
+                    !buffer_append(source, " }\n")) {
                     error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                     return false;
                 }
             } else if (!buffer_appendf(source,
                                        "if ((size_t)(nyx_for_src_%zu).length "
-                                       "!= nyx_for_len_%zu) { "
-                                       "fprintf(stderr, \"%s\\n\"); "
-                                       "exit(1); }\n",
-                                       offset, offset,
-                                       MESSAGE_RUNTIME_FOR_MUTATED)) {
+                                       "!= nyx_for_len_%zu) { ",
+                                       offset, offset) ||
+                       !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
+                       !buffer_append(source, " }\n")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -548,7 +662,8 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             !emit_expression(program, key, source, errors) ||
             !buffer_append(source, ", ") ||
             !emit_expression(program, value, source, errors) ||
-            !buffer_append(source, ");\n")) {
+            !buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -574,7 +689,8 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             !emit_expression(program, key, source, errors) ||
             !buffer_append(source, ", ") ||
             !emit_expression(program, value, source, errors) ||
-            !buffer_append(source, ");\n")) {
+            !buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -748,6 +864,13 @@ static bool emit_function_signature(const TypedProgram *program,
             parameter_name = user_c_name(program, parameter->name_index,
                                          parameter_text,
                                          sizeof(parameter_text));
+            if (parameter->is_self != (node->is_method && i == 0)) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
+                return false;
+            }
+            if (node->is_method && i == 0) {
+                parameter_name = "nyx_self";
+            }
             if (!valid_identifier(parameter_name)) {
                 error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
                 return false;
@@ -756,8 +879,11 @@ static bool emit_function_signature(const TypedProgram *program,
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
-            if (!buffer_appendf(source, "%s %s", parameter_type,
-                                parameter_name)) {
+            if (!((node->is_method && i == 0)
+                      ? buffer_appendf(source, "%s *%s", parameter_type,
+                                      parameter_name)
+                      : buffer_appendf(source, "%s %s", parameter_type,
+                                      parameter_name))) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
             }
@@ -780,10 +906,16 @@ static bool emit_function_call_args(const TypedProgram *program,
         char parameter_text[USER_NAME_CAPACITY];
         const char *parameter_name;
 
-        if (parameter == NULL || parameter->kind != TYPED_PARAMETER ||
-            (parameter_name = user_c_name(program, parameter->name_index,
-                                          parameter_text,
-                                          sizeof(parameter_text))) == NULL) {
+        if (parameter == NULL || parameter->kind != TYPED_PARAMETER) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
+            return false;
+        }
+        parameter_name = parameter->is_self
+                             ? "nyx_self"
+                             : user_c_name(program, parameter->name_index,
+                                           parameter_text,
+                                           sizeof(parameter_text));
+        if (parameter_name == NULL) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
             return false;
         }
@@ -812,8 +944,15 @@ static bool emit_function_unused_params(const TypedProgram *program,
                                                  node->children_start + i);
         const TypedNode *parameter = typed_program_node(program, child);
         char parameter_name_text[USER_NAME_CAPACITY];
-    const char *parameter_name = user_c_name(program, parameter->name_index,
-                                  parameter_name_text, sizeof(parameter_name_text));
+        const char *parameter_name = parameter == NULL
+                                         ? NULL
+                                         : parameter->is_self
+                                               ? "nyx_self"
+                                               : user_c_name(
+                                                     program,
+                                                     parameter->name_index,
+                                                     parameter_name_text,
+                                                     sizeof(parameter_name_text));
 
         if (parameter_name == NULL ||
             !buffer_appendf(source, "    (void)%s;\n", parameter_name)) {
@@ -834,6 +973,7 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
                                   name_text, sizeof(name_text));
     const TypedType *type = typed_program_type(program, node->type_index);
     const TypedFunctionSignature *signature;
+    const TypedType *result_type;
     bool recursive;
     char inner_name[NIPPY_IDENTIFIER_MAX + 32];
     char depth_name[NIPPY_IDENTIFIER_MAX + 32];
@@ -849,6 +989,8 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
     signature = typed_program_signature(program, type->signature_index);
     recursive = typed_calls_name(program, node->left_child,
                                  node->name_index);
+    result_type = signature == NULL ? NULL :
+                  typed_program_type(program, signature->return_type);
 
     if (!buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
                         effective_source)) {
@@ -858,9 +1000,13 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
     if (!recursive) {
         if (!emit_function_signature(program, node, name, source, errors) ||
             !buffer_append(source, "\n{\n") ||
+            !emit_match_temporaries(program, (size_t)node->integer_value_u,
+                                    source, errors) ||
             !emit_function_unused_params(program, node, source, errors) ||
             !emit_block(program, node->left_child, 1, effective_source,
                         source, errors) ||
+            (result_type != NULL && result_type->kind == NIPPY_TYPE_NIL &&
+             !buffer_append(source, "    return (nyx_nil)0;\n")) ||
             !buffer_append(source, "}\n\n")) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -885,12 +1031,13 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
         !buffer_append(source, "\n{\n") ||
         !buffer_appendf(source,
                         "    if (++%s > NIPPY_RECURSION_LIMIT) {\n"
-                        "        fprintf(stderr, \"" MESSAGE_RUNTIME_RECURSION
-                        "\\n\");\n"
-                        "        exit(1);\n"
+                        "        ", depth_name) ||
+        !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_RECURSION) ||
+        !buffer_appendf(source,
+                        "\n"
                         "    }\n"
                         "    %s nyx_recursion_result = %s(",
-                        depth_name, return_name, inner_name) ||
+                        return_name, inner_name) ||
         !emit_function_call_args(program, node, source, errors) ||
         !buffer_appendf(source,
                         ");\n"
@@ -900,9 +1047,13 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
                         depth_name) ||
         !emit_function_signature(program, node, inner_name, source, errors) ||
         !buffer_append(source, "\n{\n") ||
+        !emit_match_temporaries(program, (size_t)node->integer_value_u,
+                                source, errors) ||
         !emit_function_unused_params(program, node, source, errors) ||
         !emit_block(program, node->left_child, 1, effective_source, source,
                     errors) ||
+        (result_type != NULL && result_type->kind == NIPPY_TYPE_NIL &&
+         !buffer_append(source, "    return (nyx_nil)0;\n")) ||
         !buffer_append(source, "}\n\n")) {
         if (!errors->reported) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);

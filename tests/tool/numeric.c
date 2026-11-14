@@ -2,6 +2,80 @@
 
 #include "tool_support.h"
 
+TEST("runtime error follows prior output")
+{
+    char expected[256];
+    TestResult result = run_generated_failure(
+        "var zero: Int32 = 0\nprint(\"before\")\nprint(1 / zero)\n",
+        "division by zero",
+        "runtime error ordering and prefix");
+    if (result != TEST_PASS) return result;
+    snprintf(expected, sizeof(expected), "before\n" MESSAGE_RUNTIME_POSITION "\n",
+             "test.nip", (size_t)3, (size_t)9, (size_t)44, "division by zero");
+    if (!file_equals(test_path("runtime.log"), expected)) {
+        fprintf(stderr, "  runtime output preceded earlier stdout\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TEST("strict equality")
+{
+    const char *source =
+        "var a: Int32 = 3\n"
+        "var b: Int64 = 3\n"
+        "var c: Int32 = 3\n"
+        "var s: String<4> = \"hi\"\n"
+        "var t: String<8> = \"hi\"\n"
+        "var text: Text = \"hi\"\n"
+        "print(a == b, a === b, a === c, a === 3)\n"
+        "print(3 === 3.0, true === 1, s === t, s === \"hi\")\n"
+        "print(text === \"hi\", text === s, !(a === b))\n"
+        "global arena: Store = Store(16)\n"
+        "fun first(h: Handle<Int32>): Int32\n"
+        "  h.write(h.read() + 1) return h.read() end\n"
+        "fun second(h: Handle<Int32>): Int64\n"
+        "  h.write(h.read() + 1) return Int64(h.read()) end\n"
+        "var h = arena.alloc<Int32>(0)\n"
+        "print(first(h) === second(h), h.read())\n";
+
+    return run_generated(source,
+                         "true false true true\n"
+                         "false false false true\n"
+                         "true false true\nfalse 2\n",
+                         "strict equality");
+}
+
+TEST("exact mixed numeric equality")
+{
+    const char *source =
+        "var s: Int64 = -1\n"
+        "var u: Uint64 = 18446744073709551615\n"
+        "var low: Int64 = -9223372036854775808\n"
+        "var big: Int64 = 9007199254740993\n"
+        "var exact: Int64 = 9007199254740992\n"
+        "var f: Float64 = 9007199254740992.0\n"
+        "var max_float: Float64 = 18446744073709551616.0\n"
+        "var min_float: Float64 = -9223372036854775808.0\n"
+        "var small: Float32 = 3.0\n"
+        "var fraction: Float64 = 3.5\n"
+        "var zero: Float64 = -0.0\n"
+        "var huge: Float64 = 1e308\n"
+        "var infinity: Float64 = huge * 2.0\n"
+        "print(Uint16(3) == Int64(3), Int64(3) != Uint16(3))\n"
+        "print(s == u, u == s, s != u)\n"
+        "print(big == f, f == big, exact == f, f != exact)\n"
+        "print(u == max_float, low == min_float, min_float == low)\n"
+        "print(small == Int64(3), Int64(3) == small, fraction == 3)\n"
+        "print(zero == 0, infinity == u, u != infinity)\n";
+
+    return run_generated(source,
+                         "true false\nfalse false true\n"
+                         "false false true false\nfalse true true\n"
+                         "true true false\ntrue false true\n",
+                         "exact mixed numeric equality");
+}
+
 /* Runs one conversion that must trap and checks the shared diagnostic. */
 static TestResult conversion_traps(const char *declaration,
                                    const char *expression, const char *what)
@@ -10,7 +84,7 @@ static TestResult conversion_traps(const char *declaration,
 
     snprintf(source, sizeof(source), "%s\nprint(%s)\n", declaration,
              expression);
-    return run_generated_failure(source, MESSAGE_RUNTIME_CONVERSION, what);
+    return run_generated_failure(source, MESSAGE_RUNTIME_CONVERSION + 7, what);
 }
 
 TEST("numeric literals")
@@ -30,6 +104,20 @@ TEST("numeric literals")
 
     return run_generated(source, "1 2 3 4 5 6 7 8 1.5 2.25\n",
                          "numeric literals");
+}
+
+TEST("floating point display")
+{
+    const char *source =
+        "print(1234567.0, 0.000001, 0.0000001, 10000000000000000.0, -0.0)\n"
+        "var a: Float32 = 0.1\n"
+        "var b: Float64 = 1.2345678901234567\n"
+        "print(a, b)\n";
+
+    return run_generated(source,
+                         "1234567.0 0.000001 1e-7 1e+16 -0.0\n"
+                         "0.1 1.2345678901234567\n",
+                         "floating point display");
 }
 
 TEST("numeric operators")
@@ -59,7 +147,7 @@ TEST("numeric operators")
         "9223372036854775807\n"
         "44\n"
         "2.5 true true\n"
-        "2\n"
+        "2.0\n"
         "-1.5\n"
         "-8\n",
         "numeric operators");
@@ -81,7 +169,7 @@ TEST("numeric conversions")
         "print(b, c, d, e, f, g, h, wide, narrow)\n";
 
     return run_generated(
-        source, "100 100 9223372036854775807 3 1.5 2 -2 100 100\n",
+        source, "100 100 9223372036854775807 3.0 1.5 2 -2 100 100\n",
         "numeric conversions");
 }
 
@@ -92,8 +180,12 @@ TEST("numeric conversion trap")
         "var x: Int8 = Int8(f)\n"
         "print(x)\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_CONVERSION,
-                                 "numeric conversion range");
+    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_CONVERSION + 7,
+                                              "numeric conversion range");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"),
+                         "nippy: test.nip:2:15 (byte 37):")
+               ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("conversion trap, narrowing")
@@ -232,7 +324,7 @@ TEST("negated literal operands")
         "print(-3000000000 + 1, -1 + -2)\n";
 
     return run_generated(source,
-                         "-2 4 false true 10 -6\n"
+                         "-2.0 4 false true 10 -6\n"
                          "-2999999999 -3\n",
                          "negated literal operands");
 }
@@ -315,7 +407,7 @@ TEST("digit separators")
         "var d: Int32 = 0b1111_0000 | 0x0F\n"
         "print(a, b, c, d)\n";
 
-    return run_generated(source, "1000000000000 1000.5 2.5e+10 255\n",
+    return run_generated(source, "1000000000000 1000.5 25000000000.0 255\n",
                          "digit separators");
 }
 

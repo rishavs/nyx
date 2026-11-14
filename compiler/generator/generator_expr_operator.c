@@ -1,5 +1,37 @@
 #include "generator_internal.h"
 
+static bool emit_call_arguments(const TypedProgram *program,
+                                const TypedNode *node, TextBuffer *buffer,
+                                ErrorState *errors)
+{
+    size_t i;
+
+    if (!node->is_method_call) {
+        return emit_children_expressions(program, node, buffer, errors);
+    }
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &program->children, node->children_start + i);
+
+        if (i > 0 && !buffer_append(buffer, ", ")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (i == 0 && !buffer_append(buffer, "&(")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        if (!emit_expression(program, child, buffer, errors)) {
+            return false;
+        }
+        if (i == 0 && !buffer_append(buffer, ")")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+    }
+    return true;
+}
+
 static const char *unsigned_type_name(NippyType kind)
 {
     switch (kind) {
@@ -105,7 +137,9 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
                     !buffer_appendf(buffer, "nyx_f2i_%s((double)(", suffix) ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
-                    !buffer_append(buffer, "))")) {
+                    !buffer_appendf(buffer, "), __FILE__, %zu, %zu, %zu)",
+                                    node->pos.line, node->pos.column,
+                                    node->pos.offset)) {
                     if (!errors->reported) {
                         error_report(errors,
                                      MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -126,7 +160,9 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
                                     from_signed ? "int64_t" : "uint64_t") ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
-                    !buffer_append(buffer, "))")) {
+                    !buffer_appendf(buffer, "), __FILE__, %zu, %zu, %zu)",
+                                    node->pos.line, node->pos.column,
+                                    node->pos.offset)) {
                     if (!errors->reported) {
                         error_report(errors,
                                      MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -140,7 +176,9 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
                 if (!buffer_append(buffer, "nyx_f2f_f32(") ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
-                    !buffer_append(buffer, ")")) {
+                    !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                    node->pos.line, node->pos.column,
+                                    node->pos.offset)) {
                     if (!errors->reported) {
                         error_report(errors,
                                      MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -170,24 +208,127 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             const TypedType *left_type =
                 left == NULL ? NULL
                              : typed_program_type(program, left->type_index);
+            const TypedNode *right = typed_program_node(program,
+                                                        node->right_child);
+            const TypedType *right_type = right == NULL ? NULL :
+                typed_program_type(program, right->type_index);
 
             if (left_type == NULL) {
                 error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
                 return false;
             }
+            if (node->op == NIPPY_OPERATOR_STRICT_EQ && right != NULL &&
+                !types_equivalent(program, left->type_index, right->type_index,
+                                  64)) {
+                if (!buffer_append(buffer, left_type->kind == NIPPY_TYPE_HANDLE
+                                               ? "(nyx_equal_validate_handle("
+                                               : "((void)(") ||
+                    !emit_expression(program, node->left_child, buffer, errors) ||
+                    (left_type->kind == NIPPY_TYPE_HANDLE &&
+                     !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
+                                     node->pos.line, node->pos.column,
+                                     node->pos.offset)) ||
+                    !buffer_append(buffer, right_type != NULL &&
+                                              right_type->kind == NIPPY_TYPE_HANDLE
+                                              ? "), nyx_equal_validate_handle("
+                                              : "), (void)(") ||
+                    !emit_expression(program, node->right_child, buffer, errors) ||
+                    (right_type != NULL && right_type->kind == NIPPY_TYPE_HANDLE &&
+                     !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
+                                     node->pos.line, node->pos.column,
+                                     node->pos.offset)) ||
+                    !buffer_append(buffer, "), false)")) {
+                    if (!errors->reported) {
+                        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    }
+                    return false;
+                }
+                return true;
+            }
+            if ((node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE ||
+                 node->op == NIPPY_OPERATOR_STRICT_EQ) && right_type != NULL &&
+                (left_type->kind == NIPPY_TYPE_STRUCT ||
+                 left_type->kind == NIPPY_TYPE_FIXED_LIST ||
+                 left_type->kind == NIPPY_TYPE_LIST ||
+                 left_type->kind == NIPPY_TYPE_RECORD ||
+                 left_type->kind == NIPPY_TYPE_TABLE ||
+                 left_type->kind == NIPPY_TYPE_HANDLE ||
+                 ((left_type->kind == NIPPY_TYPE_STRING ||
+                   left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
+                  (right_type->kind == NIPPY_TYPE_STRING ||
+                   right_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
+                  !types_equivalent(program, left->type_index,
+                                    right->type_index, 64)))) {
+                bool pair = (left_type->kind == NIPPY_TYPE_STRING ||
+                             left_type->kind == NIPPY_TYPE_DYNAMIC_STRING);
+                if (!buffer_append(buffer, node->op == NIPPY_OPERATOR_NE
+                                               ? "(!" : "(") ||
+                    !(pair ? buffer_appendf(buffer, "nyx_equal_pair_%zu_%zu(",
+                                            left->type_index, right->type_index)
+                           : buffer_appendf(buffer, "nyx_equal_%zu(",
+                                            left->type_index)) ||
+                    !emit_expression(program, node->left_child, buffer, errors) ||
+                    !buffer_append(buffer, ", ") ||
+                    !emit_expression(program, node->right_child, buffer, errors) ||
+                    !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu))",
+                                    node->pos.line, node->pos.column,
+                                    node->pos.offset)) {
+                    if (!errors->reported) {
+                        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    }
+                    return false;
+                }
+                return true;
+            }
             if ((node->op == NIPPY_OPERATOR_EQ ||
+                 node->op == NIPPY_OPERATOR_NE) && right_type != NULL &&
+                nippy_type_is_numeric(left_type->kind) &&
+                nippy_type_is_numeric(right_type->kind)) {
+                const char *helper = NULL;
+                bool ls = nippy_type_is_signed_integer(left_type->kind);
+                bool rs = nippy_type_is_signed_integer(right_type->kind);
+                bool lu = nippy_type_is_unsigned_integer(left_type->kind);
+                bool ru = nippy_type_is_unsigned_integer(right_type->kind);
+                bool lf = nippy_type_is_float(left_type->kind);
+                bool rf = nippy_type_is_float(right_type->kind);
+
+                if (ls && ru) helper = "nyx_eq_su";
+                else if (lu && rs) helper = "nyx_eq_us";
+                else if (ls && rf) helper = "nyx_eq_sf";
+                else if (lf && rs) helper = "nyx_eq_fs";
+                else if (lu && rf) helper = "nyx_eq_uf";
+                else if (lf && ru) helper = "nyx_eq_fu";
+                if (helper != NULL) {
+                    if (!buffer_append(buffer, node->op == NIPPY_OPERATOR_NE
+                                                   ? "(!" : "(") ||
+                        !buffer_appendf(buffer, "%s(", helper) ||
+                        !emit_expression(program, node->left_child, buffer, errors) ||
+                        !buffer_append(buffer, ", ") ||
+                        !emit_expression(program, node->right_child, buffer, errors) ||
+                        !buffer_append(buffer, "))")) {
+                        if (!errors->reported)
+                            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                        return false;
+                    }
+                    return true;
+                }
+            }
+            if ((node->op == NIPPY_OPERATOR_EQ ||
+                 node->op == NIPPY_OPERATOR_STRICT_EQ ||
                  node->op == NIPPY_OPERATOR_NE) &&
                 left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
                 if (!buffer_append(buffer,
                                    node->op == NIPPY_OPERATOR_NE ? "(!"
                                                                  : "(") ||
-                    !buffer_append(buffer, "nyx_string_equal(") ||
+                    !buffer_append(buffer, "nyx_string_equal_at(") ||
                     !emit_expression(program, node->left_child, buffer,
                                      errors) ||
                     !buffer_append(buffer, ", ") ||
                     !emit_expression(program, node->right_child, buffer,
                                      errors) ||
-                    !buffer_append(buffer, "))")) {
+                    !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu))",
+                                    node->pos.line, node->pos.column,
+                                    node->pos.offset)) {
                     if (!errors->reported) {
                         error_report(errors,
                                      MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -197,6 +338,7 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
                 return true;
             }
             if ((node->op == NIPPY_OPERATOR_EQ ||
+                 node->op == NIPPY_OPERATOR_STRICT_EQ ||
                  node->op == NIPPY_OPERATOR_NE) &&
                 left_type->kind == NIPPY_TYPE_STRING) {
                 if (!buffer_append(buffer,
@@ -294,6 +436,11 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
                         !buffer_append(buffer, ", ") ||
                         !emit_expression(program, node->right_child, buffer,
                                          errors) ||
+                        ((node->op == NIPPY_OPERATOR_DIV ||
+                          node->op == NIPPY_OPERATOR_MOD) &&
+                         !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
+                                         node->pos.line, node->pos.column,
+                                         node->pos.offset)) ||
                         !buffer_append(buffer, ")")) {
                         if (!errors->reported) {
                             error_report(errors,
@@ -435,7 +582,7 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         if (!buffer_appendf(buffer, "%s(", name) ||
-            !emit_children_expressions(program, node, buffer, errors) ||
+            !emit_call_arguments(program, node, buffer, errors) ||
             !buffer_append(buffer, ")")) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -463,7 +610,7 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
         }
         aggregate = type_is_c_aggregate(program, element);
         if (!buffer_appendf(buffer,
-                            "nyx_store_alloc(&nyx_stores[%zu], %zu, ",
+                            "nyx_store_alloc_at(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -480,8 +627,9 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         if (!emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s))",
-                            element_name, element_name)) {
+            !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
+                            element_name, element_name, node->pos.line,
+                            node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -499,9 +647,10 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         if (!buffer_appendf(buffer,
-                            "((void)nyx_store_reset(&nyx_stores[%zu]), "
+                            "((void)nyx_store_reset_at(&nyx_stores[%zu], __FILE__, %zu, %zu, %zu), "
                             "(nyx_nil)0)",
-                            node->store_id)) {
+                            node->store_id, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -518,10 +667,12 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             }
             return false;
         }
-        if (!buffer_appendf(buffer, "(*(%s *)nyx_handle_pointer(",
+        if (!buffer_appendf(buffer, "(*(%s *)nyx_handle_pointer_at(",
                             type_name) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_appendf(buffer, ", sizeof(%s)))", type_name)) {
+            !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu))",
+                            type_name, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -551,7 +702,7 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         aggregate = type_is_c_aggregate(program, element);
-        if (!buffer_append(buffer, "((void)nyx_handle_write(") ||
+        if (!buffer_append(buffer, "((void)nyx_handle_write_at(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ")) {
             if (!errors->reported) {
@@ -571,8 +722,9 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         if (!emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_appendf(buffer, " }, sizeof(%s)), (nyx_nil)0)",
-                            element_name)) {
+            !buffer_appendf(buffer, " }, sizeof(%s), __FILE__, %zu, %zu, %zu), (nyx_nil)0)",
+                            element_name, node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }

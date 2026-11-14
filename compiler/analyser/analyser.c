@@ -64,6 +64,25 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
         }
     }
 
+    for (i = 0; i < program->match_temporaries.length; i++) {
+        const TypedMatchTemporary *temporary = list_get(
+            &program->match_temporaries, i);
+        if (temporary == NULL ||
+            typed_program_type(program, temporary->type_index) == NULL ||
+            (temporary->next != TYPED_NO_NODE && temporary->next >= i)) {
+            error_report(errors, MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+            return false;
+        }
+    }
+    for (i = 0; i < program->match_scopes.length; i++) {
+        const size_t *head = list_get(&program->match_scopes, i);
+        if (head == NULL || (*head != TYPED_NO_NODE &&
+                            *head >= program->match_temporaries.length)) {
+            error_report(errors, MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+            return false;
+        }
+    }
+
     for (i = 0; i < program->roots.length; i++) {
         size_t root = *(const size_t *)list_get(&program->roots, i);
 
@@ -128,6 +147,24 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             error_report_at(errors, node->pos,
                             MESSAGE_ANALYSER_INVALID_AUXILIARY_TYPE, i);
             return false;
+        }
+        if (node->kind == TYPED_MATCH_TEMPORARY ||
+            node->kind == TYPED_MATCH_BIND_EXPRESSION ||
+            node->kind == TYPED_MATCH_BIND_STATEMENT) {
+            const TypedMatchTemporary *temporary = list_get(
+                &program->match_temporaries, (size_t)node->integer_value_u);
+            const TypedNode *value = node->kind == TYPED_MATCH_TEMPORARY
+                                         ? node
+                                         : typed_program_node(program,
+                                                              node->left_child);
+            if (temporary == NULL || value == NULL ||
+                temporary->type_index != value->type_index ||
+                (node->kind != TYPED_MATCH_TEMPORARY &&
+                 typed_program_node(program, node->right_child) == NULL)) {
+                error_report_at(errors, node->pos,
+                                MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+                return false;
+            }
         }
         if (node->kind == TYPED_STORE_DECLARATION ||
             node->kind == TYPED_STORE_ALLOC ||
@@ -230,6 +267,36 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 error_report_at(errors, node->pos,
                                 MESSAGE_ANALYSER_INVALID_ERROR, i);
                 return false;
+            }
+        }
+        if (node->kind == TYPED_RANGE_CREATE) {
+            const TypedType *range = typed_program_type(program, node->type_index);
+            size_t j, element_index;
+            if (range == NULL || range->kind != NIPPY_TYPE_RANGE ||
+                range->child_count != 1 ||
+                range->first_child >= program->type_children.length ||
+                (node->children_count != 2 && node->children_count != 3)) {
+                error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                                node->type_index);
+                return false;
+            }
+            element_index = *(const size_t *)list_get(&program->type_children,
+                                                       range->first_child);
+            for (j = 0; j < node->children_count; j++) {
+                size_t child = *(const size_t *)list_get(&program->children,
+                                                           node->children_start + j);
+                const TypedNode *argument = typed_program_node(program, child);
+                const TypedType *argument_type = argument == NULL ? NULL :
+                    typed_program_type(program, argument->type_index);
+                const TypedType *element = typed_program_type(program, element_index);
+                if (argument_type == NULL || element == NULL ||
+                    (j < 2 ? argument_type->kind != element->kind
+                           : argument_type->kind != NIPPY_TYPE_INT64)) {
+                    error_report_at(errors, node->pos,
+                                    MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
+                                    node->type_index);
+                    return false;
+                }
             }
         }
         if (node->kind == TYPED_INTEGER_LITERAL ||
@@ -338,6 +405,22 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                                  i);
                     return false;
                 }
+            }
+        }
+        if (type->kind == NIPPY_TYPE_RANGE) {
+            const TypedType *element;
+            size_t index;
+            if (type->child_count != 1 ||
+                type->first_child >= program->type_children.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
+                return false;
+            }
+            index = *(const size_t *)list_get(&program->type_children,
+                                               type->first_child);
+            element = typed_program_type(program, index);
+            if (element == NULL || !nippy_type_is_integer(element->kind)) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_TYPE_CHILD, i);
+                return false;
             }
         }
         if (type->kind == NIPPY_TYPE_HANDLE) {

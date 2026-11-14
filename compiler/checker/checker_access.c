@@ -170,15 +170,22 @@ bool check_member_assignment(CheckContext *ctx, const AstNode *node,
     size_t value;
     size_t coerced;
     size_t nil_type;
+    size_t previous_target = ctx->assignment_target_ast;
     TypedNode typed = {0};
 
     if (target == NULL || target->kind != AST_MEMBER_ACCESS ||
-        !field_is_lvalue(ctx->ast, node->left_child) ||
-        !check_expression(ctx, node->left_child, &target_typed)) {
+        !field_is_lvalue(ctx->ast, node->left_child)) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_FIELD_LVALUE);
         return false;
     }
+    ctx->assignment_target_ast = node->left_child;
+    if (!check_expression(ctx, node->left_child, &target_typed)) {
+        ctx->assignment_target_ast = previous_target;
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_FIELD_LVALUE);
+        return false;
+    }
+    ctx->assignment_target_ast = previous_target;
     target_node = typed_program_node(ctx->program, target_typed);
     if (target_node == NULL || target_node->kind != TYPED_MEMBER_ACCESS) {
         error_report_at(ctx->errors, node->pos,
@@ -200,7 +207,8 @@ bool check_member_assignment(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_FIELD_LVALUE);
         return false;
     }
-    if (!check_expression(ctx, node->right_child, &value) ||
+    if (!check_expression_expected(ctx, node->right_child, target_type_index,
+                                   &value) ||
         !inject_into(ctx, value, target_type_index, &coerced) ||
         !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
         if (!ctx->errors->reported) {
@@ -220,6 +228,7 @@ bool check_member_assignment(CheckContext *ctx, const AstNode *node,
     typed.store_id = TYPED_NO_NODE;
     typed.children_start = 0;
     typed.children_count = 0;
+    invalidate_access_narrowing(ctx, node->left_child);
     return emit_node(ctx, &typed, ast_index, out_typed);
 }
 
@@ -256,8 +265,6 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
     const TypedNode *receiver_node;
     const TypedType *receiver_type;
     size_t index;
-    const TypedNode *index_node;
-    const TypedType *index_type;
     size_t element;
     size_t receiver_type_index;
 
@@ -301,8 +308,10 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
                                                  key_node->type_index);
         if (key_node_type == NULL ||
             !inject_into(ctx, key, key_type, &coerced)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MAP_KEY);
+            if (!ctx->errors->reported) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MAP_KEY);
+            }
             return false;
         }
         typed.kind = receiver_type->kind == NIPPY_TYPE_RECORD
@@ -324,6 +333,12 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
          receiver_type->kind != NIPPY_TYPE_FIXED_LIST &&
          receiver_type->kind != NIPPY_TYPE_SLICE) ||
         receiver_type->child_count != 1) {
+        if (receiver_type != NULL &&
+            (receiver_type->kind == NIPPY_TYPE_STRING ||
+             receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING)) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_TEXT_INDEX);
+            return false;
+        }
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
         return false;
@@ -332,7 +347,8 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
                                   receiver_type_index)) {
         return false;
     }
-    if (!check_expression(ctx, node->right_child, &index)) {
+    if (!check_int32_expression(ctx, node->right_child, &index)) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_LIST_INDEX);
         return false;
     }
     /* Checking the index can append types, growing the list and moving its
@@ -341,16 +357,6 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
     if (receiver_type == NULL) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
-        return false;
-    }
-    index_node = typed_program_node(ctx->program, index);
-    index_type = index_node == NULL
-                     ? NULL
-                     : typed_program_type(ctx->program, index_node->type_index);
-    if (index_type == NULL ||
-        index_type->kind != NIPPY_TYPE_INT32) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_LIST_INDEX);
         return false;
     }
     element = *(const size_t *)list_get(&ctx->program->type_children,
@@ -389,6 +395,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     size_t target_right_child;
     size_t receiver_name_index;
     bool is_record;
+    size_t previous_target = ctx->assignment_target_ast;
     TypedNode typed = {0};
 
     if (target == NULL || target->kind != AST_INDEX) {
@@ -405,9 +412,12 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     if (!check_inline_const_mutation(ctx, node->left_child)) {
         return false;
     }
+    ctx->assignment_target_ast = node->left_child;
     if (!check_expression(ctx, node->left_child, &target_typed)) {
+        ctx->assignment_target_ast = previous_target;
         return false;
     }
+    ctx->assignment_target_ast = previous_target;
     target_node = typed_program_node(ctx->program, target_typed);
     if (target_node == NULL ||
         (target_node->kind != TYPED_LIST_GET &&
@@ -448,11 +458,14 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
         value_type = *(const size_t *)list_get(
             &ctx->program->type_children, receiver_type->first_child + 1);
         if (!inject_into(ctx, target_right_child, key_type, &coerced_key) ||
-            !check_expression(ctx, node->right_child, &value) ||
+            !check_expression_expected(ctx, node->right_child, value_type,
+                                       &value) ||
             !inject_into(ctx, value, value_type, &coerced_value) ||
             !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MAP_VALUE);
+            if (!ctx->errors->reported) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_MAP_VALUE);
+            }
             return false;
         }
         children_start = ctx->program->children.length;
@@ -493,7 +506,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     }
     element = *(const size_t *)list_get(&ctx->program->type_children,
                                         receiver_type->first_child);
-    if (!check_expression(ctx, node->right_child, &value) ||
+    if (!check_expression_expected(ctx, node->right_child, element, &value) ||
         !inject_into(ctx, value, element, &coerced) ||
         !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
         if (!ctx->errors->reported) {
@@ -517,5 +530,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     typed.store_id = TYPED_NO_NODE;
     typed.children_start = children_start;
     typed.children_count = 2;
+    invalidate_access_narrowing(ctx, node->left_child);
+    invalidate_aliased_narrowings(ctx);
     return emit_node(ctx, &typed, ast_index, out_typed);
 }

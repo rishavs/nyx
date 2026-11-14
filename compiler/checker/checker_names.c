@@ -24,15 +24,30 @@ const TypeEntry *find_type(const List *types, const char *name)
 }
 
 
-const FunctionEntry *find_function(const List *functions,
+const FunctionEntry *find_function(const CheckContext *ctx,
                                           const char *name)
+{
+    size_t index = name_index_find(&ctx->function_index, ctx->functions,
+                                   name, strlen(name));
+    return index == TYPED_NO_NODE ? NULL : list_get(ctx->functions, index);
+}
+
+
+const FunctionEntry *find_associated_function(const List *functions,
+                                               const char *owner_name,
+                                               const char *method_name)
 {
     size_t i;
 
+    if (owner_name == NULL || method_name == NULL) {
+        return NULL;
+    }
     for (i = 0; i < functions->length; i++) {
         const FunctionEntry *entry = list_get(functions, i);
 
-        if (entry != NULL && strcmp(entry->name, name) == 0) {
+        if (entry != NULL && (entry->is_method || entry->is_static) &&
+            strcmp(entry->owner_name, owner_name) == 0 &&
+            strcmp(entry->method_name, method_name) == 0) {
             return entry;
         }
     }
@@ -40,18 +55,10 @@ const FunctionEntry *find_function(const List *functions,
 }
 
 
-size_t find_function_index(const List *functions, const char *name)
+size_t find_function_index(const CheckContext *ctx, const char *name)
 {
-    size_t i;
-
-    for (i = 0; i < functions->length; i++) {
-        const FunctionEntry *entry = list_get(functions, i);
-
-        if (entry != NULL && strcmp(entry->name, name) == 0) {
-            return i;
-        }
-    }
-    return TYPED_NO_NODE;
+    return name_index_find(&ctx->function_index, ctx->functions, name,
+                           strlen(name));
 }
 
 
@@ -142,13 +149,15 @@ bool is_builtin_type_name(const char *name)
            strcmp(name, "Handle") == 0 || strcmp(name, "String") == 0 ||
            strcmp(name, "Text") == 0 || strcmp(name, "TextBuilder") == 0 ||
            strcmp(name, "List") == 0 || strcmp(name, "Array") == 0 ||
-           strcmp(name, "Slice") == 0 || strcmp(name, "Record") == 0 ||
+           strcmp(name, "Slice") == 0 || strcmp(name, "Range") == 0 ||
+           strcmp(name, "Record") == 0 ||
            strcmp(name, "Table") == 0 || strcmp(name, "Error") == 0;
 }
 
 bool is_builtin_function_name(const char *name)
 {
-    return strcmp(name, "print") == 0 || strcmp(name, "base64") == 0;
+    return strcmp(name, "print") == 0 || strcmp(name, "base64") == 0 ||
+           strcmp(name, "range") == 0;
 }
 
 

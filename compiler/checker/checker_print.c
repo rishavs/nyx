@@ -132,7 +132,8 @@ bool check_print(CheckContext *ctx, const AstNode *node,
             list_free(&children);
             return false;
         }
-        if (!check_expression(ctx, argument_ast, &argument)) {
+        if (!check_expression(ctx, argument_ast, &argument) ||
+            !check_default_numeric(ctx, argument)) {
             list_free(&children);
             return false;
         }

@@ -7,6 +7,26 @@ TEST("program prints its value")
     return run_generated("var x : Int32 = 13\n", "13\n", "program 13");
 }
 
+TEST("printing stale values reports the print location")
+{
+    TestResult result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var s: Text = arena.copy(\"\")\n"
+        "arena.reset()\nprint(s)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale empty text");
+    if (result != TEST_PASS ||
+        !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
+        return TEST_FAIL;
+    result = run_generated_failure(
+        "global arena: Store = Store(64)\n"
+        "var b: TextBuilder = arena.builder(4)\n"
+        "arena.reset()\nprint(b)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale builder");
+    if (result != TEST_PASS) return result;
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+               ? TEST_PASS : TEST_FAIL;
+}
+
 TEST("print all")
 {
     const char *source =
@@ -18,7 +38,7 @@ TEST("print all")
         "  return x + 1\n"
         "end\n"
         "global arena: Store = Store(512)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var fixed: String<8> = \"ada\"\n"
         "  var t: Text = arena.text(fixed)\n"
         "  var arr: Array<Int32, 3> = [1, 2, 3]\n"
@@ -45,7 +65,7 @@ TEST("print all")
         "  print(xs)\n"
         "  print(s)\n"
         "  print()\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
     const char *expected =
@@ -74,7 +94,7 @@ TEST("print nested")
         "  n: Int32\n"
         "end\n"
         "global arena: Store = Store(256)\n"
-        "fun run(): Nil\n"
+        "fun run()\n"
         "  var a: String<8> = \"ada\"\n"
         "  var t: Text = arena.text(a)\n"
         "  var names: List<Text> = arena.list<Text>(2)\n"
@@ -85,7 +105,7 @@ TEST("print nested")
         "  print(names)\n"
         "  print(item)\n"
         "  print(items)\n"
-        "  return nil\n"
+        "  return\n"
         "end\n"
         "run()\n";
     const char *expected =

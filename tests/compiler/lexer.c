@@ -2,6 +2,12 @@
 
 #include "compile_support.h"
 
+TEST("UTF-8 byte order mark")
+{
+    return compile_accepts("\xef\xbb\xbfvar value: Int32 = 3\n",
+                           "a UTF-8 BOM at the start of the source");
+}
+
 TEST("integer literal out of range")
 {
     return compile_fails("var x : Int32 = 99999999999999999999999999\n",

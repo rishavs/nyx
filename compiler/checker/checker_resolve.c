@@ -47,10 +47,11 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
         size_t first_argument;
         size_t declaration_index;
         size_t type_index;
-        size_t typed_fields_start = ctx->program->children.length;
+        size_t typed_fields_start;
         const AstNode *declaration;
         char generated[32];
         size_t name_index;
+        List field_nodes;
 
         if (argument_count != entry->parameter_count) {
             error_report(ctx->errors, MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT,
@@ -87,6 +88,7 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
             return false;
         }
+        list_init(&field_nodes, sizeof(size_t));
         for (i = 0; i < declaration->children_count; i++) {
             size_t field_ast = *(const size_t *)list_get(
                 &ctx->ast->children, declaration->children_start + i);
@@ -99,14 +101,17 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             if (field == NULL || field->kind != AST_FIELD) {
                 error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE,
                              field_ast);
+                list_free(&field_nodes);
                 return false;
             }
             field_name = ast_symbol_text(ctx->ast, field->name_index);
             if (!check_reserved_name(ctx, field->pos, field_name)) {
+                list_free(&field_nodes);
                 return false;
             }
             if (!resolve_type_in_env(ctx, field->left_child, &env, field_name,
                                      &field_type)) {
+                list_free(&field_nodes);
                 return false;
             }
             {
@@ -118,6 +123,21 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
                      resolved->kind == NIPPY_TYPE_STORE)) {
                     error_report_at(ctx->errors, field->pos,
                                     MESSAGE_CHECKER_FIELD_TYPE, field_name);
+                    list_free(&field_nodes);
+                    return false;
+                }
+            }
+            if (field->right_child != AST_NO_NODE) {
+                size_t value, coerced;
+                if (!check_expression_expected(ctx, field->right_child,
+                                               field_type, &value) ||
+                    !inject_into(ctx, value, field_type, &coerced)) {
+                    if (!ctx->errors->reported) {
+                        error_report_at(ctx->errors, field->pos,
+                                        MESSAGE_CHECKER_FIELD_DEFAULT_TYPE,
+                                        field_name);
+                    }
+                    list_free(&field_nodes);
                     return false;
                 }
             }
@@ -129,6 +149,7 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             if (typed_field.name_index == TYPED_NO_NODE) {
                 error_report(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+                list_free(&field_nodes);
                 return false;
             }
             typed_field.left_child = TYPED_NO_NODE;
@@ -136,11 +157,24 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
             typed_field.children_start = 0;
             typed_field.children_count = 0;
             if (!typed_program_push(ctx->program, &typed_field, &field_index) ||
-                !typed_program_push_child(ctx->program, field_index)) {
+                !list_push(&field_nodes, &field_index)) {
                 error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                list_free(&field_nodes);
                 return false;
             }
         }
+
+        typed_fields_start = ctx->program->children.length;
+        for (i = 0; i < field_nodes.length; i++) {
+            size_t field_index = *(const size_t *)list_get(&field_nodes, i);
+
+            if (!typed_program_push_child(ctx->program, field_index)) {
+                error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                list_free(&field_nodes);
+                return false;
+            }
+        }
+        list_free(&field_nodes);
 
         {
             TypedNode typed_declaration = {0};
@@ -336,7 +370,7 @@ bool resolve_type_name(CheckContext *ctx, const AstNode *node,
     if (strcmp(name, "Error") == 0) {
         return error_type(ctx, out_index);
     }
-    if (strcmp(name, "Handle") == 0) {
+    if (strcmp(name, "Handle") == 0 || strcmp(name, "Range") == 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, name);
         return false;
@@ -390,6 +424,21 @@ bool resolve_type_application(CheckContext *ctx, const AstNode *node,
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
         return false;
+    }
+    if (strcmp(name, "Range") == 0) {
+        size_t child, element;
+        if (node->children_count != 1) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RANGE_ARGUMENTS);
+            return false;
+        }
+        child = *(const size_t *)list_get(&ctx->ast->children, node->children_start);
+        if (!resolve_type_in_env(ctx, child, env, owner, &element)) return false;
+        if (!range_type(ctx, element, out_index)) {
+            if (!ctx->errors->reported)
+                error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RANGE_ARGUMENTS);
+            return false;
+        }
+        return true;
     }
     if (strcmp(name, "Handle") == 0) {
         size_t element;
@@ -575,6 +624,15 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
         {
             bool ok = intern_union(ctx, &alternatives, out_index);
             list_free(&alternatives);
+            if (ok) {
+                const TypedType *result = typed_program_type(ctx->program,
+                                                              *out_index);
+                if (result != NULL && result->kind == NIPPY_TYPE_NIL) {
+                    error_report_at(ctx->errors, node->pos,
+                                    MESSAGE_CHECKER_NIL_TYPE);
+                    return false;
+                }
+            }
             return ok;
         }
     }
@@ -599,8 +657,10 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
                 goto function_type_done;
             }
         }
-        if (!resolve_type_in_env(ctx, node->right_child, env, owner,
-                                 &return_type)) {
+        if (!(node->right_child == AST_NO_NODE
+                  ? builtin_type(ctx, NIPPY_TYPE_NIL, &return_type)
+                  : resolve_type_in_env(ctx, node->right_child, env, owner,
+                                        &return_type))) {
             goto function_type_done;
         }
         ok = add_function_type(ctx, &parameter_types, return_type, out_index);

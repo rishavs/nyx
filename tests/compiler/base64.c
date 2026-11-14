@@ -84,12 +84,11 @@ TEST("Text only")
                          "String<8>");
 }
 
-TEST("not comparable to a fixed string")
+TEST("comparable to a fixed string")
 {
-    return compile_fails("var s: String<8> = \"Hi\"\n"
+    return compile_accepts("var s: String<8> = \"Hi\"\n"
                          "print(s == base64(\"SGk=\"))\n",
-                         "base64 against a fixed string",
-                         MESSAGE_CHECKER_OPERATOR_TYPE, "==");
+                         "base64 against a fixed string");
 }
 
 TEST("reserved as a function")

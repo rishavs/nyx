@@ -9,7 +9,9 @@ int main(void)
     nyx_sum_3 nyx_u_b = ((nyx_sum_3){ .tag = 1, .value.v1 = true });
     (void)nyx_u_b;
 #line 5 "test.nip"
-    nyx_sum_3 nyx_u_c = ((nyx_sum_3){ .tag = 2 });
+    nyx_sum_3 nyx_u_c = ((nyx_sum_3){ .tag = 0, .value.v0 = 3 });
     (void)nyx_u_c;
+#line 6 "test.nip"
+    nyx_u_c = ((nyx_sum_3){ .tag = 2 });
     return 0;
 }

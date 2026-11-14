@@ -3,6 +3,7 @@
 
 #include "identifier.h"
 #include "list.h"
+#include "name_index.h"
 #include "operator.h"
 #include "source_pos.h"
 
@@ -35,6 +36,9 @@ typedef enum {
     TYPED_RETURN,
     TYPED_IF,
     TYPED_IF_EXPRESSION,
+    TYPED_MATCH_TEMPORARY,
+    TYPED_MATCH_BIND_EXPRESSION,
+    TYPED_MATCH_BIND_STATEMENT,
     TYPED_WHILE,
     TYPED_FOR,
     TYPED_BREAK,
@@ -98,6 +102,7 @@ typedef enum {
     TYPED_SLICE_CREATE,
     TYPED_SLICE_LEN,
     TYPED_SLICE_GET,
+    TYPED_RANGE_CREATE,
     TYPED_ERROR_CONSTRUCT,
     TYPED_ERROR_THROW,
     TYPED_ERROR_FIELD
@@ -120,6 +125,7 @@ typedef enum {
     NIPPY_TYPE_LIST,
     NIPPY_TYPE_FIXED_LIST,
     NIPPY_TYPE_SLICE,
+    NIPPY_TYPE_RANGE,
     NIPPY_TYPE_RECORD,
     NIPPY_TYPE_TABLE,
     NIPPY_TYPE_STRING_LITERAL,
@@ -194,11 +200,22 @@ typedef struct {
     /* TYPED_STRING_LITERAL: true when the literal's type was fixed where it was
        written (the result of base64()), so context never retypes it. */
     bool fixed_type;
+    /* Instance method declarations and calls use an address for the receiver. */
+    bool is_method;
+    bool is_method_call;
+    /* Implicit self parameter and identifier lower to a dereferenced pointer. */
+    bool is_self;
 } TypedNode;
+
+typedef struct {
+    size_t type_index;
+    size_t next;
+} TypedMatchTemporary;
 
 typedef struct {
     List nodes;
     List symbols;
+    NameIndex symbol_index;
     /* Indices into `nodes` of the top-level declarations, in source order. */
     List roots;
     /* Indices into `nodes` for variable-arity children. */
@@ -212,6 +229,9 @@ typedef struct {
     List type_children;
     /* Decoded bytes for string literals; nodes store offsets into this. */
     List bytes;
+    /* Per-function chains of match scrutinee temporaries; scope zero is main. */
+    List match_temporaries;
+    List match_scopes;
     /* Capacities used to build the built-in Error field strings. */
     int error_header_capacity;
     int error_description_capacity;

@@ -164,6 +164,7 @@ bool is_sized_type(const TypedProgram *program, size_t type_index)
            type->kind == NIPPY_TYPE_LIST ||
            type->kind == NIPPY_TYPE_FIXED_LIST ||
            type->kind == NIPPY_TYPE_SLICE ||
+           type->kind == NIPPY_TYPE_RANGE ||
            type->kind == NIPPY_TYPE_RECORD ||
            type->kind == NIPPY_TYPE_TABLE ||
            type->kind == NIPPY_TYPE_UNION ||
@@ -189,6 +190,7 @@ bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
     case NIPPY_TYPE_STRING:
     case NIPPY_TYPE_FUNCTION:
     case NIPPY_TYPE_ERROR:
+    case NIPPY_TYPE_RANGE:
         return true;
     case NIPPY_TYPE_FIXED_LIST:
         if (type->child_count != 1) {
@@ -504,6 +506,37 @@ bool slice_type(CheckContext *ctx, size_t element_type,
     }
 }
 
+bool range_type(CheckContext *ctx, size_t element_type, size_t *out_index)
+{
+    const TypedType *element = typed_program_type(ctx->program, element_type);
+    TypedType type = {0};
+    size_t i;
+    if (element == NULL || !nippy_type_is_integer(element->kind)) return false;
+    for (i = 0; i < ctx->program->types.length; i++) {
+        const TypedType *existing = typed_program_type(ctx->program, i);
+        if (existing != NULL && existing->kind == NIPPY_TYPE_RANGE &&
+            existing->child_count == 1 && same_type(ctx->program, element_type,
+                *(const size_t *)list_get(&ctx->program->type_children,
+                                           existing->first_child))) {
+            *out_index = i;
+            return true;
+        }
+    }
+    type.kind = NIPPY_TYPE_RANGE;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    type.first_child = ctx->program->type_children.length;
+    type.child_count = 1;
+    type.declaration_node = TYPED_NO_NODE;
+    type.source_name_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(ctx->program, &type, out_index) ||
+        !typed_program_add_type_child(ctx->program, element_type)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        return false;
+    }
+    return true;
+}
+
 bool add_function_type(CheckContext *ctx, const List *parameter_types,
                               size_t return_type, size_t *out_index)
 {
@@ -770,6 +803,7 @@ static bool type_value_size_depth(const TypedProgram *program,
     case NIPPY_TYPE_TEXT_BUILDER:
     case NIPPY_TYPE_LIST:
     case NIPPY_TYPE_SLICE:
+    case NIPPY_TYPE_RANGE:
     case NIPPY_TYPE_TABLE:
         *out = 32;
         return true;

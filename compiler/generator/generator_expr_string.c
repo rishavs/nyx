@@ -64,9 +64,11 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
 
         if (receiver_type != NULL &&
             receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_append(buffer, "nyx_string_len(") ||
+            if (!buffer_append(buffer, "nyx_string_len_at(") ||
                 !emit_expression(program, node->left_child, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 if (!errors->reported) {
                     error_report(errors,
                                  MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -106,7 +108,9 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                 !buffer_append(buffer, ", ") ||
                 !emit_expression(program, node->right_child, buffer,
                                  errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 if (!errors->reported) {
                     error_report(errors,
                                  MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -120,7 +124,9 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column,
+                            node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -148,7 +154,9 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                 !emit_expression(program, start, buffer, errors) ||
                 !buffer_append(buffer, ", ") ||
                 !emit_expression(program, length, buffer, errors) ||
-                !buffer_append(buffer, ")")) {
+                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                                node->pos.line, node->pos.column,
+                                node->pos.offset)) {
                 if (!errors->reported) {
                     error_report(errors,
                                  MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -189,7 +197,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                 return false;
             }
         }
-        if (!buffer_append(buffer, ")")) {
+        if (!buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -215,7 +224,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                             source_type->fixed_length, node->store_id,
                             node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -234,7 +244,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                             "nyx_builder_create(&nyx_stores[%zu], %zu, ",
                             node->store_id, node->store_id) ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -257,7 +268,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->right_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -270,7 +282,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
         if (node->left_child == TYPED_NO_NODE ||
             !buffer_append(buffer, "nyx_builder_len(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
@@ -283,7 +296,8 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
         if (node->left_child == TYPED_NO_NODE ||
             !buffer_append(buffer, "nyx_builder_finish(") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")")) {
+            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }

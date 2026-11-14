@@ -30,7 +30,9 @@ item               = declaration
 declaration        = type-declaration
                    | value-declaration
                    | global-declaration
-                   | function-declaration ;
+                   | function-declaration
+                   | method-declaration
+                   | static-function-declaration ;
 
 (* ---- type declarations ---- *)
 
@@ -39,11 +41,14 @@ declaration        = type-declaration
    name in both forms. *)
 type-declaration   = "type", identifier, [ type-parameters ],
                      ( "=", type
-                     | field, { field }, "end" ) ;
+                     | field, { [ "," ], field }, [ "," ], "end" ) ;
 
 type-parameters    = "<", identifier, { ",", identifier }, ">" ;
 
-field              = identifier, ":", type ;
+field              = identifier, ":", type, [ "=", default-literal ] ;
+default-literal    = [ "-" ], ( integer-literal | float-literal )
+                   | boolean-literal | string-literal | nil-literal
+                   | "(", default-literal, ")" ;
 
 (* ---- values ---- *)
 
@@ -62,8 +67,18 @@ global-declaration = "global", identifier, [ ":", type ], "=", expression ;
 (* ---- functions ---- *)
 
 function-declaration = "fun", identifier, [ type-parameters ],
-                       "(", [ parameter-list ], ")", ":", type,
+                       "(", [ parameter-list ], ")", [ ":", type ],
                        block, "end" ;
+
+method-declaration = "method", associated-owner, ".", identifier,
+                     [ type-parameters ], "(", [ parameter-list ], ")",
+                     [ ":", ( "self" | type ) ], block, "end" ;
+
+static-function-declaration = "static", associated-owner, "::", identifier,
+                               [ type-parameters ], "(", [ parameter-list ],
+                               ")", [ ":", type ], block, "end" ;
+
+associated-owner   = type-name, [ "<", type-arguments, ">" ] ;
 
 parameter-list     = parameter, { ",", parameter } ;
 
@@ -95,7 +110,7 @@ assignment-statement = identifier, "=", expression
    call; the value is discarded. *)
 expression-statement = expression ;
 
-return-statement   = "return", expression ;
+return-statement   = "return", [ expression ] ;
 
 if-statement       = "if", expression, "then", block,
                      { "elseif", expression, "then", block },
@@ -125,6 +140,7 @@ primary-type       = "String", "<", integer-literal, ">"
                    | "Array", "<", type, ",", integer-literal, ">"
                    | "List", "<", type, ">"
                    | "Slice", "<", type, ">"
+                   | "Range", "<", type, ">"
                    | "Record", "<", type, ",", type, ",", integer-literal, ">"
                    | "Table", "<", type, ",", type, ">"
                    | type-name, [ "<", type-arguments, ">" ]
@@ -134,13 +150,13 @@ primary-type       = "String", "<", integer-literal, ">"
 type-arguments     = type, { ",", type } ;
 
 function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")",
-                     ":", type, ">" ;
+                     [ ":", type ], ">" ;
 
 type-name          = identifier ;
                      (* "Int8", "Int16", "Int32", "Int64", "Uint8",
                         "Uint16", "Uint32", "Uint64", "Float32", "Float64",
                         "Bool", "Byte" (alias for Uint8), "Nil", "Text",
-                        "TextBuilder", "List", "Array", "Slice", "Record",
+                        "TextBuilder", "List", "Array", "Slice", "Range", "Record",
                         "Table", "String", "Store", "Handle", "Error", a
                         declared struct or alias, or a type parameter in scope.
                         Bare "Text" is the dynamic arena/static-backed type.
@@ -157,16 +173,16 @@ type-name          = identifier ;
 (* ---- expressions ---- *)
 
 (* Precedence, tightest first: unary, multiplicative, additive, shift,
-   relational, equality, bitwise, &&, ||. *)
+   bitwise &, ^, |, relational, equality, &&, ||. *)
 expression         = logical-or ;
 
 logical-or         = logical-and, { "||", logical-and } ;
-logical-and        = bit-or, { "&&", bit-or } ;
+logical-and        = equality, { "&&", equality } ;
 bit-or             = bit-xor, { "|", bit-xor } ;
 bit-xor            = bit-and, { "^", bit-and } ;
-bit-and            = equality, { "&", equality } ;
-equality           = relational, { ( "==" | "!=" ), relational } ;
-relational         = shift, { ( "<" | "<=" | ">" | ">=" ), shift } ;
+bit-and            = shift, { "&", shift } ;
+equality           = relational, { ( "==" | "!=" | "===" ), relational } ;
+relational         = bit-or, { ( "<" | "<=" | ">" | ">=" ), bit-or } ;
 shift              = additive, { ( "<<" | ">>" ), additive } ;
 additive           = multiplicative, { ( "+" | "-" ), multiplicative } ;
 multiplicative     = unary, { ( "*" | "/" | "%" ), unary } ;
@@ -191,6 +207,7 @@ primary            = typeof-test
                    | nil-literal
                    | identifier
                    | call
+                   | static-call
                    | "(", expression, ")" ;
 
 list-literal       = "[", [ expression, { ",", expression } ], "]" ;
@@ -213,6 +230,9 @@ record-literal     = "{", [ string-literal, ":", expression,
    Named arguments are accepted only by struct constructors. Arguments are
    either all positional or all named; mixing them is a parse error. *)
 call               = identifier, "(", [ argument-list ], ")" ;
+static-call        = type-name, [ "<", type-arguments, ">" ], "::", identifier,
+                     "(", [ argument-list ], ")" ;
+                     (* Includes the built-in Error::throw call. *)
 
 (* "print" and "base64" are builtins resolved by the checker and cannot be
    redeclared. base64 takes exactly one string literal and yields a static
@@ -379,7 +399,7 @@ end                = "end" ;
        handle.read()            -> T
        handle.write(value)      -> Nil
 
-   T must be a single item: Int32, Bool, Byte, Nil, a struct or concrete
+   T must be a single item: Int32, Bool, Byte, a struct or concrete
    generic struct, a Handle<U>, a Text, a String<N>, a union, a function type,
    or Error. Collections (Array, List, Slice, TextBuilder) and Store are not
    allocation element types; use the collection allocator instead.
@@ -507,7 +527,7 @@ end                = "end" ;
    A by-value type cannot exceed 64 KiB:
        type Big a: Array<Int32, 4096> ... end
                                (* checker: by-value type is too large *)
-   Every function must return on every path:
+   Every function with an explicit return type must return on every path:
        fun f(x:Int32):Int32
          if x > 0 then return 1 end
        end                     (* checker: function 'f' may reach the end

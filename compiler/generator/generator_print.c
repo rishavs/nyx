@@ -125,9 +125,9 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         return false;
     }
     if (!buffer_appendf(source,
-                        "static void nyx_print_%zu(%s value, int depth)\n"
+                        "static inline void nyx_print_%zu(%s value, int depth, const char *file, size_t line, size_t column, size_t pos)\n"
                         "{\n"
-                        "    (void)value;\n"
+                        "    (void)value; (void)file; (void)line; (void)column; (void)pos;\n"
                         "    if (depth > %d) {\n"
                         "        fputs(\"<...>\", stdout);\n"
                         "        return;\n"
@@ -172,8 +172,9 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         break;
     case NIPPY_TYPE_FLOAT32:
     case NIPPY_TYPE_FLOAT64:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"%g\", (double)value);\n")) {
+        if (!buffer_appendf(source,
+                            "    nyx_print_float((double)value, %d);\n",
+                            type->kind == NIPPY_TYPE_FLOAT32)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
@@ -199,8 +200,9 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         break;
     case NIPPY_TYPE_DYNAMIC_STRING:
         if (!buffer_append(source,
+                           "    const uint8_t *data = nyx_string_data_at(value, file, line, column, pos);\n"
                            "    if (value.length != 0) {\n"
-                           "        fwrite(nyx_string_data(value), 1, "
+                           "        fwrite(data, 1, "
                            "value.length, stdout);\n"
                            "    }\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -220,8 +222,8 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
     case NIPPY_TYPE_TEXT_BUILDER:
         if (!buffer_append(source,
                            "    nyx_builder_state *state = "
-                           "nyx_builder_get_state(value);\n"
-                           "    nyx_store *store = nyx_builder_store(value);\n"
+                           "nyx_builder_get_state(value, file, line, column, pos);\n"
+                           "    nyx_store *store = nyx_builder_store(value, file, line, column, pos);\n"
                            "    if (state->length != 0) {\n"
                            "        fwrite(store->data + state->offset, 1, "
                            "state->length, stdout);\n"
@@ -280,7 +282,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             if (!buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
                                 i == 0 ? "" : ", ", field_name) ||
                 !buffer_appendf(source,
-                                "    nyx_print_%zu(value.%s, depth + 1);\n",
+                                "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
                                 field->type_index, member)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -320,7 +322,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             } else if (!buffer_appendf(
                            source,
                            "        nyx_print_%zu(value.value.v%zu, "
-                           "depth + 1);\n",
+                           "depth + 1, file, line, column, pos);\n",
                            alternative, i)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -355,7 +357,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             if (!buffer_appendf(source, "    fputs(\"%s\", stdout);\n",
                                 i == 0 ? "" : ", ") ||
                 !buffer_appendf(source,
-                                "    nyx_print_%zu(value.%s, depth + 1);\n",
+                                "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
                                 field, names[i])) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 return false;
@@ -380,7 +382,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                            "        if (i != 0) fputs(\", \", stdout);\n") ||
             !buffer_appendf(source,
                             "        nyx_print_%zu(value.data[i], "
-                            "depth + 1);\n",
+                            "depth + 1, file, line, column, pos);\n",
                             element) ||
             !buffer_append(source,
                            "    }\n"
@@ -396,11 +398,11 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                                                    type->first_child);
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
         const char *get = type->kind == NIPPY_TYPE_LIST
-                              ? "nyx_list_len(value)"
-                              : "nyx_slice_len(value)";
+                              ? "nyx_list_len_at(value, file, line, column, pos)"
+                              : "nyx_slice_len_at(value, file, line, column, pos)";
         const char *data = type->kind == NIPPY_TYPE_LIST
-                               ? "nyx_list_data"
-                               : "nyx_slice_data";
+                               ? "nyx_list_data_at"
+                               : "nyx_slice_data_at";
 
         if (!format_c_type(program, element, element_name,
                            sizeof(element_name), errors)) {
@@ -411,7 +413,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                             "    for (size_t i = 0; i < (size_t)%s; i++) {\n"
                             "        if (i != 0) fputs(\", \", stdout);\n"
                             "        nyx_print_%zu(*(%s *)%s(value, i, "
-                            "sizeof(%s)), depth + 1);\n"
+                            "sizeof(%s), file, line, column, pos), depth + 1, file, line, column, pos);\n"
                             "    }\n"
                             "    fputs(\"]\", stdout);\n",
                             get, element, element_name, data, element_name)) {
@@ -437,10 +439,10 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
                            "        if (value.states[i] != 1) continue;\n"
                            "        if (count++ != 0) fputs(\", \", stdout);\n") ||
             !buffer_appendf(source, "        nyx_print_%zu(value.keys[i], "
-                                    "depth + 1);\n"
+                                    "depth + 1, file, line, column, pos);\n"
                                     "        fputs(\": \", stdout);\n"
                                     "        nyx_print_%zu(value.values[i], "
-                                    "depth + 1);\n"
+                                    "depth + 1, file, line, column, pos);\n"
                                     "    }\n"
                                     "    fputs(\"}\", stdout);\n",
                             key_type, value_type)) {
@@ -464,7 +466,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             return false;
         }
         if (!buffer_appendf(source,
-            "    nyx_table_state_%zu *state = nyx_table_%zu_state(value);\n"
+            "    nyx_table_state_%zu *state = nyx_table_%zu_state_at(value, file, line, column, pos);\n"
             "    nyx_store *store = &nyx_stores[value.store];\n"
             "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
             "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
@@ -475,9 +477,9 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
             "    for (size_t i = 0; i < state->buckets; i++) {\n"
             "        if (states[i] != 1) continue;\n"
             "        if (count++ != 0) fputs(\", \", stdout);\n"
-            "        nyx_print_%zu(keys[i], depth + 1);\n"
+            "        nyx_print_%zu(keys[i], depth + 1, file, line, column, pos);\n"
             "        fputs(\": \", stdout);\n"
-            "        nyx_print_%zu(values[i], depth + 1);\n"
+            "        nyx_print_%zu(values[i], depth + 1, file, line, column, pos);\n"
             "    }\n"
             "    fputs(\"}\", stdout);\n",
             type_index, type_index, key_name, key_name, value_name,
@@ -528,14 +530,86 @@ bool emit_print_helpers(const TypedProgram *program, TextBuffer *source,
     }
     if (ok) {
         for (i = 0; i < types.length; i++) {
+            size_t index = *(const size_t *)list_get(&types, i);
+            const TypedType *type = typed_program_type(program, index);
+
+            if (type != NULL && (type->kind == NIPPY_TYPE_FLOAT32 ||
+                                 type->kind == NIPPY_TYPE_FLOAT64)) {
+                if (!buffer_append(source,
+        "#include <math.h>\n"
+        "static void nyx_print_float(double value, int single)\n"
+        "{\n"
+        "    char buf[128], digits[32], candidate[64];\n"
+        "    unsigned long long n = 0, chosen = 0;\n"
+        "    int exponent = 0, decimal_power = 0, precision, i, count;\n"
+        "    if (isnan(value)) { fputs(\"nan\", stdout); return; }\n"
+        "    if (signbit(value)) { fputc('-', stdout); value = -value; }\n"
+        "    if (isinf(value)) { fputs(\"inf\", stdout); return; }\n"
+        "    if (value == 0.0) { fputs(\"0.0\", stdout); return; }\n"
+        "    for (precision = 1; precision <= (single ? 9 : 17); precision++) {\n"
+        "        char *ep;\n"
+        "        snprintf(buf, sizeof(buf), \"%.*e\", precision - 1, value);\n"
+        "        ep = strchr(buf, 'e');\n"
+        "        exponent = (int)strtol(ep + 1, NULL, 10);\n"
+        "        n = 0;\n"
+        "        for (char *p = buf; p < ep; p++)\n"
+        "            if (*p >= '0' && *p <= '9') n = n * 10 + (unsigned)(*p - '0');\n"
+        "        decimal_power = exponent - (precision - 1);\n"
+        "        for (i = 0; i < 3; i++) {\n"
+        "            unsigned long long trial = i == 0 ? n : (i == 1 ? n - 1 : n + 1);\n"
+        "            if (trial == 0) continue;\n"
+        "            snprintf(candidate, sizeof(candidate), \"%llue%d\", trial, decimal_power);\n"
+        "            if (single ? (double)strtof(candidate, NULL) == value\n"
+        "                       : strtod(candidate, NULL) == value) {\n"
+        "                chosen = trial;\n"
+        "                break;\n"
+        "            }\n"
+        "        }\n"
+        "        if (chosen != 0) break;\n"
+        "    }\n"
+        "    while (chosen % 10 == 0) { chosen /= 10; decimal_power++; }\n"
+        "    snprintf(digits, sizeof(digits), \"%llu\", chosen);\n"
+        "    count = (int)strlen(digits);\n"
+        "    exponent = decimal_power + count - 1;\n"
+        "    if (exponent >= -6 && exponent <= 15) {\n"
+        "        int point = count + decimal_power;\n"
+        "        if (point <= 0) {\n"
+        "            fputs(\"0.\", stdout);\n"
+        "            for (i = 0; i < -point; i++) fputc('0', stdout);\n"
+        "            fputs(digits, stdout);\n"
+        "        } else if (point >= count) {\n"
+        "            fputs(digits, stdout);\n"
+        "            for (i = count; i < point; i++) fputc('0', stdout);\n"
+        "            fputs(\".0\", stdout);\n"
+        "        } else {\n"
+        "            for (i = 0; i < count; i++) {\n"
+        "                if (i == point) fputc('.', stdout);\n"
+        "                fputc(digits[i], stdout);\n"
+        "            }\n"
+        "        }\n"
+        "    } else {\n"
+        "        fputc(digits[0], stdout);\n"
+        "        if (count > 1) { fputc('.', stdout); fputs(digits + 1, stdout); }\n"
+        "        fprintf(stdout, \"e%+d\", exponent);\n"
+        "    }\n"
+        "}\n")) {
+                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                    ok = false;
+                }
+                break;
+            }
+        }
+    }
+    if (ok) {
+        for (i = 0; i < types.length; i++) {
             size_t type_index = *(const size_t *)list_get(&types, i);
             char c_type[NIPPY_IDENTIFIER_MAX + 32];
 
             if (!format_c_type(program, type_index, c_type,
                                sizeof(c_type), errors) ||
                 !buffer_appendf(source,
-                                "static void nyx_print_%zu(%s value, int "
-                                "depth);\n",
+                                "static inline void nyx_print_%zu(%s value, int "
+                                "depth, const char *file, size_t line, size_t column, size_t pos);\n",
                                 type_index, c_type)) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
                 ok = false;
@@ -601,8 +675,9 @@ bool emit_print_statement(const TypedProgram *program,
         }
         if (!append_indent(source, depth + 1) ||
             !buffer_appendf(source,
-                            "nyx_print_%zu(nyx_print_arg_%zu_%zu, 0);\n",
-                            argument->type_index, node->pos.offset, i)) {
+                            "nyx_print_%zu(nyx_print_arg_%zu_%zu, 0, __FILE__, %zu, %zu, %zu);\n",
+                            argument->type_index, node->pos.offset, i,
+                            node->pos.line, node->pos.column, node->pos.offset)) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }

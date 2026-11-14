@@ -89,7 +89,8 @@ A type is a type expression. The implemented forms are:
   `double`.
 - **`Bool`** — the built-in boolean type, with the values `true` and `false`. It
   maps to C `bool`.
-- **`Nil`** — the built-in unit type, with the single value `nil`.
+- **`Nil`** — the union alternative whose single value is `nil`. It cannot be
+  used alone as a source type or generic argument.
 - **`Store`** — a global byte arena. It is a declaration resource, not an
   ordinary passable value.
 - **`Handle<T>`** — an opaque reference to one `T` allocated in a store.
@@ -116,7 +117,8 @@ A type is a type expression. The implemented forms are:
 - **union types** — written `A | B | C`, structural.
 - **function types** — written `Fun<(Int32, Int32):Int32>`, naming the parameter
   types and the return type. `Fun<():Bool>` is a function type with no
-  parameters.
+  parameters. Omit the return annotation for a no-result function type, for
+  example `Fun<(Int32)>`.
 - **aliases** — `type Name = Type`, transparent: the alias is interchangeable
   with the type expression it names.
 - **generic types** — a declaration with type parameters, applied as
@@ -130,7 +132,7 @@ types and do not convert into each other. Aliases are transparent, so they do
 not create a new type.
 
 A struct type has one or more fields, each of which is `name : Type`. A field may
-have any non-function storable value type: `Int32`, `Bool`, `Nil`, a struct, a
+have any non-function storable value type: `Int32`, `Bool`, a struct, a
 union, an alias, or — inside a generic declaration — a type parameter. Function
 types are not accepted as struct field types yet, but they are accepted as union
 alternatives and collection elements.
@@ -184,6 +186,8 @@ Expressions are:
   (`[a, b]`), boolean literals (`true`, `false`), and `nil`;
 - names of variables, parameters, and functions;
 - calls, `name(arguments)`;
+- user-defined instance calls, `value.method(arguments)`, and static calls,
+  `Type::function(arguments)`;
 - struct constructors, written as calls whose name resolves to a struct type;
 - `typeof expression is Type` tests;
 - `if` expressions and `match` expressions;
@@ -206,10 +210,59 @@ Operator precedence, tightest first:
 | multiplicative | `%` | same integer type | same type |
 | additive | `+`, `-` | same numeric type | same type |
 | shift | `<<`, `>>` | same integer type | same type |
+| bitwise AND | `&` | same integer type | same type |
+| bitwise XOR | `^` | same integer type | same type |
+| bitwise OR | `\|` | same integer type | same type |
 | relational | `<`, `<=`, `>`, `>=` | same numeric type | `Bool` |
-| equality | `==`, `!=` | same numeric type, `Bool`, `Text`, or `String<N>` | `Bool` |
-| bitwise | `&`, `^`, `\|` | same integer type | same type |
+| equality | `==`, `!=` | numeric values; strings and text; or matching comparable types | `Bool` |
+| strict equality | `===` | comparable values | `Bool` |
 | logical | `&&`, `\|\|` | `Bool`, `Bool` | `Bool` |
+
+Union values cannot be compared with `==`, `!=`, or `===`, including comparisons
+with `nil`. This is by design. Test the active alternative with `typeof`, then
+compare its narrowed value where necessary.
+
+Numeric equality compares mathematical values across integer and floating-point
+types without rounding an integer to a floating-point type. Negative integers
+never equal unsigned values. Floating-point NaN is unequal to every value,
+including itself; positive and negative zero compare equal. Same-sign infinities
+compare equal to each other but never to integers. `!=` negates `==`.
+
+```nippy
+print(Uint16(3) == Int64(3))          -- true
+print(Int64(-1) == Uint64(1))        -- false
+var n: Int64 = 9007199254740993
+var f: Float64 = 9007199254740992.0
+print(n == f)                        -- false, with no lossy conversion
+```
+
+`===` requires the same type and equal values; values of different supported
+types compare false. Numeric literals take the other operand's numeric type
+when their value fits, as in other contextual literal expressions. Both
+operands are evaluated even when their types differ. Floating-point equality
+retains its usual rules, including NaN and signed zero. Use `!(a === b)` for
+strict inequality.
+
+```nippy
+var a: Int32 = 3
+var b: Int64 = 3
+print(a == b, a === b)  -- true false
+print(a === 3)          -- true: the literal takes Int32 context
+```
+
+`String<N>` and `Text` compare their bytes by content, even across capacities
+or between fixed and dynamic strings. Two uncontextual string literals in an
+equality expression are treated as `Text`; a literal too long for the other
+operand's fixed string type is also treated as `Text`.
+
+Structs, arrays, lists, records, and tables compare by value when their types
+match and all their fields or elements support equality. Structs compare each
+field; arrays and lists compare length and elements in order. Records and
+tables compare key-value mappings, regardless of insertion or bucket order.
+Comparing a stale list or table reports the usual stale-store error. Unions and
+composites containing a union cannot be compared. Handles are comparable by
+identity, including when they occur inside a comparable composite. `===` applies
+these value rules only when the operand types match.
 
 Integer arithmetic wraps on `+`, `-`, `*`, and unary `-` for signed types;
 unsigned types wrap modulo their width. The generated C does the arithmetic in
@@ -257,8 +310,8 @@ not fit is a compile-time error:
   hold it. An alternative of the literal's own default type wins. Two other
   fitting alternatives, such as `Int8 | Int64`, are ambiguous and rejected, as
   for strings, and a literal that fits none reports its range;
-- with no context it is `Int32`, or `Int64` / `Uint64` when it does not fit
-  `Int32`.
+- with no context it is `Int64` and must fit that type. An explicit `Uint64`
+  context can accommodate larger nonnegative literals.
 
 Floating-point literals use decimal digits with a fractional part and/or an
 exponent (`1.5`, `2e3`, `1.5E-3`) and default to `Float64`. A float literal
@@ -289,6 +342,9 @@ Int32(5)` is rejected.
 - Integer to float rounds to nearest. `Float32` to `Float64` is exact.
   `Float64` to `Float32` traps when a finite value is beyond `Float32`'s range;
   infinities and NaN pass through.
+
+A UTF-8 byte order mark is accepted at the beginning of a source file and does
+not count as a source column; byte offsets still include its three bytes.
 
 A string literal is a sequence of bytes between double quotes. The escapes are
 `\n`, `\t`, `\r`, `\\`, and `\"`; a raw newline, a NUL byte, or any other
@@ -329,8 +385,7 @@ var raw: Text = base64("AAECgP8=")                  // bytes 0 1 2 128 255
   `"QR=="` are rejected, each with the byte offset of the problem.
 - The empty string decodes to an empty `Text`.
 - The result is always a `Text` and is never retyped by context: it does not
-  become a `String<N>`, and `String<N> == base64(...)` is rejected like any
-  `Text` against a `String<N>`.
+  become a `String<N>`. Equality with a fixed string compares the bytes.
 - Decoded bytes are arbitrary. They need not be UTF-8 and may contain NUL, which
   `Text` allows because it carries a length.
 
@@ -347,7 +402,8 @@ union is expected:
 ```text
 var s: Int32 | Bool | Nil = 3
 var t: Int32 | Bool | Nil = true
-var u: Int32 | Bool | Nil = nil
+var u: Int32 | Bool | Nil = 1
+u = nil
 ```
 
 Injection applies at:
@@ -356,6 +412,10 @@ Injection applies at:
 - a `return` expression whose function returns a union;
 - a function call argument whose parameter is a union;
 - a struct constructor argument whose field is a union.
+
+An explicit `nil` literal cannot initialize a `var` or `const` with a union
+type. Assignment, argument passing and returns may inject `nil` into a union.
+An initializer expression whose union result may be `nil` is allowed.
 
 This is widening, not a general conversion. There is no other implicit
 conversion: `Int32` never becomes `Bool`, a union is not assignable to a
@@ -372,23 +432,36 @@ returns `Bool`. `T` must be a single non-union type. The old method form is remo
   alternative.
 
 Inside `if typeof name is T then`, where `name` is a simple identifier whose type is
-a union containing `T`, `name` is **narrowed to `T` for the then-block only**:
+a union containing `T`, `name` is **narrowed to `T` in the then-block**:
 
 ```text
 fun to_int(x: Int32 | Bool | Nil): Int32
   if typeof x is Int32 then
-    return x                 // x has type Int32 here
+    return x                 -- x has type Int32 here
   elseif typeof x is Bool then
-    if x then return 1 else return 0 end   // x has type Bool here
+    if x then return 1 else return 0 end   -- x has type Bool here
   else
     return 0
   end
 end
 ```
 
-The else-block and code after the `if` keep the original union type. Narrowing
-does not flow through `!`, `&&`, `||`, or a non-identifier receiver. `elseif`
-chains work because each condition is evaluated against the original union.
+A positive type test narrows the right operand and body of `&&`. A false type
+test narrows the right operand of `||`; its false branch and a negated `||`
+also combine facts from both operands. Negating a type test removes that
+alternative from a union; the same complement applies in an `else` block and
+after a branch that returns. A disjunction of type tests on the same value can
+narrow it to the union of the tested alternatives; common facts from both
+alternatives are retained for compound conditions. Narrowing
+also works for struct fields and Array or List elements indexed by a constant,
+variable, or arithmetic expression of those values. Assigning to the containing
+value or a variable used by the index, or invoking a method on the containing
+value, invalidates those facts. Because Lists can alias, a List mutation or a
+function or method call also invalidates List element facts, except for `print`.
+An expression containing a potentially mutating call invalidates affected facts
+before its operands are checked because operand evaluation order may vary.
+Field and element facts are not propagated from an earlier condition when a
+later part may call a function.
 
 ### `match`
 
@@ -414,9 +487,10 @@ with false then
 end
 ```
 
-The scrutinee must be a simple identifier. Type arms narrow that identifier.
-There is no fallthrough. Structural mutation during an arm is not a concern for
-the scrutinee because the head is a variable.
+The scrutinee may be any expression. It is evaluated once before the arms are
+tested. Type arms narrow a scrutinee that is a simple identifier or a stable
+field or indexed access, subject to the same invalidation rules as type tests.
+There is no fallthrough.
 
 Expression form:
 
@@ -471,16 +545,35 @@ Rules, all enforced by the checker:
   errors, because none is a struct.
 - Arguments are **either** all positional **or** all named. Mixing them is a
   parser error.
-- With positional arguments, the count must equal the field count and each
-  argument supplies the field at that position.
-- With named arguments, every field must be supplied exactly once. Arguments may
-  appear in any order; the field's position, not the argument's position,
-  decides where the value lands.
+- With positional arguments, each argument supplies the field at that position;
+  omitted trailing fields must have defaults.
+- With named arguments, each field without a default must be supplied exactly
+  once. Arguments may appear in any order; the field's position, not the
+  argument's position, decides where the value lands.
 - Each argument may be any expression that is assignable to its field's type,
   including an injected union alternative.
 
+A struct field may declare a literal default after its type. Integer, float,
+Boolean, string and `nil` literals are supported, including a minus sign on a
+numeric literal. A default must be assignable to the field type; expressions
+and references to other fields are not defaults. A non-generic struct's defaults
+are checked at its declaration; generic defaults are checked for each concrete
+instantiation.
+
+```nippy
+type Rectangle
+  width: Int64
+  height: Int64 = 10
+end
+
+var a = Rectangle(5)          -- height is 10
+var b = Rectangle(width = 3)  -- height is 10
+var c = Rectangle(5, 4)       -- height is 4
+```
+
 For a generic struct, type arguments are inferred from the constructor
-arguments. `Pair(1, true)` infers `Pair<Int32, Bool>`. A type parameter that
+arguments, including defaults used for omitted fields. `Pair(1, true)` infers
+`Pair<Int64, Bool>`. A type parameter that
 cannot be inferred is an error. There is no explicit type-argument syntax on a
 constructor call.
 
@@ -554,7 +647,11 @@ print("n =", n, "ok =", flag)
 - `print` is reserved and cannot be declared, stored, passed, or used as a
   value. `base64` is reserved the same way.
 
-The builtin formats by the static argument type:
+The builtin formats by the static argument type. Floating-point output uses
+ordinary notation for decimal exponents from -6 through 15 and scientific
+notation outside that range. An integral float in ordinary notation has a
+`.0` suffix. Negative zero is `-0.0`; infinities are `inf` and `-inf`, and
+NaN is `nan`.
 
 ```text
 Int8/Int16   decimal
@@ -563,8 +660,7 @@ Int64        decimal
 Uint8/16     decimal
 Uint32       decimal
 Uint64       decimal
-Float32      %g
-Float64      %g
+Float32/64   shortest decimal that round-trips to the same float
 Bool         true / false
 Nil          nil
 String<N>    raw bytes
@@ -590,7 +686,7 @@ pretty-print depth limit defaults to 16 and is configurable through
 
 ## For loops
 
-A `for` statement iterates a list, slice, string, Record, or Table:
+A `for` statement iterates a list, slice, string, Range, Record, or Table:
 
 ```nippy
 for value in iterable do
@@ -604,16 +700,36 @@ end
 
 - `List<T>` and `Array<T,N>` yield `T`.
 - `Slice<T>` yields `T`.
+- `Range<T>` yields integer values of type `T`.
 - `String<N>` and `Text` yield `Byte`.
 - A Record or Table with two bindings yields its key and value; with one
   binding it yields the key.
 - The index binding, when present for a sequence, is `Int32` and starts at `0`.
 - The iterable expression is evaluated exactly once.
-- The length is captured before the first iteration.
+- For collections, the length is captured before the first iteration.
 - The loop bindings are scoped to the loop body and may not shadow an existing
   visible name.
 - `break` and `continue` apply to the innermost loop.
 - `return` inside the loop returns from the enclosing function.
+
+`range(start, end)` creates a lazy `Range<T>` with step 1;
+`range(start, end, step)` supplies an `Int64` step. The integer bounds have the
+same type `T`, with untyped integer literals using their usual contextual type
+or defaulting to `Int64`. Arguments are evaluated once, in source order, when
+the range is constructed. A range stores its bounds and step and allocates no
+collection. It can be stored, passed to functions, and iterated repeatedly.
+
+The start is inclusive and the end is exclusive. A positive step increases the
+value; a negative step decreases it, including for unsigned bounds. A step that
+points away from the end produces an empty range. A literal or folded zero step
+is rejected at compile time; another zero step traps when the range is created.
+Iteration stops before the end without overflowing the element type.
+
+```nippy
+var numbers: Range<Int64> = range(0, 5)
+for n in numbers do print(n) end       -- 0 through 4
+for n in range(5, 0, -2) do print(n) end  -- 5, 3, 1
+```
 
 A direct `xs.push` or `xs.pop` on the iterated list inside the loop body is
 rejected at compile time. The checker only rejects the locally decidable direct
@@ -793,6 +909,11 @@ p.write(Point(3, 4))
 
 - `p.read()` copies the current `T` out.
 - `p.write(value)` copies a new `T` in; `value` must be assignable to `T`.
+- `==` and `!=` compare allocation identity for handles of the same type:
+  store, offset, and generation must all match. They do not read the value.
+  `===` additionally requires matching handle types, returning false for
+  different types. Both operators validate every handle operand first, so
+  comparing a stale handle traps even when the types differ.
 - Both check the store id, the store generation, and the offset bounds. A
   failure is a deterministic runtime diagnostic, not undefined behaviour.
 - Handles survive growth because they hold offsets, not pointers.
@@ -883,7 +1004,7 @@ var last: Int32 | Nil = xs.pop()
 
 ### Element types
 
-Collection elements must be single items: the numeric types, `Bool`, `Nil`,
+Collection elements must be single items: the numeric types, `Bool`,
 structs, unions, handles, `Text`, `String<N>`, function types, and `Error`.
 
 - `Store` is not a value and is not listable.
@@ -1042,8 +1163,8 @@ var same: Bool = joined == "hello world"
   generation. A slice is not independently NUL-terminated; only the original
   static/arena text has a terminator at its own end. C projection is not
   implemented yet.
-- `==`/`!=` compare content. There is no implicit conversion between `Text`
-  and `String<N>`.
+- `==`/`!=` compare content, including with `String<N>`. There is no implicit
+  conversion between `Text` and `String<N>`.
 - `Text` is a single item: it can be a field, union alternative, parameter,
   return type, or `List<Text>` element. It is not a fixed type, so
   `alloc<Text>` and `Handle<Text>` are rejected; use `store.text`.
@@ -1132,8 +1253,8 @@ var same: Bool = name == "nyx"
 - `byte_at(i)` returns a `Byte` and checks `0 <= i < byte_len()`. An
   out-of-bounds index is a deterministic runtime error
   (`nippy: string index out of bounds`).
-- `==` and `!=` compare content, but only between the same `String<N>` type.
-  Different capacities are different types.
+- `==` and `!=` compare content with `String<N>` of any capacity or `Text`.
+  Different capacities are different types for `===`.
 - `Text` and `String<N>` are distinct types; the only implemented conversion
   is `store.text(fixed)`.
 - String literals are contextual, as described above.
@@ -1178,7 +1299,7 @@ var description: String<128> = e.description
 The compiler can fill in the source position:
 
 ```nippy
-var e: Error = Error.throw("E_CONCAT", "concat failed")
+var e: Error = Error::throw("E_CONCAT", "concat failed")
 ```
 
 A call statement whose result type contains `Error` is rejected: the error would
@@ -1186,7 +1307,7 @@ otherwise disappear. Bind the result, inspect it, or use `match` with an `else`
 to handle it. A result type contains `Error` recursively through unions,
 structs, handles, and collections.
 
-`Error.throw(header, description)` takes the two string fields and fills
+`Error::throw(header, description)` takes the two string fields and fills
 `filename`, `line`, `col`, and `pos` from the source file and the call site.
 The filename is the compiler's configured source name, truncated to the
 configured filename capacity.
@@ -1196,7 +1317,7 @@ configured filename capacity.
   used as a union alternative, for example `String<8> | Error`.
 - `typeof e is Error` narrows a union alternative normally.
 - `Error(...)` takes exactly `header`, `description`, `filename`, `line`,
-  `col`, `pos`. `Error.throw(header, description)` fills the last four from the
+  `col`, `pos`. `Error::throw(header, description)` fills the last four from the
   source position. Named arguments are not accepted.
 - The field capacities default to `32` (header), `128` (description), and `128`
   (filename) bytes. `CompilerConfig.error_header_capacity`,
@@ -1226,8 +1347,10 @@ fun classify(x:Int32):Int32
 end
 ```
 
-A function declaration has a name, zero or more parameters, a required return
-type, and a body containing zero or more statements. Each parameter is
+A function declaration has a name, zero or more parameters, an optional return
+type, and a body containing zero or more statements. Without a return annotation,
+the function can fall through, and calls to it are statements rather than values.
+The compiler represents its result internally as `Nil`. Each parameter is
 `name : Type` and is in scope throughout the body. Parameters may have any value
 type. Parameter names within one function must be unique.
 
@@ -1238,17 +1361,81 @@ stores are the sole exception and remain visible so functions can share
 explicitly allocated state. This keeps ordinary dependencies visible at each
 call site and makes stores the only deliberate shared mutable state.
 
-A function returning `Nil` returns `nil`:
+A function that returns no value omits its return annotation. It may fall
+through or exit with a bare `return`:
 
 ```text
-fun nothing(): Nil
-  return nil
+fun nothing()
+  return
 end
 ```
 
+### Methods and static functions
+
+Associated functions are declared after their concrete struct type:
+
+```text
+type Point
+  x: Int32,
+  y: Int32
+end
+
+method Point.move(dx: Int32, dy: Int32): self
+  self.x = self.x + dx
+  self.y = self.y + dy
+  return self
+end
+
+static Point::midpoint(a: Point, b: Point): Array<Int32, 2>
+  return [(a.x + b.x) / 2, (a.y + b.y) / 2]
+end
+```
+
+An instance method has an implicit first parameter named `self`. It is a
+pointer-like mutable reference to the receiver. The receiver must be a mutable
+lvalue formed from a variable/parameter and optional field accesses; temporaries
+and deeply const values are rejected. `self` can be used as a value, which
+copies the struct, but cannot be reassigned. Thus `return self` returns a value
+copy after any field mutations have affected the original receiver.
+
+A static function has no implicit receiver and is called with `Type::name(...)`.
+Instance and static functions share one name space within their owner type, so a
+type cannot declare both forms with the same name. User-defined associated
+functions require a struct type declared earlier in the source. The built-in
+`Error::throw` is also a static call.
+User-defined instance methods resolve by their receiver type, including when
+their names match built-in members on other types.
+For a generic struct, the declaration repeats the owner's declared type
+parameter names in order: `method Box<T>.replace(value: T): self` or
+`static Box<T>::make(value: T): Box<T>`. Those names are in scope throughout
+the signature and body. An instance call infers them from its receiver. A
+static call specifies the specialized owner, as in `Box<Int32>::make(3)`;
+inside a generic body it may use an in-scope type parameter, as in
+`Box<T>::make(value)`.
+
+Methods and static functions may also declare their own type parameters after
+the function name, as in `method Box<T>.choose<U>(value: U): U`. Calls infer
+those parameters from value arguments as for generic functions. A function
+parameter cannot duplicate an owner parameter. The combined owner and function
+parameter count is limited to eight. Generic associated function bodies are
+checked and generated for each concrete combination of arguments when called.
+When an untyped string literal is passed directly to a type parameter that is
+also the function's return type, an expected `String<N>` or `Text` result type
+provides the literal's context. For example:
+
+```text
+var label: String<8> = box.choose("ok")
+```
+
+Another argument can also supply the string type. A return annotation alone
+does not infer a type parameter when no argument supplies that parameter.
+Associated functions obey the same closed function scope as other
+functions: arguments, locals, and program-level stores are visible, while
+program-level `var` and `const` bindings are not.
+
 The statements are:
 
-- `return expression`;
+- `return expression`, or bare `return` in a function without a return type;
 - `if condition then ... elseif condition then ... else ... end`;
 - `while condition do ... end`;
 - `for bindings in iterable do ... end`;
@@ -1272,12 +1459,12 @@ They apply to the innermost enclosing loop. `return` may appear anywhere in the
 body. A statement after `return`, `break`, or `continue` in the same block is
 unreachable and rejected.
 
-Every function must return on every path. A block returns if one of its
+Every function with an explicit return type must return on every path. A block returns if one of its
 statements returns before control can fall out of the block. An `if` returns
 only when it has an `else` and both branches return. A `while true` with no
 `break` never falls through, so a function ending in one is accepted. Any other
-`while` or `for` never guarantees a return. A function whose body may reach its
-end is rejected.
+`while` or `for` never guarantees a return. A function with a return annotation
+whose body may reach its end is rejected.
 
 A function whose every return expression calls itself directly is rejected.
 Other direct self-recursion is guarded at runtime: exceeding a fixed depth traps
@@ -1308,17 +1495,23 @@ end
 A call infers the type arguments from its value arguments:
 
 ```text
-var n: Int32 = identity(3)       // T = Int32
+var n: Int32 = identity(Int32(3)) // T = Int32
 var m: Bool = identity(true)     // T = Bool
 ```
 
 Rules:
 
 - Every type parameter must be inferable from the argument types; otherwise the
-  call is rejected. There is no explicit call-site type-argument syntax.
+  call is rejected. Function-specific type arguments have no explicit
+  call-site syntax; a generic static owner is specified separately.
+- A string literal passed directly to a type parameter can use an expected
+  `String<N>` or `Text` result type when that same parameter is the direct
+  return type. A typed argument can instead provide the string type.
 - Inference handles type parameters in plain type positions, struct
-  applications, `Handle<T>`, and function types. A type parameter inside a union or alias
-  whose remaining parameters are unbound is not an inference site.
+  applications, `Handle<T>`, and function types. In a union such as `T | Nil`,
+  one unbound direct type parameter is inferred from the argument alternatives
+  not already covered by the other union alternatives. A bare `nil` cannot
+  infer `T`. Aliases with unbound parameters are not inference sites.
 - A generic function name cannot be used as a value.
 - The body is checked once per concrete binding. A generic function that is
   never called produces no code and is not body-checked. Operations in the body
@@ -1396,7 +1589,7 @@ language's behaviour:
 - Each function type used by the program becomes a function-pointer `typedef`
   named `nyx_fun_N`. The `nyx_` prefix is reserved for all generated names;
   source names that use it are rejected.
-- Each non-generic function declaration becomes a C function with its source
+- Each non-generic function declaration becomes a C function with a mangled
   name. Each concrete instantiation of a generic function becomes a separate C
   function with a generated name.
 - `if`, `elseif`, `else`, `while`, `for`, `break`, and `continue` map directly
@@ -1404,8 +1597,8 @@ language's behaviour:
 - Union injection becomes a compound literal with a tag and payload;
   `typeof x is T` becomes a tag comparison or, when the answer is static,
   `true`/`false`; narrowing reads the payload member directly.
-- `match` and `if` expressions lower to nested conditional expressions; match
-  statements lower to nested `if` statements.
+- `if` expressions lower to conditional expressions. `match` saves its
+  scrutinee once, then lowers its arms to conditionals or `if` statements.
 - Each value declaration becomes a local initialised by its expression. A
   single `Int32` variable declaration additionally emits `nyx_program_value()`,
   and `main` prints that value followed by a newline.
@@ -1429,6 +1622,12 @@ language's behaviour:
 
 Compilation is fail-closed. If any declaration or statement is invalid, the
 whole program is rejected and no C is emitted; there is no partial output.
+The parser resumes at a later declaration, statement, or match arm when it can
+find a safe boundary. The checker reports independent errors in declarations,
+blocks, and match arms. Recovery is conservative where the next boundary is
+ambiguous, so a compilation does not necessarily report every error. After a
+syntax error, recovery may use a later line as a hint for an unmatched
+delimiter; line breaks do not otherwise delimit statements.
 
 Source-level diagnostics carry `file:line:column (byte offset): ` followed by a
 stage-prefixed message, for example:
@@ -1441,6 +1640,12 @@ The prefix identifies the source file, the 1-based line and column of the
 offending construct, and the 0-based byte offset. Driver-level failures (a file
 that cannot be read, an unwritable output path, a failing C compiler) are not
 source-positioned but do name the path involved.
+
+Runtime failures identify the source file, line, column, and byte offset after
+the `nippy:` prefix. The recursion-depth guard identifies the recursive
+function's declaration; other failures identify the operation that failed.
+Runtime failures flush standard output before writing their diagnostic to
+standard error.
 
 If compilation fails with no diagnostic recorded, the message is exactly
 `Unknown Error`.
@@ -1479,7 +1684,7 @@ If compilation fails with no diagnostic recorded, the message is exactly
   dynamic-to-fixed conversion.
 - Region/escape checking for dynamic strings and lists; they are runtime-checked
   until scoped arenas exist.
-- Array slices, dynamic list literals, and list equality.
+- Array slices and dynamic list literals.
 - Scoped `access` blocks for reading store data; `read` currently copies.
 - Concurrency and multithreading.
 - Modules and imports.

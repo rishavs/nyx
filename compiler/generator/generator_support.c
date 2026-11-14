@@ -1,5 +1,27 @@
 #include "generator_internal.h"
 
+bool emit_match_temporaries(const TypedProgram *program, size_t scope,
+                            TextBuffer *source, ErrorState *errors)
+{
+    const size_t *head = list_get(&program->match_scopes, scope);
+    size_t index = head == NULL ? TYPED_NO_NODE : *head;
+
+    while (index != TYPED_NO_NODE) {
+        const TypedMatchTemporary *temporary =
+            list_get(&program->match_temporaries, index);
+        char type_name[NIPPY_IDENTIFIER_MAX + 32];
+        if (temporary == NULL ||
+            !format_c_type(program, temporary->type_index, type_name,
+                           sizeof(type_name), errors) ||
+            !buffer_appendf(source, "    %s nyx_match_%zu;\n", type_name, index)) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        index = temporary->next;
+    }
+    return true;
+}
+
 
 bool valid_header_name(const char *name)
 {
@@ -9,7 +31,8 @@ bool valid_header_name(const char *name)
         return false;
     }
     while (*cursor != '\0') {
-        if (!isalnum(*cursor) && *cursor != '_' && *cursor != '-' && *cursor != '.') {
+        if (!isalnum(*cursor) && *cursor != '_' && *cursor != '-' &&
+            *cursor != '.' && *cursor != ' ') {
             return false;
         }
         cursor++;
@@ -234,6 +257,10 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
     }
     if (type->kind == NIPPY_TYPE_SLICE) {
         snprintf(out, out_size, "nyx_slice");
+        return true;
+    }
+    if (type->kind == NIPPY_TYPE_RANGE) {
+        snprintf(out, out_size, "nyx_range_%zu", type_index);
         return true;
     }
     if (type->kind == NIPPY_TYPE_RECORD) {

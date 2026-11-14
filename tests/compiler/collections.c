@@ -2,6 +2,37 @@
 
 #include "compile_support.h"
 
+TEST("overlong map key does not cascade")
+{
+    const char *sources[] = {
+        "var r: Record<String<2>, Int32, 1> = {}\nprint(r[\"long\"])\n",
+        "var r: Record<String<2>, Int32, 1> = {}\nprint(r.has(\"long\"))\n",
+        "var r: Record<String<2>, Int32, 1> = {\"long\": 1}\n",
+        "var r: Record<String<2>, Int32, 1> = {}\nr[\"long\"] = 1\n",
+        "global s: Store = Store(32)\n"
+        "var r: Table<String<2>, Int32> = s.table<String<2>, Int32>(1)\n"
+        "print(r.get(\"long\"))\n"
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(sources) / sizeof(sources[0]); i++) {
+        CompilerResult result = compiler_compile(sources[i], &test_config);
+        bool valid = !result.succeeded && result.error_message != NULL &&
+                     strstr(result.error_message, "does not fit String<2>") != NULL &&
+                     strstr(result.error_message, MESSAGE_CHECKER_MAP_KEY) == NULL &&
+                     strstr(result.error_message, "initialiser type does not match") == NULL &&
+                     strstr(result.error_message, MESSAGE_CHECKER_MAP_VALUE) == NULL;
+        if (!valid) {
+            fprintf(stderr, "  expected only the string length diagnostic: %s\n",
+                    result.error_message == NULL ? "(none)" : result.error_message);
+            compiler_result_free(&result);
+            return TEST_FAIL;
+        }
+        compiler_result_free(&result);
+    }
+    return TEST_PASS;
+}
+
 TEST("list: dynamic list literal")
 {
     return compile_fails(

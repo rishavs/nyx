@@ -87,10 +87,11 @@ base, a missing digit, a bad separator, an uppercase prefix) is reported once an
 skipped whole. Keyword recognition happens
 during scanning (`global`, `var`, `const`, `type`, `fun`, `return`, `if`,
 `then`, `elseif`, `else`, `while`, `for`, `typeof`, `is`, `match`, `with`,
-`in`, `do`, `break`, `continue`, `true`, `false`, `nil`, `end`); everything
-else is an identifier. Two-character operators (`==`, `!=`, `<=`, `>=`, `<<`,
-`>>`, `&&`, `||`) are recognised before their single-character prefixes. A
-double quote starts a string literal.
+`in`, `do`, `break`, `continue`, `true`, `false`, `nil`, `end`, `method`,
+`static`); everything
+else is an identifier. `===` is a three-character operator. Two-character operators (`==`, `!=`, `<=`, `>=`, `<<`,
+`>>`, `&&`, `||`, `::`) are recognised before their single-character prefixes.
+A double quote starts a string literal.
 
 ### Parser
 
@@ -109,6 +110,16 @@ children have been parsed. Binary, unary, control-flow condition, and leaf nodes
 use `left_child`/`right_child` directly. This keeps the flat-index model intact
 without adding sibling links or pointers.
 
+An `AST_FIELD` uses its left child for the field type and its optional right
+child for a literal default. The checker validates defaults for each concrete
+struct instantiation and supplies them for omitted constructor fields; later
+stages receive ordinary typed constructor values.
+
+`range` is lowered to a typed range value containing two bounds and a signed
+step. Its arguments use scoped temporaries to preserve evaluation order. A
+range loop advances its private copy before the body, allowing `continue` while
+checking the remaining distance before arithmetic can overflow.
+
 Type expressions are parsed recursively: `AST_TYPE_NAME`, `AST_TYPE_UNION`,
 `AST_TYPE_APPLICATION`, `AST_TYPE_FIXED_STRING`, `AST_TYPE_LIST`,
 `AST_TYPE_FIXED_LIST`, `AST_TYPE_SLICE`, `AST_TYPE_FUNCTION`, and parenthesized
@@ -125,8 +136,11 @@ by `type_parameters_start`/`type_parameters_count`. A value postfix
 `typeof x is T` becomes `AST_IS`; `nil` becomes `AST_NIL_LITERAL`; `x = value`
 becomes `AST_ASSIGNMENT`; a `global` store declaration sets
 `AstNode.is_global`; a string literal becomes `AST_STRING_LITERAL`, with its bytes copied from the lexer pool into
-`Ast.bytes` and referenced by offset and length. Parentheses are flattened away
-during parsing.
+`Ast.bytes` and referenced by offset and length. `method Type.name(...)` and
+`static Type::name(...)` become associated function declaration nodes;
+`Type::name(...)` becomes a static `AST_CALL`. A generic owner is stored as
+type syntax on the associated declaration or static call. Parentheses are
+flattened away during parsing.
 
 Function bodies are blocks of statements. `if`/`elseif`/`else` is parsed as an
 `AST_IF` whose children are the then-block and optional else-block, plus
@@ -171,18 +185,28 @@ Reads the syntax tree through a `const` pointer and writes a separate
   the arguments;
 - checks function-call arity and argument types against the callee's function
   type, including calls through function-typed variables and parameters;
+- resolves static functions through their owner type and user-defined instance
+  methods through the receiver's struct type; method receivers must be mutable
+  lvalues and are recorded as the first signature parameter. Generic owner
+  arguments come from the receiver or the explicitly specialized static owner;
+  function-specific type parameters are inferred from value arguments. A
+  directly returned type parameter can use an expected string result type to
+  contextualize a string-literal argument;
+- collects typed function parameters and instantiated struct fields before
+  appending their child runs, so nested type instantiations cannot split them;
 - types the reserved `base64` builtin: it decodes its string-literal argument
   with a strict RFC 4648 decoder (`checker_base64.c`) and emits a static `Text`
   literal flagged `fixed_type`, so context never retypes it as a `String<N>`;
 - types the reserved `print` builtin as a statement with any number of
   arguments, contextualising string literals as `Text` and checking that each
   argument is printable;
-- types `Error.throw(header, description)` as an `Error` whose filename and
+- types `Error::throw(header, description)` as an `Error` whose filename and
   source position come from the compiler configuration and call site;
 - types boolean and nil literals, `typeof x is T`, arithmetic, bitwise,
   comparison, equality, and logical operators;
 - checks `if`/`while` conditions are `Bool`;
-- checks `match` arms, duplicate patterns, and exhaustiveness;
+- checks `match` arms, duplicate patterns, and exhaustiveness, and lowers each
+  scrutinee to a function-local temporary so it is evaluated once;
 - evaluates constant Int32 expressions over literals, `const` bindings, unary
   minus, and arithmetic/bitwise operators; rejects overflow, constant shift
   counts outside `0..31`, and constant zero divisors;
@@ -200,7 +224,7 @@ Reads the syntax tree through a `const` pointer and writes a separate
   the key and optional value for Records and Tables;
 - checks every `return` expression against the return type, and rejects
   `break`/`continue` outside a loop;
-- proves that every function returns on every path, using the structured
+- proves that every function with a return annotation returns on every path, using the structured
   statement tree (a `while` or `for` never guarantees a return);
 - tracks `const` bindings and rejects assignment to them; `const` does not
   restrict mutation through collection values;
@@ -210,8 +234,9 @@ Reads the syntax tree through a `const` pointer and writes a separate
   and checks assignability when both sides state a type;
 - injects an alternative value into a union at initializers, returns, call
   arguments, and constructor arguments;
-- narrows `name` to `T` inside the then-block of `if typeof name is T then`, and
-  emits a payload projection node for uses of the narrowed name;
+- narrows identifier type tests through positive `&&` conditions, negation,
+  else branches, and the continuation after a terminating then branch; emits
+  a payload projection node for uses of the narrowed name;
 - types store declarations, records their ids and constant byte sizes, and
   makes store names visible to function bodies without making them values;
   `global` declarations are required to have type Store;
@@ -220,10 +245,12 @@ Reads the syntax tree through a `const` pointer and writes a separate
   `Handle<T>` records; `Text`, `List`, and `TextBuilder` use their dedicated
   constructors;
 - types integer and floating literals contextually, range-checks integer
-  literals against the target width, and defaults wide integer literals to
-  `Int64`/`Uint64`;
-- supports same-type numeric arithmetic, comparison, equality, bitwise, shift,
-  and unary operators with no implicit numeric conversion;
+  literals against the target width, and defaults integer literals to `Int64`;
+- supports same-type numeric arithmetic, ordering, bitwise, shift, and unary
+  operators. Numeric equality compares across types without lossy conversion;
+  `===` compares both type and value. Comparable composites use generated
+  structural equality helpers, strings compare by content across types, and
+  handles compare validated allocation identities;
 - implements explicit numeric conversion through `Int32(expr)` and the other
   numeric type names. A constant argument is converted and range-checked in
   the checker (`checker_numeric.c`) and recorded as a conversion whose source
@@ -275,8 +302,10 @@ linear walk.
 
 The checker also guards the C emission boundary: a source name that is a C11
 keyword, a C identifier the generated code uses, `main`, or begins with the
-reserved `nyx_` prefix is rejected there. Names are emitted unchanged, so this
-check is what keeps invalid or colliding C from reaching the system compiler.
+reserved `nyx_` prefix is rejected there. User identifiers are prefixed with
+`nyx_u_` in generated C, separating them from C library and compiler names.
+Associated functions receive generated internal names after source-level owner
+and member resolution.
 
 ### Analyser
 
@@ -335,7 +364,7 @@ of payload members named by alternative position. `if`, `while`, `for`, `break`,
 sequence of temporaries and generated per-type pretty-printer helpers; helpers
 recurse through collections, structs, and unions using
 `CompilerConfig.max_print_depth` as the runtime limit.
-`Error.throw` emits a compound literal with the source filename and position. `elseif` chains
+`Error::throw` emits a compound literal with the source filename and position. `elseif` chains
 are emitted as nested `else { if ... }` blocks. A `TYPED_SUM_INJECT` becomes a
 compound literal, `TYPED_IS` (from `typeof x is T`) becomes a tag comparison (or a literal when the
 checker decided it statically), and `TYPED_SUM_PAYLOAD` reads the payload member
@@ -379,6 +408,10 @@ trapping on a missing key.
 A directly self-recursive function is emitted as a depth-guarded wrapper plus an
 inner implementation; exceeding `NIPPY_RECURSION_LIMIT` traps with
 `nippy: recursion depth exceeded` instead of overflowing the C stack.
+An instance method signature lowers its implicit receiver to a pointer
+parameter; the member-call node passes the receiver's address, and uses of
+`self` lower to the pointed-to struct value. Returning `self` therefore
+returns a value copy.
 
 Because the number of declarations and fields is not fixed, the generator
 composes text in a growable `TextBuffer` and validates every interpolated
@@ -491,6 +524,7 @@ Public stage headers remain in `include/` and expose only the stage entry point.
 | `compiler/compiler.c` | `compiler_compile`: drives the stages, owns the result |
 | `compiler/ast.c` | `Ast` lifecycle and symbol interning |
 | `compiler/typed_program.c` | `TypedProgram` lifecycle and symbol copying |
+| `compiler/name_index.c` | Hash indexes for interned symbols and function names |
 | `compiler/list.c` | The owning list container |
 | `compiler/error.c` | Fixed-buffer diagnostic accumulation |
 | `compiler/alloc.c` | Checked allocation wrappers with a test-failure hook |
@@ -511,7 +545,8 @@ Anything shared between those modules is declared in the directory's
   are. Local variables are block-scoped and cannot shadow parameters or other
   visible names.
 - No ownership or lifetime analysis; the analyser validates links only.
-- The type, function, variable, and store tables are linear string searches.
+- Type, variable, and store tables use linear string searches; function lookup
+  and AST and typed-program symbol interning use hash indexes.
 - Function types are emitted as one typedef per signature occurrence, so
   duplicate but structurally identical typedefs are common.
 - Generic calls only infer type arguments from value arguments. A type
@@ -520,8 +555,8 @@ Anything shared between those modules is declared in the directory's
   syntax.
 - Generic functions are checked per instantiation, so a generic function that is
   never called is not body-checked and produces no code.
-- `typeof`/`match` type patterns require a single non-union target; union-subset tests and
-  narrowing of the else branch are not implemented.
+- `typeof`/`match` type patterns require a single non-union target; union-subset
+  tests are not implemented.
 - A generic constructor infers from its arguments only; there is no
   expected-type propagation from a variable annotation.
 - string literals are contextual only: there is no standalone literal type, so

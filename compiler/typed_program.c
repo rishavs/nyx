@@ -6,6 +6,7 @@ void typed_program_init(TypedProgram *program)
 {
     list_init(&program->nodes, sizeof(TypedNode));
     list_init(&program->symbols, sizeof(TypedSymbol));
+    name_index_init(&program->symbol_index);
     list_init(&program->roots, sizeof(size_t));
     list_init(&program->children, sizeof(size_t));
     list_init(&program->types, sizeof(TypedType));
@@ -13,6 +14,8 @@ void typed_program_init(TypedProgram *program)
     list_init(&program->signature_parameters, sizeof(size_t));
     list_init(&program->type_children, sizeof(size_t));
     list_init(&program->bytes, sizeof(unsigned char));
+    list_init(&program->match_temporaries, sizeof(TypedMatchTemporary));
+    list_init(&program->match_scopes, sizeof(size_t));
     program->error_header_capacity = NIPPY_DEFAULT_ERROR_HEADER_CAPACITY;
     program->error_description_capacity =
         NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY;
@@ -29,6 +32,7 @@ void typed_program_free(TypedProgram *program)
     }
     list_free(&program->nodes);
     list_free(&program->symbols);
+    name_index_free(&program->symbol_index);
     list_free(&program->roots);
     list_free(&program->children);
     list_free(&program->types);
@@ -36,6 +40,8 @@ void typed_program_free(TypedProgram *program)
     list_free(&program->signature_parameters);
     list_free(&program->type_children);
     list_free(&program->bytes);
+    list_free(&program->match_temporaries);
+    list_free(&program->match_scopes);
 }
 
 const TypedNode *typed_program_node(const TypedProgram *program, size_t index)
@@ -69,12 +75,9 @@ size_t typed_program_copy_symbol(TypedProgram *program, const char *text,
         return TYPED_NO_NODE;
     }
 
-    for (i = 0; i < program->symbols.length; i++) {
-        const TypedSymbol *existing = list_get(&program->symbols, i);
-        if (existing != NULL && strlen(existing->text) == length &&
-            memcmp(existing->text, text, length) == 0) {
-            return i;
-        }
+    i = name_index_find(&program->symbol_index, &program->symbols, text, length);
+    if (i != TYPED_NO_NODE) {
+        return i;
     }
 
     {
@@ -82,6 +85,11 @@ size_t typed_program_copy_symbol(TypedProgram *program, const char *text,
         memset(&symbol, 0, sizeof(symbol));
         memcpy(symbol.text, text, length);
         if (!list_push(&program->symbols, &symbol)) {
+            return TYPED_NO_NODE;
+        }
+        if (!name_index_insert(&program->symbol_index, &program->symbols,
+                               program->symbols.length - 1)) {
+            program->symbols.length--;
             return TYPED_NO_NODE;
         }
         return program->symbols.length - 1;

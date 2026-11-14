@@ -2,4 +2,5 @@ type Something = Int32 | Bool | Nil
 
 var a: Something = 3
 var b: Something = true
-var c: Something = nil
+var c: Something = 3
+c = nil

@@ -2,6 +2,149 @@
 
 #include "compile_support.h"
 
+TEST("struct defaults must be literals")
+{
+    return compile_fails("type R x: Int64 = 1 + 2 end\n",
+                         "nonliteral struct default", MESSAGE_PARSER_DEFAULT_LITERAL);
+}
+
+TEST("function parameter defaults are not supported")
+{
+    return compile_fails("fun f(x: Int64 = 1) end\n",
+                         "function default", MESSAGE_PARSER_EXPECTED_PARAMETER_SEPARATOR);
+}
+
+TEST("independent syntax errors are reported together")
+{
+    CompilerResult result = compiler_compile(
+        "var a: = 1\nvar b: = 2\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:1:") != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL;
+
+    if (!ok) {
+        fprintf(stderr, "  missing syntax errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("independent syntax errors in a function are reported together")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\nvar a: = 1\nvar b: = 2\nend\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL;
+
+    if (!ok) {
+        fprintf(stderr, "  missing syntax errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("syntax recovery continues into other branches")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\n"
+        "  if true then\n"
+        "    var a: = 1\n"
+        "  else\n"
+        "    var b: = 2\n"
+        "  end\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL &&
+              strstr(result.error_message, "test.nip:5:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing branch errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("syntax recovery continues through match arms")
+{
+    CompilerResult result = compiler_compile(
+        "var x: Bool = true\n"
+        "match x with then print(1)\n"
+        "with then print(2) else print(3) end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing match syntax errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("syntax recovery continues at identifier statements")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\n"
+        "  first(,)\n"
+        "  second(,)\n"
+        "  value = )\n"
+        "  other = )\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL &&
+              strstr(result.error_message, "test.nip:4:") != NULL &&
+              strstr(result.error_message, "test.nip:5:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing statement errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("syntax recovery continues after unmatched delimiters")
+{
+    CompilerResult result = compiler_compile(
+        "fun bad()\n"
+        "  first(,\n"
+        "  second(,\n"
+        "  third(,)\n"
+        "end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL &&
+              strstr(result.error_message, "test.nip:4:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing delimiter errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("match recovery continues after unmatched delimiters")
+{
+    CompilerResult result = compiler_compile(
+        "var x: Bool = true\n"
+        "match x with first(,\n"
+        "with second(,\n"
+        "with third(,) then print(1) else print(2) end\n", &test_config);
+    bool ok = !result.succeeded && result.error_message != NULL &&
+              strstr(result.error_message, "test.nip:2:") != NULL &&
+              strstr(result.error_message, "test.nip:3:") != NULL &&
+              strstr(result.error_message, "test.nip:4:") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  missing match delimiter errors: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
 #include <string.h>
 
 TEST("expected var, type, or fun")
@@ -204,9 +347,9 @@ TEST("expected parameter separator")
 
 TEST("expected return type")
 {
-    return compile_fails("fun f(x:Int32) return x end\n",
-                             "a function without a return type",
-                             MESSAGE_PARSER_EXPECTED_RETURN_TYPE);
+    return compile_fails("fun f(x:Int32): return x end\n",
+                             "a function with an incomplete return annotation",
+                             MESSAGE_PARSER_EXPECTED_TYPE);
 }
 
 TEST("expected end")
@@ -257,11 +400,11 @@ TEST("expected function type separator")
                              MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR);
 }
 
-TEST("expected function type colon")
+TEST("expected function type return")
 {
-    return compile_fails("var f : Fun<(Int32)> = 1\n",
-                             "a function type without a return type colon",
-                             MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_COLON);
+    return compile_fails("var f : Fun<(Int32):> = 1\n",
+                             "a function type with an incomplete return",
+                             MESSAGE_PARSER_EXPECTED_TYPE);
 }
 
 TEST("expected function type gt")
@@ -495,10 +638,9 @@ TEST("typeof missing is")
 
 TEST("match head expression")
 {
-    return compile_fails(
-        "match 1 with 1 then\nend\n",
-        "match head expression",
-        MESSAGE_PARSER_MATCH_HEAD);
+    return compile_accepts(
+        "match 1 with 1 then else end\n",
+        "match head expression");
 }
 
 TEST("match missing with")
@@ -523,5 +665,5 @@ TEST("match expression missing else")
         "var b: Bool = true\n"
         "var z: Int32 = match b with true then 1 end\n",
         "match expression missing else",
-        MESSAGE_PARSER_EXPECTED_ELSE);
+        MESSAGE_PARSER_MATCH_EXPECTED_ELSE);
 }
