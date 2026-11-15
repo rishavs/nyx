@@ -9,6 +9,21 @@ TEST("UTF-8 byte order mark")
                            "a UTF-8 BOM at the start of the source");
 }
 
+TEST("a byte order mark takes no column")
+{
+    /* The `@` is the 17th character of its line; the BOM's bytes still count in
+       the byte offset. */
+    return compile_fails("\xef\xbb\xbfvar x : Int32 = @\n",
+                         "the position after a BOM", ":1:17 (byte 19)");
+}
+
+TEST("a byte order mark after the start is rejected")
+{
+    return compile_fails("var x : Int32 = 1\n\xef\xbb\xbfprint(x)\n",
+                         "a BOM in the middle of the source",
+                         MESSAGE_LEXER_UNEXPECTED_BYTE, 0xef);
+}
+
 TEST("integer literal out of range")
 {
     return compile_fails("var x : Int32 = 99999999999999999999999999\n",

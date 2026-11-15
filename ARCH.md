@@ -118,12 +118,53 @@ stages receive ordinary typed constructor values.
 The checker registers type declarations before resolving their fields. It
 creates a struct type shell before checking the fields so a handle can refer
 back to that shell; a recursive path without a handle is rejected. Completed
-handle targets are checked for fixed layout. The generator orders C type
+handle payload graphs are checked for supported contents using a visited set.
+A `scope` statement lowers to `TYPED_SCOPE`: the capacity is evaluated once, a
+Store header is entered on a per-activation cleanup chain, and the body runs.
+The headers are locals of the function (or of `main`), declared at its top, and
+each entered scope takes a fresh generation from a program-wide counter. Normal
+completion, return, break, and continue release exited Stores in reverse
+order; return values are materialized first. A scope inside a loop keeps its
+buffer on a second chain for the loop's activation: the loop's statement is
+wrapped in a mark and release of that chain, and a return releases it too. The analyser validates scoped
+capability ownership and runs the escape analysis described below.
+
+Escape analysis (`compiler/analyser/analyser_regions.c`) runs only when a
+program contains a `scope`. Each Store has a region depth: global Stores are 0,
+a function's parameters are 1, and each lexical `scope` nests one deeper. A
+value carries the range `[lo, hi]` of depths its pointers may have, plus the
+set of parameter slots it may derive from. An inline struct or union also carries
+the same facts per field or alternative (a "shape" in a per-analysis arena that
+is rebuilt after each pass). A write needs `hi` no greater than the
+destination's guaranteed depth: a variable's declaration depth, or the `lo` of
+the container it writes into. Reads from a container keep its `hi` but give up
+`lo`. Variables are flow-insensitive and each function body is walked until its
+variables stop changing, so loops need no special case. A call is checked
+against a summary of the callee, not its body: for each slot, which slots'
+containers it may write that slot's value into, whether it may write it into
+global memory, and which slots its result may derive from. A parameter has one
+slot, or one per field when it is a struct of two to eight fields, so a call is
+checked field by field against the matching parts of its arguments; a field of
+an argument whose value is only known as a whole stands for all of them. A
+parameter slot is where the retaining operation is recorded, so a call error
+can point at it.
+Summaries only grow and are iterated to a fixed point over the call graph, which
+covers recursion. A call through a function value assumes every flow. The
+analysis is conservative: a container read out of a Store, or returned by a
+function that may return global memory, has an unknown shallowest depth, so it
+cannot receive scoped values (a read from an inline Array or Record is not such
+a read, since the elements live in the variable). It may reject such correct
+programs; it accepts none that store a scoped value somewhere that outlives it.
+
+The generator orders C type
 definitions by their by-value dependencies using an explicit stack; handles
 do not create a by-value dependency on their target.
 
 `range` is lowered to a typed range value containing two bounds and a signed
-step. Its arguments use scoped temporaries to preserve evaluation order. A
+step. Its arguments use typed temporaries to preserve evaluation order.
+Calls and struct constructors with multiple values use the same temporary-and-
+binding nodes, so generated C evaluates arguments from left to right. Named
+constructor arguments retain source order even when field order differs. A
 range loop advances its private copy before the body, allowing `continue` while
 checking the remaining distance before arithmetic can overflow.
 
@@ -246,12 +287,12 @@ Reads the syntax tree through a `const` pointer and writes a separate
   a payload projection node for uses of the narrowed name;
 - types store declarations, records their ids and constant byte sizes, and
   makes store names visible to function bodies without making them values;
+  direct Store parameters are immutable capabilities that can be forwarded;
   `global` declarations are required to have type Store;
-- types `alloc<T>(value)`, `reset()`, `read()`, and `write(value)`; requires a
-  fixed type for the allocation element (handles are allowed; other
-  allocator-backed fields are not) and builds
-  `Handle<T>` records; `Text`, `List`, and `TextBuilder` use their dedicated
-  constructors;
+- types `alloc<T>(value)`, `read()`, and `write(value)`; requires a
+  supported payload graph for the allocation element and builds `Handle<T>`
+  records. Text and handles may occur in payloads; mutable collection types,
+  records, builders, and Stores may not;
 - types integer and floating literals contextually, range-checks integer
   literals against the target width, and defaults integer literals to `Int64`;
 - supports same-type numeric arithmetic, ordering, bitwise, shift, and unary
@@ -404,11 +445,16 @@ not a runtime construct, so deactivating it in the checker is enough.
 A `TYPED_STORE_DECLARATION` becomes an entry in the global store table and an
 init call at the start of `main`; it is never a C local. `TYPED_STORE_ALLOC`
 calls the arena allocator with `sizeof(T)` and `_Alignof(T)`, `TYPED_HANDLE_READ`
-dereferences the checked handle pointer, `TYPED_STORE_RESET` clears the store and
-bumps its generation, and `TYPED_HANDLE_WRITE` copies through the checked
-pointer. The runtime grows by doubling, retains capacity on reset, and panics
-deterministically on OOM, stale handles, invalid store ids, and out-of-range
-handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`. Record and Table helpers
+dereferences the checked handle pointer, and `TYPED_HANDLE_WRITE` copies through the checked
+pointer. A dynamic-list index assignment evaluates its receiver and index,
+checks the index, evaluates its value, then resolves the element again before
+writing; this keeps Store growth in the value expression from invalidating the
+write address. Arena descriptors carry a pointer to the stable Store header and a
+byte offset into its movable buffer. Descriptor operations emit the necessary
+runtime helpers even if the program declares no global Store, so functions
+can operate on descriptors supplied by callers. The runtime grows by doubling,
+and traps on OOM, null Store references, stale handles,
+and out-of-range handles. `TYPED_EXPRESSION_STATEMENT` emits `(void)(call);`. Record and Table helpers
 use FNV-1a hashing with linear probing; Table helpers allocate arena state and
 rehash on growth. Optional `get` helpers return the `T | Nil` union instead of
 trapping on a missing key.
@@ -440,9 +486,9 @@ reports a diagnostic and returns false. There is no partial success.
 - `CompilerResult` either holds both generated sources or neither. On failure
   `c_source` and `h_source` are `NULL`; `error_message` can also be NULL if
   allocating the diagnostic fails.
-- The driver refuses sources larger than the configured limit (4096 bytes by
-  default) and sources containing a NUL byte. `--max-source-bytes N` raises the
-  CLI limit. A parser nesting guard and syntax-tree height check reject
+- The driver refuses sources larger than the configured limit (1 MiB by
+  default) and sources containing a NUL byte. `--max-source-bytes N` changes
+  the CLI limit. A parser nesting guard and syntax-tree height check reject
   recursive inputs before later compiler stages can exhaust the stack.
 - Layout checks calculate the target C layout, including member padding and
   array metadata, and cache completed results. An undetermined layout is
@@ -486,7 +532,7 @@ lengths rather than pointers. `TypedType.fixed_length` is the byte capacity of a
 instantiation's type arguments, or a `Handle<T>`'s element type as a run in
 `TypedProgram.type_children`, a struct's concrete declaration node, and the
 source name used for generic inference. `TypedNode.store_id` links a store
-declaration, allocation, or reset to its global store. The checker keeps its declared-type,
+declaration or allocation to its global store. The checker keeps its declared-type,
 function, variable, struct-instantiation, and function-instantiation tables as
 linear `List`s of fixed-size records; a `List` element never owns another
 `List`.
@@ -595,9 +641,10 @@ Anything shared between those modules is declared in the directory's
   and Array elements are supported with inline function-pointer payloads.
   Function types with function-typed parameters/returns are rejected by the
   inline C-type path; methods are the intended alternative for passing objects.
-- Stores are global and non-first-class: no local store, no store parameter or
-  return, and no copy. There is no per-object free; reset is the only
-  deallocation. Allocation failure aborts rather than returning a value.
+- Stores are declared with `global` or `scope` and may be passed or forwarded
+  through direct Store parameters. There is no Store return or Store copy.
+  There is no per-object free; a scoped Store is released when its scope exits.
+  Allocation failure aborts rather than returning a value.
 - Handles are opaque; index, store id, and generation are not exposed. `read`
   and `write` copy values; scoped access does not exist yet.
 - Constant folding of arithmetic is implemented for `Int32` only; other

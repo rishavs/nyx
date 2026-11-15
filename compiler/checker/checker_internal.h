@@ -180,6 +180,7 @@ bool is_sized_type(const TypedProgram *program, size_t type_index);
 bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
     unsigned depth);
 bool is_fixed_type(const TypedProgram *program, size_t type_index);
+bool check_handle_payload(CheckContext *ctx, size_t type_index, bool *valid);
 bool handle_type(CheckContext *ctx, size_t element, size_t *out_index);
 bool add_type_record(CheckContext *ctx, NippyType kind, size_t name_index,
     size_t signature_index, size_t *out_index);
@@ -222,6 +223,8 @@ bool resolve_type_node(CheckContext *ctx, size_t ast_index, const char *owner,
     size_t *out_index);
 bool emit_node(CheckContext *ctx, const TypedNode *node, size_t ast_index,
     size_t *out_index);
+bool emit_sequenced_expression(CheckContext *ctx, TypedNode *expression,
+                               size_t ast_index, const List *order);
 bool check_nil_literal(CheckContext *ctx, const AstNode *node, size_t ast_index);
 bool push_injection(CheckContext *ctx, size_t value, size_t target, size_t tag,
     size_t *out_value);
@@ -291,7 +294,9 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index, size_t name_index
 bool check_generic_call(CheckContext *ctx, const AstNode *node, size_t function_index,
     size_t ast_index);
 bool member_store(CheckContext *ctx, const AstNode *node, const char *method,
-    const StoreEntry **out_store);
+    StoreEntry *out_store);
+bool set_store_reference(CheckContext *ctx, TypedNode *node,
+                         const StoreEntry *store);
 bool check_member_call(CheckContext *ctx, const AstNode *node, size_t ast_index);
 bool check_associated_function_call(CheckContext *ctx, const AstNode *node,
     const FunctionEntry *function, size_t ast_index, bool is_method);

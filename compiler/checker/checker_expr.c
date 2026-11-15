@@ -416,10 +416,35 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
         return false;
     }
-    if (find_store(ctx->stores, name) != NULL) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_STORE_NOT_VALUE, name);
-        return false;
+    {
+        const StoreEntry *store = find_store(ctx->stores, name);
+        const VariableEntry *local = find_variable(ctx->locals, name);
+        const TypedType *local_type = local == NULL ? NULL :
+                                      typed_program_type(ctx->program, local->type_index);
+        bool capability = store != NULL ||
+                          (local_type != NULL && local_type->kind == NIPPY_TYPE_STORE);
+        if (capability) {
+            const TypedType *expected = ctx->expected_ast == ast_index
+                ? typed_program_type(ctx->program, ctx->expected_type) : NULL;
+            size_t store_id = store == NULL ? TYPED_NO_NODE : store->id;
+            if (expected == NULL || expected->kind != NIPPY_TYPE_STORE) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_STORE_NOT_VALUE, name);
+                return false;
+            }
+            typed.kind = TYPED_IDENTIFIER;
+            typed.type_index = ctx->expected_type;
+            typed.pos = node->pos;
+            typed.name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
+            typed.store_id = store_id;
+            typed.left_child = TYPED_NO_NODE;
+            typed.right_child = TYPED_NO_NODE;
+            if (typed.name_index == TYPED_NO_NODE) {
+                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+                return false;
+            }
+            return emit_node(ctx, &typed, ast_index, &(size_t){0});
+        }
     }
 
     variable = find_variable(ctx->locals, name);

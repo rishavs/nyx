@@ -749,7 +749,8 @@ static bool check_generic_names(CheckContext *ctx, const AstNode *function)
         const AstNode *node = ast_get_node(ctx->ast, index);
         pending.length--;
         if (node == NULL) goto done;
-        if ((node->kind == AST_DECLARATION || node->kind == AST_FOR) &&
+        if ((node->kind == AST_DECLARATION || node->kind == AST_FOR ||
+             node->kind == AST_SCOPE) &&
             !list_push(&names, &node->name_index)) goto oom;
         if (node->kind == AST_FOR && node->second_name_index != AST_NO_NODE &&
             !list_push(&names, &node->second_name_index)) goto oom;
@@ -1047,17 +1048,12 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
             goto done;
         }
         {
-            const TypedType *resolved =
-                typed_program_type(ctx->program, parameter_type);
-
-            if (resolved != NULL && resolved->kind == NIPPY_TYPE_STORE) {
-                error_report_at(ctx->errors, parameter->pos,
-                                MESSAGE_CHECKER_STORE_TYPE);
+            const TypedType *resolved = typed_program_type(ctx->program, parameter_type);
+            if (resolved == NULL ||
+                (resolved->kind != NIPPY_TYPE_STORE &&
+                 !check_type_value_size(ctx, parameter_type, parameter->pos))) {
                 goto done;
             }
-        }
-        if (!check_type_value_size(ctx, parameter_type, parameter->pos)) {
-            goto done;
         }
 
         typed_parameter.kind = TYPED_PARAMETER;
@@ -1086,6 +1082,7 @@ bool check_function_declaration(CheckContext *ctx, const AstNode *node,
         memset(&entry, 0, sizeof(entry));
         memcpy(entry.name, parameter_name, strlen(parameter_name) + 1);
         entry.type_index = parameter_type;
+        entry.is_const = typed_program_type(ctx->program, parameter_type)->kind == NIPPY_TYPE_STORE;
         entry.is_self_pointer = parameter->is_self;
         if (!list_push(ctx->locals, &entry)) {
             error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);

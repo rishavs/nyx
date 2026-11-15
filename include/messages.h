@@ -111,6 +111,10 @@
     "parser: expected 'in' after for bindings"
 #define MESSAGE_PARSER_EXPECTED_DO \
     "parser: expected 'do' after for iterable"
+#define MESSAGE_PARSER_SCOPE_STORE \
+    "parser: expected Store(...) in scope declaration"
+#define MESSAGE_PARSER_SCOPE_DO \
+    "parser: expected 'do' after scope capacity"
 #define MESSAGE_PARSER_EXPECTED_WHILE_DO \
     "parser: expected 'do' after the while condition"
 #define MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END \
@@ -177,8 +181,7 @@
 #define MESSAGE_CHECKER_REDEFINES_ARRAY \
     "checker: cannot redefine the built-in type 'Array'"
 #define MESSAGE_CHECKER_HANDLE_FIXED \
-    "checker: Handle requires a fixed type; " \
-    "allocator-backed types use their dedicated API"
+    "checker: Handle payload cannot contain Store or mutable collections"
 #define MESSAGE_CHECKER_COLLECTION_ELEMENT \
     "checker: collection elements must be single items"
 #define MESSAGE_PARSER_EXPECTED_LIST_GT \
@@ -249,6 +252,8 @@
     "checker: numeric literal fits more than one union alternative"
 #define MESSAGE_CHECKER_INDEX_BOUNDS \
     "checker: literal index %d is outside the fixed bound %zu"
+#define MESSAGE_CHECKER_SCOPE_CAPACITY \
+    "checker: scope capacity must be an Int32 expression"
 #define MESSAGE_CHECKER_NEGATIVE_CAPACITY \
     "checker: capacity cannot be negative"
 #define MESSAGE_CHECKER_TEXT_INDEX \
@@ -471,6 +476,8 @@
     "checker: Error::throw needs a header and a description"
 #define MESSAGE_CHECKER_ERROR_ARG_TYPE \
     "checker: Error argument %zu has the wrong type"
+#define MESSAGE_CHECKER_STORE_NOT_GLOBAL \
+    "checker: Store '%s' must be declared with 'global' or 'scope'"
 #define MESSAGE_CHECKER_STORE_SIZE \
     "checker: store size must be a constant Int32 expression"
 #define MESSAGE_CHECKER_STORE_INITIALIZER \
@@ -521,6 +528,9 @@
     "checker: a type test requires a single non-union type"
 #define MESSAGE_CHECKER_TOO_MANY_INSTANTIATIONS \
     "checker: generic function '%s' pushes the program past %d instantiations"
+#define MESSAGE_CHECKER_EXPANDING_RECURSION \
+    "checker: generic type '%s' refers to itself with different type " \
+    "arguments; use its own parameters in declaration order"
 #define MESSAGE_CHECKER_RECURSIVE_TYPE \
     "checker: type '%s' is defined recursively"
 #define MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH \
@@ -529,6 +539,8 @@
     "checker: cannot determine by-value type layout"
 
 /* Analyser */
+#define MESSAGE_ANALYSER_OUT_OF_MEMORY \
+    "analyser: out of memory while validating Store capabilities"
 #define MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE \
     "analyser: program root index %zu is out of range"
 #define MESSAGE_ANALYSER_INVALID_NODE_LINK \
@@ -559,6 +571,22 @@
     "analyser: node %zu has an invalid Error shape"
 #define MESSAGE_ANALYSER_INVALID_NUMERIC \
     "analyser: node %zu has an invalid numeric shape"
+#define MESSAGE_ANALYSER_ESCAPE_ASSIGN \
+    "analyser: a value from %s cannot be stored in '%s', which outlives it"
+#define MESSAGE_ANALYSER_ESCAPE_WRITE \
+    "analyser: a value from %s cannot be written into '%s', which outlives it"
+#define MESSAGE_ANALYSER_ESCAPE_RETURN \
+    "analyser: a value from %s cannot be returned: it does not outlive the " \
+    "function"
+#define MESSAGE_ANALYSER_ESCAPE_FUNCTION_VALUE \
+    "analyser: '%s' may retain an argument in global memory, so it cannot " \
+    "be used as a function value"
+#define MESSAGE_ANALYSER_NOTE_ALLOCATED \
+    "analyser: note: the value was allocated in Store '%s' here"
+#define MESSAGE_ANALYSER_NOTE_RETAINED \
+    "analyser: note: '%s' retains the argument here"
+#define MESSAGE_ANALYSER_ESCAPE_CALL \
+    "analyser: call to '%s' may keep a value from %s beyond its lifetime"
 
 /* Generator */
 #define MESSAGE_GENERATOR_UNSUPPORTED_ROOT \

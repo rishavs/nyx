@@ -12,6 +12,13 @@ static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
         error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
         return false;
     }
+    for (i = 0; i < argument_count; i++) {
+        const TypedType *argument = typed_program_type(ctx->program, arguments[i]);
+        if (argument != NULL && argument->kind == NIPPY_TYPE_STORE) {
+            error_report(ctx->errors, MESSAGE_CHECKER_STORE_TYPE);
+            return false;
+        }
+    }
     for (i = 0; i < ctx->struct_instantiations->length; i++) {
         StructInstantiation *record =
             (StructInstantiation *)list_get(ctx->struct_instantiations, i);
@@ -449,9 +456,13 @@ bool resolve_type_application(CheckContext *ctx, const AstNode *node,
                         ctx->struct_instantiations, i);
                     if (record->in_progress) { incomplete = true; break; }
                 }
-                if (!incomplete && !is_fixed_type(ctx->program, element)) {
-                    error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
-                    return false;
+                if (!incomplete) {
+                    bool valid;
+                    if (!check_handle_payload(ctx, element, &valid)) return false;
+                    if (!valid) {
+                        error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+                        return false;
+                    }
                 }
             }
         }
@@ -485,8 +496,16 @@ bool resolve_type_application(CheckContext *ctx, const AstNode *node,
                                                  node->children_start + i);
         size_t argument;
 
-        if (!resolve_type_in_env(ctx, child, env, owner, &argument) ||
-            !list_push(&arguments, &argument)) {
+        if (!resolve_type_in_env(ctx, child, env, owner, &argument)) {
+            list_free(&arguments);
+            return false;
+        }
+        if (typed_program_type(ctx->program, argument)->kind == NIPPY_TYPE_STORE) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_TYPE);
+            list_free(&arguments);
+            return false;
+        }
+        if (!list_push(&arguments, &argument)) {
             if (!ctx->errors->reported) {
                 error_report_fatal(ctx->errors,
                              MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
@@ -661,6 +680,13 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
                   : resolve_type_in_env(ctx, node->right_child, env, owner,
                                         &return_type))) {
             goto function_type_done;
+        }
+        {
+            const TypedType *result = typed_program_type(ctx->program, return_type);
+            if (result == NULL || result->kind == NIPPY_TYPE_STORE) {
+                error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_TYPE);
+                goto function_type_done;
+            }
         }
         ok = add_function_type(ctx, &parameter_types, return_type, out_index);
 

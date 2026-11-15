@@ -37,7 +37,7 @@ typedef struct {
     int error_header_capacity;      /* 0 -> default 32 */
     int error_description_capacity; /* 0 -> default 128 */
     int error_filename_capacity;    /* 0 -> default 128 */
-    int max_source_bytes;           /* source-size limit; 0 -> 4096 */
+    int max_source_bytes;           /* source-size limit; 0 -> 1 MiB */
     int max_string_capacity;        /* String<N> upper bound; 0 -> 4096 */
     int max_list_capacity;          /* Array/Record capacity bound; 0 -> 4096 */
     int max_print_depth;            /* pretty-print depth; 0 -> 16 */
@@ -67,9 +67,9 @@ not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB). All by-value types are capped at
 Errors, and unions are rejected.
 `max_print_depth` defaults to 16 and may not exceed `NIPPY_MAX_PRINT_DEPTH`
 (1024); explicit values must be positive.
-`max_source_bytes` defaults to 4096. `compiler_compile` rejects longer source
+`max_source_bytes` defaults to 1 MiB (1048576). `compiler_compile` rejects longer source
 strings, and the command-line driver uses the same limit when reading a file.
-The driver accepts `--max-source-bytes N` to raise the limit, where `N` is a
+The driver accepts `--max-source-bytes N` to change the limit, where `N` is a
 positive integer no greater than `INT_MAX`.
 
 Ownership rules:
@@ -431,7 +431,7 @@ struct), and `declaration_node` points at the concrete
 The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 `TYPED_SUM_PAYLOAD`, `TYPED_IS`, `TYPED_IF_EXPRESSION`,
 `TYPED_STORE_DECLARATION`,
-`TYPED_STORE_ALLOC`, `TYPED_STORE_RESET`, `TYPED_HANDLE_READ`,
+`TYPED_STORE_ALLOC`, `TYPED_HANDLE_READ`,
 `TYPED_HANDLE_WRITE`, `TYPED_EXPRESSION_STATEMENT`, `TYPED_ASSIGNMENT`,
 `TYPED_LOCAL_DECLARATION`, `TYPED_MEMBER_ACCESS`, `TYPED_MEMBER_WRITE`,
 `TYPED_PRINT`, `TYPED_ERROR_THROW`, `TYPED_RECORD_LITERAL`,
@@ -479,18 +479,31 @@ The analyser checks that a literal's value fits its type's width, that a float
 literal has a float type, and that a conversion has a numeric child whose type
 is the recorded source type.
 
+`TYPED_SCOPE`: `name_index` identifies the capability, `left_child` is an
+Int32 capacity, and `right_child` is its block. The analyser rejects a program
+in which a value from a scoped Store could outlive the scope, with
+`MESSAGE_ANALYSER_ESCAPE_ASSIGN`, `_WRITE`, `_RETURN`, `_CALL`, or
+`_FUNCTION_VALUE`. `analyser_analyse` runs `analyser_validate` (links and Store
+capabilities) and then the escape analysis; `analyser_validate` alone skips the
+escape analysis. `CompilerConfig.skip_escape_analysis` selects the latter and
+exists only so tests can exercise the runtime generation checks, which the
+analysis otherwise makes unreachable; never set it for user programs.
+
 `TypedNode.store_id` carries the global store id for a store declaration,
-allocation, reset, concat, copy, fixed-to-dynamic conversion, or builder
-creation, and is `TYPED_NO_NODE` elsewhere. A
+allocation, concat, copy, fixed-to-dynamic conversion, or builder
+creation. A Store parameter reference uses `TYPED_NO_NODE` and the node's
+`name_index` to represent the named capability. Handle reads and writes use
+`TYPED_NO_NODE`. A
 `TYPED_STORE_DECLARATION` has type `Store` and `integer_value` = initial bytes;
 a `TYPED_STORE_ALLOC` has type `Handle<T>` and its value in `left_child`; a
 `TYPED_HANDLE_READ` has type `T` and the handle in `left_child`; a
 `TYPED_HANDLE_WRITE` has type `Nil`, the handle in `left_child`, and the value
 in `right_child`. `TYPED_ASSIGNMENT` has the target variable's type and name, and
 the coerced value in `left_child`. A handle type's element type is its single entry in
-`program->type_children`; the checker accepts a handle only for a fixed type.
-Fixed values may contain handles, whose generation and bounds remain checked
-when used; other allocator-backed fields remain excluded.
+`program->type_children`. Handle payloads may contain Text and handles; the
+checker traverses recursive payload graphs and rejects Stores, Lists, Slices,
+Tables, Records, and TextBuilders. Generation and bounds remain checked when
+those handles or Text values are used.
 Struct type indices can be referenced by their own fields through a handle;
 completed typed programs contain the resolved declaration for each struct.
 

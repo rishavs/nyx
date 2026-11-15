@@ -6,7 +6,7 @@ TEST("size must be constant")
 {
     const char *source =
         "var n: Int32 = 4\n"
-        "var s: Store = Store(n)\n";
+        "global s: Store = Store(n)\n";
 
     return compile_fails(source, "a non-constant store size",
                          MESSAGE_CHECKER_STORE_SIZE);
@@ -14,7 +14,7 @@ TEST("size must be constant")
 
 TEST("initializer must be Store(bytes)")
 {
-    return compile_fails("var s: Store = 16\n",
+    return compile_fails("global s: Store = 16\n",
                          "a store without Store(bytes)",
                          MESSAGE_CHECKER_STORE_INITIALIZER, "s");
 }
@@ -29,7 +29,7 @@ TEST("missing annotation")
 TEST("not a value")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var t = s\n";
 
     return compile_fails(source, "a store used as a value",
@@ -39,8 +39,8 @@ TEST("not a value")
 TEST("duplicate name")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
-        "var s: Store = Store(16)\n";
+        "global s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n";
 
     return compile_fails(source, "a duplicate store",
                          MESSAGE_CHECKER_DUPLICATE_NAME, "s");
@@ -48,9 +48,8 @@ TEST("duplicate name")
 
 TEST("parameter type")
 {
-    return compile_fails("fun f(x: Store): Int32\n  return 0\nend\n",
-                         "a Store parameter",
-                         MESSAGE_CHECKER_STORE_TYPE);
+    return compile_accepts("fun f(x: Store): Int32\n  return 0\nend\n",
+                           "a Store parameter");
 }
 
 TEST("return type")
@@ -76,7 +75,7 @@ TEST("union alternative")
 
 TEST("type arguments")
 {
-    return compile_fails("var s: Store<Int32> = Store(16)\n",
+    return compile_fails("global s: Store<Int32> = Store(16)\n",
                          "type arguments on Store",
                          MESSAGE_CHECKER_TYPE_NOT_GENERIC, "Store");
 }
@@ -84,7 +83,7 @@ TEST("type arguments")
 TEST("alloc type argument")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p = s.alloc(1)\n";
 
     return compile_fails(source, "alloc without a type argument",
@@ -102,7 +101,7 @@ TEST("Handle argument count")
 TEST("alloc Store")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p = s.alloc<Store>(nil)\n";
 
     return compile_fails(source, "alloc of a Store",
@@ -112,7 +111,7 @@ TEST("alloc Store")
 TEST("alloc argument count")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p = s.alloc<Int32>()\n";
 
     return compile_fails(source, "alloc with no value",
@@ -122,7 +121,7 @@ TEST("alloc argument count")
 TEST("alloc value type")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p = s.alloc<Int32>(true)\n";
 
     return compile_fails(source, "alloc with the wrong value type",
@@ -132,7 +131,7 @@ TEST("alloc value type")
 TEST("handle element")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var h: Handle<Store> = s.alloc<Int32>(1)\n";
 
     return compile_fails(source, "a Store handle element",
@@ -146,24 +145,21 @@ TEST("unknown store")
                          MESSAGE_CHECKER_UNKNOWN_STORE, "nope");
 }
 
-TEST("reset arguments")
+TEST("reset no longer exists")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
-        "s.reset(1)\n";
+        "global s: Store = Store(16)\n"
+        "s.reset()\n";
 
-    return compile_fails(source, "reset with an argument",
-                         MESSAGE_CHECKER_MEMBER_ARGS, "reset");
+    return compile_fails(source, "reset on a Store",
+                         MESSAGE_CHECKER_UNKNOWN_MEMBER, "reset");
 }
 
-TEST("reset type argument")
+TEST("a Store declared with var is rejected")
 {
-    const char *source =
-        "var s: Store = Store(16)\n"
-        "s.reset<Int32>()\n";
-
-    return compile_fails(source, "reset with a type argument",
-                         MESSAGE_CHECKER_MEMBER_TYPE_ARG, "reset");
+    return compile_fails("var s: Store = Store(16)\n",
+                         "a var Store declaration",
+                         MESSAGE_CHECKER_STORE_NOT_GLOBAL, "s");
 }
 
 TEST("read on non-handle")
@@ -179,7 +175,7 @@ TEST("read on non-handle")
 TEST("write type")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p: Handle<Int32> = s.alloc<Int32>(1)\n"
         "p.write(true)\n";
 
@@ -190,7 +186,7 @@ TEST("write type")
 TEST("unknown member")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
+        "global s: Store = Store(16)\n"
         "var p = s.foo()\n";
 
     return compile_fails(source, "an unknown member",
@@ -225,12 +221,11 @@ TEST("handle of a collection")
 
 TEST("alloc of a Text")
 {
-    return compile_fails(
+    return compile_accepts(
         "global arena: Store = Store(16)\n"
         "var f: String<8> = \"x\"\n"
         "var h: Handle<Text> = arena.alloc<Text>(arena.text(f))\n",
-        "alloc of a Text",
-        MESSAGE_CHECKER_HANDLE_FIXED);
+        "alloc of a Text");
 }
 
 TEST("handle of a builder")
@@ -245,7 +240,7 @@ TEST("handle of a builder")
 
 TEST("alloc of a struct with Text")
 {
-    return compile_fails(
+    return compile_accepts(
         "type S\n"
         "  t: Text\n"
         "end\n"
@@ -254,21 +249,19 @@ TEST("alloc of a struct with Text")
         "var t: Text = arena.text(f)\n"
         "var s: S = S(t)\n"
         "var h: Handle<S> = arena.alloc<S>(s)\n",
-        "alloc of a struct with Text",
-        MESSAGE_CHECKER_HANDLE_FIXED);
+        "alloc of a struct with Text");
 }
 
 TEST("alloc of an Array with Text")
 {
-    return compile_fails(
+    return compile_accepts(
         "global arena: Store = Store(64)\n"
         "var f: String<8> = \"x\"\n"
         "var t: Text = arena.text(f)\n"
         "var a: Array<Text, 1> = [t]\n"
         "var h: Handle<Array<Text, 1>> = "
         "arena.alloc<Array<Text, 1>>(a)\n",
-        "alloc of an Array with Text",
-        MESSAGE_CHECKER_HANDLE_FIXED);
+        "alloc of an Array with Text");
 }
 
 TEST("Handle Record")
@@ -287,4 +280,48 @@ TEST("alloc Record")
         "arena.alloc<Record<String<8>, Bool, 4>>({})\n",
         "alloc Record",
         MESSAGE_CHECKER_HANDLE_FIXED);
+}
+
+TEST("Store capability cannot be copied")
+{
+    return compile_fails("fun f(s: Store) var x = s end\n",
+                         "Store copied to a variable",
+                         MESSAGE_CHECKER_STORE_NOT_VALUE, "s");
+}
+
+TEST("Store capability cannot be inferred as a generic type")
+{
+    return compile_fails("fun id<T>(x: T): T return x end\n"
+                         "global arena: Store = Store(1)\n"
+                         "id(arena)\n", "Store inferred as T",
+                         MESSAGE_CHECKER_STORE_NOT_VALUE, "arena");
+}
+
+TEST("function types cannot return a Store")
+{
+    return compile_fails("fun f(g: Fun<(): Store>) end\n",
+                         "Store as function value return type",
+                         MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TEST("Store capability cannot be a generic type argument")
+{
+    return compile_fails("type Box<T> x: Int32 end\n"
+                         "var b: Box<Store> = Box(1)\n",
+                         "Store as a type argument", MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TEST("Store cannot be inferred through a function type")
+{
+    return compile_fails("fun use(s: Store) end\n"
+                         "fun accept<T>(f: Fun<(T)>) end\n"
+                         "accept(use)\n", "Store inferred through Fun",
+                         MESSAGE_CHECKER_STORE_TYPE);
+}
+
+TEST("Store parameters cannot be assigned")
+{
+    return compile_fails("fun f(s: Store, t: Store) s = t end\n",
+                         "assignment to a Store parameter",
+                         MESSAGE_CHECKER_CONST_ASSIGN, "s");
 }

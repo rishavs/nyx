@@ -7,11 +7,13 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
 {
     bool ok = true;
 
-    ok = ok && buffer_appendf(
-                   source,
-                   "#define NIPPY_STORE_COUNT %zu\n\n"
-                   "static nyx_store nyx_stores[NIPPY_STORE_COUNT];\n\n",
-                   store_count);
+    if (store_count > 0) {
+        ok = ok && buffer_appendf(
+                       source,
+                       "#define NIPPY_STORE_COUNT %zu\n\n"
+                       "static nyx_store nyx_stores[NIPPY_STORE_COUNT];\n\n",
+                       store_count);
+    }
     ok = ok && buffer_append(
                    source,
                    "static void nyx_panic(const char *message)\n"
@@ -98,15 +100,14 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
     ok = ok && buffer_append(
                    source,
                    "static inline nyx_handle nyx_store_alloc_at(nyx_store *store, "
-                   "size_t id,\n"
-                   "                                      const void *value, "
+                   "const void *value, "
                    "size_t size,\n"
                    "                                      size_t align, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_handle handle;\n"
                    "    size_t offset;\n"
                    "    size_t end;\n\n"
-                   "    if (id >= (size_t)NIPPY_STORE_COUNT) {\n"
+                   "    if (store == NULL) {\n"
                    "        nyx_panic_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\", file, line, column, pos);\n"
                    "    }\n"
@@ -123,13 +124,13 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "    nyx_store_reserve_at(store, end, file, line, column, pos);\n"
                    "    memcpy(store->data + offset, value, size);\n"
                    "    store->used = end;\n"
-                   "    handle.store = (uint32_t)id;\n"
+                   "    handle.store = store;\n"
                    "    handle.offset = offset;\n"
                    "    handle.generation = store->generation;\n"
                    "    return handle;\n"
                    "}\n\n"
-                   "static inline nyx_handle nyx_store_alloc(nyx_store *store, size_t id, const void *value, size_t size, size_t align)\n"
-                   "{ return nyx_store_alloc_at(store, id, value, size, align, NULL, 0, 0, 0); }\n\n");
+                   "static inline nyx_handle nyx_store_alloc(nyx_store *store, const void *value, size_t size, size_t align)\n"
+                   "{ return nyx_store_alloc_at(store, value, size, align, NULL, 0, 0, 0); }\n\n");
     ok = ok && buffer_append(
                    source,
                    "static inline unsigned char *nyx_handle_pointer_at("
@@ -137,12 +138,11 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "                                           size_t size, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_store *store;\n\n"
-                   "    if ((size_t)handle.store >= "
-                   "(size_t)NIPPY_STORE_COUNT) {\n"
+                   "    if (handle.store == NULL) {\n"
                    "        nyx_panic_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    store = &nyx_stores[handle.store];\n"
+                   "    store = handle.store;\n"
                    "    if (handle.generation != store->generation) {\n"
                    "        nyx_panic_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
                    "\", file, line, column, pos);\n"
@@ -171,10 +171,10 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
         ok = ok && buffer_append(
                        source,
                        "static inline size_t nyx_store_alloc_bytes_at("
-                       "nyx_store *store, uint32_t id, size_t size, const char *file, size_t line, size_t column, size_t pos)\n"
+                       "nyx_store *store, size_t size, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
                        "    size_t offset;\n\n"
-                       "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "    if (store == NULL) {\n"
                        "        nyx_panic_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\", file, line, column, pos);\n"
                        "    }\n"
@@ -191,19 +191,19 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                        "    store->used = offset + size;\n"
                        "    return offset;\n"
                        "}\n\n"
-                       "static inline size_t nyx_store_alloc_bytes(nyx_store *store, uint32_t id, size_t size)\n"
-                       "{ return nyx_store_alloc_bytes_at(store, id, size, NULL, 0, 0, 0); }\n\n");
+                       "static inline size_t nyx_store_alloc_bytes(nyx_store *store, size_t size)\n"
+                       "{ return nyx_store_alloc_bytes_at(store, size, NULL, 0, 0, 0); }\n\n");
     }
     if (needs_aligned_alloc) {
         ok = ok && buffer_append(
                        source,
                        "static inline size_t nyx_store_alloc_bytes_aligned_at("
-                       "nyx_store *store, uint32_t id, size_t size,\n"
+                       "nyx_store *store, size_t size,\n"
                        "                                              "
                        "size_t alignment, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
                        "    size_t offset;\n\n"
-                       "    if (id >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "    if (store == NULL) {\n"
                        "        nyx_panic_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\", file, line, column, pos);\n"
                        "    }\n"
@@ -220,28 +220,15 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                        "    store->used = offset + size;\n"
                        "    return offset;\n"
                        "}\n\n"
-                       "static inline size_t nyx_store_alloc_bytes_aligned(nyx_store *store, uint32_t id, size_t size, size_t align)\n"
-                       "{ return nyx_store_alloc_bytes_aligned_at(store, id, size, align, NULL, 0, 0, 0); }\n\n");
+                       "static inline size_t nyx_store_alloc_bytes_aligned(nyx_store *store, size_t size, size_t align)\n"
+                       "{ return nyx_store_alloc_bytes_aligned_at(store, size, align, NULL, 0, 0, 0); }\n\n");
     }
-    ok = ok && buffer_append(
-                   source,
-                   "static inline void nyx_store_reset_at(nyx_store *store, const char *file, size_t line, size_t column, size_t pos)\n"
-                   "{\n"
-                   "    store->used = 0;\n"
-                   "    if (store->generation == UINT64_MAX) {\n"
-                   "        nyx_panic_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
-                   "\", file, line, column, pos);\n"
-                   "    }\n"
-                   "    store->generation++;\n"
-                   "}\n\n"
-                   "static inline void nyx_store_reset(nyx_store *store)\n"
-                   "{ nyx_store_reset_at(store, NULL, 0, 0, 0); }\n\n");
     /* Referencing the helpers here keeps the whole runtime "used" even when a
-       particular program never allocates, writes, or resets. Generated C is
+       particular program never allocates or writes. Generated C is
        compiled with -Wall -Wextra. */
     ok = ok && buffer_append(
                    source,
-                   "static void nyx_store_free(nyx_store *store)\n"
+                   "static NIPPY_UNUSED void nyx_store_free(nyx_store *store)\n"
                    "{\n"
                    "    free(store->data);\n"
                    "    store->data = NULL;\n"
@@ -252,7 +239,6 @@ bool emit_store_runtime(TextBuffer *source, size_t store_count,
                    "    (void)nyx_store_alloc;\n"
                    "    (void)nyx_handle_pointer;\n"
                    "    (void)nyx_handle_write;\n"
-                   "    (void)nyx_store_reset;\n"
                    "}\n\n");
     if (!ok) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);

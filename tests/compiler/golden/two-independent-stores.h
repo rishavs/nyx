@@ -5,19 +5,19 @@
 #include <stdint.h>
 #include <stddef.h>
 
+typedef struct nyx_store nyx_store;
+
 typedef struct {
-    uint32_t store;
+    nyx_store *store;
     size_t offset;
     uint64_t generation;
 } nyx_handle;
 
-typedef struct {
+struct nyx_store {
     unsigned char *data;
     size_t used;
     size_t capacity;
     uint64_t generation;
-} nyx_store;
-
-typedef uint8_t nyx_nil;
+};
 
 #endif

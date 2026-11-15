@@ -1,15 +1,15 @@
 #include "analyser.h"
+#include "analyser_internal.h"
 
 #include "messages.h"
+#include "alloc.h"
 
-/* STUB. The analyser validates the typed program's index links and returns the
-   input as-is. Memory, ownership, and lifetime analysis do not exist yet, and
-   Nippy has no storage-bearing constructs to analyse.
+#include <stdlib.h>
+#include <string.h>
 
-   It takes the typed program, not the syntax tree: by the time it runs the tree
-   has been freed, so this stage cannot reach back even by accident. It still
-   produces no artifact of its own; when ownership rules land they either refine
-   the typed program or become a distinct analysis artifact. */
+/* The analyser validates typed-program links and Store capability ownership,
+   then runs the scoped-Store escape analysis in analyser_regions.c. The syntax
+   tree is freed before this stage runs. */
 /* A numeric literal has a numeric type its value can be stored in. A
    conversion converts a numeric child, whose type is the recorded source type,
    to a numeric target; a folded constant records its own target as the source.
@@ -55,7 +55,157 @@ static bool valid_run(size_t start, size_t count, size_t length)
     return start <= length && count <= length - start;
 }
 
-bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
+static bool store_parameter_named(const TypedProgram *program,
+                                  const TypedNode *function, size_t name)
+{
+    size_t i;
+    if (function == NULL || function->kind != TYPED_FUNCTION_DECLARATION)
+        return false;
+    for (i = 0; i < function->children_count; i++) {
+        const size_t *index = list_get(&program->children, function->children_start + i);
+        const TypedNode *parameter = index == NULL ? NULL : typed_program_node(program, *index);
+        const TypedType *type = parameter == NULL ? NULL :
+                                typed_program_type(program, parameter->type_index);
+        if (parameter != NULL && parameter->kind == TYPED_PARAMETER &&
+            parameter->name_index == name && type != NULL && type->kind == NIPPY_TYPE_STORE)
+            return true;
+    }
+    return false;
+}
+
+static bool node_uses_store(const TypedProgram *program, const TypedNode *node)
+{
+    const TypedType *type;
+    switch (node->kind) {
+    case TYPED_STORE_ALLOC:
+    case TYPED_STRING_CONCAT: case TYPED_STRING_COPY:
+    case TYPED_STRING_FROM_FIXED: case TYPED_BUILDER_CREATE:
+    case TYPED_LIST_CREATE: case TYPED_TABLE_CREATE:
+        return true;
+    case TYPED_IDENTIFIER:
+        type = typed_program_type(program, node->type_index);
+        return type != NULL && type->kind == NIPPY_TYPE_STORE;
+    default:
+        return false;
+    }
+}
+
+typedef struct { size_t node; size_t scope; } ScopeVisit;
+typedef struct { size_t name; size_t parent; size_t node; } ScopeLink;
+
+static bool scope_has_name(const List *scopes, size_t index, size_t name)
+{
+    while (index != TYPED_NO_NODE) {
+        const ScopeLink *scope = list_get(scopes, index);
+        if (scope == NULL) return false;
+        if (scope->name == name) return true;
+        index = scope->parent;
+    }
+    return false;
+}
+
+static bool validate_store_capabilities(const TypedProgram *program,
+                                        size_t store_count, ErrorState *errors)
+{
+    List pending, scopes;
+    /* A node is visited once per (root, scope) pair; these record the last
+       pair that reached each node, so the check costs O(1) per node. */
+    size_t *seen_root = NULL;
+    size_t *seen_scope = NULL;
+    size_t bytes;
+    size_t i;
+    bool ok = false;
+    list_init(&pending, sizeof(ScopeVisit));
+    list_init(&scopes, sizeof(ScopeLink));
+    if (program->nodes.length > SIZE_MAX / (2 * sizeof(size_t))) goto oom;
+    bytes = (program->nodes.length + 1) * sizeof(size_t);
+    seen_root = nippy_malloc(bytes);
+    seen_scope = nippy_malloc(bytes);
+    if (seen_root == NULL || seen_scope == NULL) goto oom;
+    memset(seen_root, 0, bytes);
+    for (i = 0; i < program->roots.length; i++) {
+        size_t root = *(const size_t *)list_get(&program->roots, i);
+        const TypedNode *function = typed_program_node(program, root);
+        ScopeVisit start = {function != NULL && function->kind == TYPED_FUNCTION_DECLARATION
+                                ? function->left_child : root, TYPED_NO_NODE};
+        scopes.length = 0;
+        if (start.node == TYPED_NO_NODE) continue;
+        if (!list_push(&pending, &start)) goto oom;
+        while (pending.length != 0) {
+            ScopeVisit visit;
+            const TypedNode *node;
+            size_t j;
+            if (!list_pop(&pending, &visit)) goto oom;
+            if (visit.node >= program->nodes.length) {
+                error_report(errors, MESSAGE_ANALYSER_INVALID_NODE_LINK, visit.node);
+                goto done;
+            }
+            if (seen_root[visit.node] == i + 1 &&
+                seen_scope[visit.node] == visit.scope) {
+                continue;
+            }
+            seen_root[visit.node] = i + 1;
+            seen_scope[visit.node] = visit.scope;
+            node = typed_program_node(program, visit.node);
+            if (node_uses_store(program, node) &&
+                ((node->store_id == TYPED_NO_NODE &&
+                  !store_parameter_named(program, function, node->name_index) &&
+                  !scope_has_name(&scopes, visit.scope, node->name_index)) ||
+                 (node->store_id != TYPED_NO_NODE && node->store_id >= store_count))) {
+                error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_STORE_ID, visit.node);
+                goto done;
+            }
+            if (node->kind == TYPED_SCOPE) {
+                size_t ancestor = visit.scope;
+                ScopeLink link = {node->name_index, visit.scope, visit.node};
+                while (ancestor != TYPED_NO_NODE) {
+                    const ScopeLink *parent = list_get(&scopes, ancestor);
+                    if (parent == NULL || parent->node == visit.node) {
+                        error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_NODE_LINK,
+                                        visit.node);
+                        goto done;
+                    }
+                    ancestor = parent->parent;
+                }
+                ScopeVisit body = {node->right_child, scopes.length};
+                ScopeVisit capacity = {node->left_child, visit.scope};
+                if (!list_push(&scopes, &link) || !list_push(&pending, &body) ||
+                    !list_push(&pending, &capacity)) goto oom;
+                continue;
+            }
+            if (node->left_child != TYPED_NO_NODE) {
+                ScopeVisit child = {node->left_child, visit.scope};
+                if (!list_push(&pending, &child)) goto oom;
+            }
+            if (node->right_child != TYPED_NO_NODE) {
+                ScopeVisit child = {node->right_child, visit.scope};
+                if (!list_push(&pending, &child)) goto oom;
+            }
+            for (j = 0; j < node->children_count; j++) {
+                const size_t *index = list_get(&program->children, node->children_start + j);
+                ScopeVisit child;
+                if (index == NULL) {
+                    error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_NODE_LINK, visit.node);
+                    goto done;
+                }
+                child = (ScopeVisit){*index, visit.scope};
+                if (!list_push(&pending, &child)) goto oom;
+            }
+        }
+    }
+    ok = true;
+    goto done;
+oom:
+    error_report(errors, MESSAGE_ANALYSER_OUT_OF_MEMORY);
+done:
+    list_free(&pending);
+    list_free(&scopes);
+    free(seen_root);
+    free(seen_scope);
+    return ok;
+}
+
+bool analyser_validate(const TypedProgram *program, ErrorState *errors)
 {
     size_t i;
     size_t store_count = 0;
@@ -170,6 +320,19 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 return false;
             }
         }
+        if (node->kind == TYPED_SCOPE) {
+            const TypedNode *capacity = typed_program_node(program, node->left_child);
+            const TypedNode *body = typed_program_node(program, node->right_child);
+            const TypedType *capacity_type = capacity == NULL ? NULL :
+                                             typed_program_type(program, capacity->type_index);
+            const TypedType *type = typed_program_type(program, node->type_index);
+            if (node->name_index == TYPED_NO_NODE || type == NULL || type->kind != NIPPY_TYPE_STORE ||
+                capacity_type == NULL || capacity_type->kind != NIPPY_TYPE_INT32 ||
+                body == NULL || body->kind != TYPED_BLOCK) {
+                error_report_at(errors, node->pos, MESSAGE_ANALYSER_INVALID_NODE_LINK, i);
+                return false;
+            }
+        }
         if (node->kind == TYPED_IF_EXPRESSION &&
             (node->children_count != 1 || node->left_child == TYPED_NO_NODE ||
              node->right_child == TYPED_NO_NODE)) {
@@ -185,14 +348,14 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
         }
         if (node->kind == TYPED_STORE_DECLARATION ||
             node->kind == TYPED_STORE_ALLOC ||
-            node->kind == TYPED_STORE_RESET ||
             node->kind == TYPED_HANDLE_READ ||
             node->kind == TYPED_HANDLE_WRITE ||
             node->kind == TYPED_STRING_CONCAT ||
             node->kind == TYPED_STRING_COPY ||
             node->kind == TYPED_STRING_FROM_FIXED ||
             node->kind == TYPED_BUILDER_CREATE ||
-            node->kind == TYPED_LIST_CREATE) {
+            node->kind == TYPED_LIST_CREATE ||
+            node->kind == TYPED_TABLE_CREATE) {
             if (node->store_id != TYPED_NO_NODE) {
                 if (node->store_id >= store_count) {
                     error_report_at(errors, node->pos,
@@ -201,15 +364,18 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
                 }
             } else if (node->kind == TYPED_STORE_DECLARATION ||
                        node->kind == TYPED_STORE_ALLOC ||
-                       node->kind == TYPED_STORE_RESET ||
-                       node->kind == TYPED_STRING_CONCAT ||
+                                  node->kind == TYPED_STRING_CONCAT ||
                        node->kind == TYPED_STRING_COPY ||
                        node->kind == TYPED_STRING_FROM_FIXED ||
                        node->kind == TYPED_BUILDER_CREATE ||
-                       node->kind == TYPED_LIST_CREATE) {
-                error_report_at(errors, node->pos,
-                                MESSAGE_ANALYSER_INVALID_STORE_ID, i);
-                return false;
+                       node->kind == TYPED_LIST_CREATE ||
+                       node->kind == TYPED_TABLE_CREATE) {
+                if (node->kind == TYPED_STORE_DECLARATION ||
+                    node->name_index == TYPED_NO_NODE) {
+                    error_report_at(errors, node->pos,
+                                    MESSAGE_ANALYSER_INVALID_STORE_ID, i);
+                    return false;
+                }
             }
             if (typed_program_type(program, node->type_index) == NULL) {
                 error_report_at(errors, node->pos,
@@ -527,5 +693,11 @@ bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
             }
         }
     }
-    return true;
+    return validate_store_capabilities(program, store_count, errors);
+}
+
+bool analyser_analyse(const TypedProgram *program, ErrorState *errors)
+{
+    return analyser_validate(program, errors) &&
+           analyser_check_regions(program, errors);
 }

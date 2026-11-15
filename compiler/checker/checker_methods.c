@@ -1,7 +1,7 @@
 #include "checker_internal.h"
 
 bool member_store(CheckContext *ctx, const AstNode *node,
-                         const char *method, const StoreEntry **out_store)
+                         const char *method, StoreEntry *out_store)
 {
     const AstNode *receiver = ast_get_node(ctx->ast, node->left_child);
     const char *name;
@@ -17,10 +17,38 @@ bool member_store(CheckContext *ctx, const AstNode *node,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
         return false;
     }
-    *out_store = find_store(ctx->stores, name);
-    if (*out_store == NULL) {
-        error_report_at(ctx->errors, receiver->pos,
-                        MESSAGE_CHECKER_UNKNOWN_STORE, name);
+    {
+        const StoreEntry *store = find_store(ctx->stores, name);
+        if (store != NULL) {
+            *out_store = *store;
+            return true;
+        }
+    }
+    {
+        const VariableEntry *variable = find_variable(ctx->locals, name);
+        const TypedType *type = variable == NULL ? NULL :
+                                typed_program_type(ctx->program, variable->type_index);
+        if (type != NULL && type->kind == NIPPY_TYPE_STORE) {
+            memset(out_store, 0, sizeof(*out_store));
+            memcpy(out_store->name, name, strlen(name) + 1);
+            out_store->id = TYPED_NO_NODE;
+            return true;
+        }
+    }
+    error_report_at(ctx->errors, receiver->pos,
+                    MESSAGE_CHECKER_UNKNOWN_STORE, name);
+    return false;
+}
+
+bool set_store_reference(CheckContext *ctx, TypedNode *node,
+                         const StoreEntry *store)
+{
+    node->store_id = store->id;
+    if (store->id != TYPED_NO_NODE) return true;
+    node->name_index = typed_program_copy_symbol(ctx->program, store->name,
+                                                  strlen(store->name));
+    if (node->name_index == TYPED_NO_NODE) {
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
         return false;
     }
     return true;

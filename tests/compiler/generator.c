@@ -375,7 +375,7 @@ TEST("store: runtime diagnostics emitted")
     CompilerConfig config = {.header_name = "test.h",
                              .source_name = "test.nip"};
     CompilerResult result = compiler_compile(
-        "var s: Store = Store(16)\nvar p: Handle<Int32> = s.alloc<Int32>(1)\n",
+        "global s: Store = Store(16)\nvar p: Handle<Int32> = s.alloc<Int32>(1)\n",
         &config);
     int ok;
 

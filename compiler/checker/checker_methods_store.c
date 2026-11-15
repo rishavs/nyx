@@ -3,7 +3,7 @@
 bool check_store_method(CheckContext *ctx, const AstNode *node,
     const char *method, size_t ast_index, bool *handled)
 {
-    const StoreEntry *store = NULL;
+    StoreEntry store = {0};
     TypedNode typed = {0};
 
     if (strcmp(method, "alloc") == 0) {
@@ -50,43 +50,11 @@ bool check_store_method(CheckContext *ctx, const AstNode *node,
         }
         typed.kind = TYPED_STORE_ALLOC;
         typed.type_index = handle;
-        typed.store_id = store->id;
         typed.integer_value = 0;
         typed.pos = node->pos;
         typed.name_index = TYPED_NO_NODE;
+        if (!set_store_reference(ctx, &typed, &store)) return false;
         typed.left_child = coerced;
-        typed.right_child = TYPED_NO_NODE;
-        typed.children_start = 0;
-        typed.children_count = 0;
-        return emit_node(ctx, &typed, ast_index, &(size_t){0});
-    }
-
-    if (strcmp(method, "reset") == 0) {
-        *handled = true;
-        size_t nil_type;
-
-        if (!member_store(ctx, node, method, &store)) {
-            return false;
-        }
-        if (node->right_child != AST_NO_NODE) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MEMBER_TYPE_ARG, method);
-            return false;
-        }
-        if (node->children_count != 0) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MEMBER_ARGS, method);
-            return false;
-        }
-        if (!builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
-            return false;
-        }
-        typed.kind = TYPED_STORE_RESET;
-        typed.type_index = nil_type;
-        typed.store_id = store->id;
-        typed.pos = node->pos;
-        typed.name_index = TYPED_NO_NODE;
-        typed.left_child = TYPED_NO_NODE;
         typed.right_child = TYPED_NO_NODE;
         typed.children_start = 0;
         typed.children_count = 0;
@@ -128,6 +96,7 @@ bool check_store_method(CheckContext *ctx, const AstNode *node,
         element = *(const size_t *)list_get(&ctx->program->type_children,
                                             receiver_type->first_child);
         typed.kind = TYPED_HANDLE_READ;
+        typed.store_id = TYPED_NO_NODE;
         typed.type_index = element;
         typed.pos = node->pos;
         typed.name_index = TYPED_NO_NODE;
@@ -190,6 +159,7 @@ bool check_store_method(CheckContext *ctx, const AstNode *node,
             return false;
         }
         typed.kind = TYPED_HANDLE_WRITE;
+        typed.store_id = TYPED_NO_NODE;
         typed.type_index = nil_type;
         typed.pos = node->pos;
         typed.name_index = TYPED_NO_NODE;

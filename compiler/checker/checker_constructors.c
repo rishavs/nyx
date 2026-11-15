@@ -407,7 +407,44 @@ bool check_constructor(CheckContext *ctx, const AstNode *node,
         typed.children_start = children_start;
         typed.children_count = field_count;
 
-        ok = emit_node(ctx, &typed, ast_index, &(size_t){0});
+        if (named) {
+            List order;
+            size_t j;
+            list_init(&order, sizeof(size_t));
+            for (i = 0; i < node->children_count; i++) {
+                size_t child = *(const size_t *)list_get(&ctx->ast->children,
+                                                         node->children_start + i);
+                const AstNode *argument = ast_get_node(ctx->ast, child);
+                const char *argument_name = ast_symbol_text(ctx->ast, argument->name_index);
+                for (j = 0; j < field_count; j++) {
+                    const char *field = struct_field_name(
+                        ctx->program, typed_program_node(ctx->program, decl_index), j);
+                    if (field != NULL && argument_name != NULL &&
+                        strcmp(field, argument_name) == 0) break;
+                }
+                if (j == field_count || !list_push(&order, &j)) {
+                    if (j == field_count) error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+                    else error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                    list_free(&order);
+                    goto done;
+                }
+            }
+            for (i = 0; i < field_count; i++) {
+                bool supplied = false;
+                for (j = 0; j < order.length; j++) {
+                    if (*(const size_t *)list_get(&order, j) == i) { supplied = true; break; }
+                }
+                if (!supplied && !list_push(&order, &i)) {
+                    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+                    list_free(&order);
+                    goto done;
+                }
+            }
+            ok = emit_sequenced_expression(ctx, &typed, ast_index, &order);
+            list_free(&order);
+        } else {
+            ok = emit_sequenced_expression(ctx, &typed, ast_index, NULL);
+        }
     }
 
 done:

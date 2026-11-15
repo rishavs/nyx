@@ -170,15 +170,14 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
         node->kind == TYPED_STRING_COPY) {
         *handled = true;
         if (node->left_child == TYPED_NO_NODE ||
-            !store_id_is_valid(program, node->store_id)) {
+            !store_reference_is_valid(program, node)) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer, "nyx_string_%s(&nyx_stores[%zu], "
-                                    "%zu, ",
-                            node->kind == TYPED_STRING_CONCAT ? "concat"
-                                                              : "copy",
-                            node->store_id, node->store_id) ||
+        if (!buffer_appendf(buffer, "nyx_string_%s(",
+                            node->kind == TYPED_STRING_CONCAT ? "concat" : "copy") ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->left_child, buffer, errors)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
@@ -214,15 +213,14 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
                 : typed_program_type(program, source->type_index);
 
         if (source_type == NULL || source_type->kind != NIPPY_TYPE_STRING ||
-            !store_id_is_valid(program, node->store_id)) {
+            !store_reference_is_valid(program, node)) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer,
-                            "nyx_string_from_fixed_%zu(&nyx_stores[%zu], "
-                            "%zu, ",
-                            source_type->fixed_length, node->store_id,
-                            node->store_id) ||
+        if (!buffer_appendf(buffer, "nyx_string_from_fixed_%zu(",
+                            source_type->fixed_length) ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
                             node->pos.line, node->pos.column, node->pos.offset)) {
@@ -236,13 +234,13 @@ bool emit_expr_strings(const TypedProgram *program, const TypedNode *node,
     if (node->kind == TYPED_BUILDER_CREATE) {
         *handled = true;
         if (node->left_child == TYPED_NO_NODE ||
-            !store_id_is_valid(program, node->store_id)) {
+            !store_reference_is_valid(program, node)) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer,
-                            "nyx_builder_create(&nyx_stores[%zu], %zu, ",
-                            node->store_id, node->store_id) ||
+        if (!buffer_append(buffer, "nyx_builder_create(") ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
                             node->pos.line, node->pos.column, node->pos.offset)) {

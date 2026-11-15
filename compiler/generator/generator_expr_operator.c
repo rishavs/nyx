@@ -597,7 +597,7 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
         bool aggregate;
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
 
-        if (!store_id_is_valid(program, node->store_id) ||
+        if (!store_reference_is_valid(program, node) ||
             !handle_element_type(program, node->type_index, &element) ||
             !format_c_type(program, element, element_name,
                            sizeof(element_name), errors) ||
@@ -609,10 +609,10 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             return false;
         }
         aggregate = type_is_c_aggregate(program, element);
-        if (!buffer_appendf(buffer,
-                            "nyx_store_alloc_at(&nyx_stores[%zu], %zu, ",
-                            node->store_id, node->store_id)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        if (!buffer_append(buffer, "nyx_store_alloc_at(") ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ")) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         if (aggregate) {
@@ -633,25 +633,6 @@ bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
-            return false;
-        }
-        return true;
-    }
-    if (node->kind == TYPED_STORE_RESET) {
-        *handled = true;
-        const TypedType *type = typed_program_type(program, node->type_index);
-
-        if (type == NULL || type->kind != NIPPY_TYPE_NIL ||
-            !store_id_is_valid(program, node->store_id)) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-            return false;
-        }
-        if (!buffer_appendf(buffer,
-                            "((void)nyx_store_reset_at(&nyx_stores[%zu], __FILE__, %zu, %zu, %zu), "
-                            "(nyx_nil)0)",
-                            node->store_id, node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
         return true;

@@ -9,18 +9,18 @@ TEST("program prints its value")
 
 TEST("printing stale values reports the print location")
 {
-    TestResult result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var s: Text = arena.copy(\"\")\n"
-        "arena.reset()\nprint(s)\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var s: Text = keep.copy(\"\")\n"
+        "scope arena = Store(64) do s = arena.copy(\"\") end\nprint(s)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale empty text");
     if (result != TEST_PASS ||
         !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
         return TEST_FAIL;
-    result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var b: TextBuilder = arena.builder(4)\n"
-        "arena.reset()\nprint(b)\n",
+    result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var b: TextBuilder = keep.builder(4)\n"
+        "scope arena = Store(64) do b = arena.builder(4) end\nprint(b)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale builder");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")

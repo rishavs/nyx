@@ -519,6 +519,65 @@ done:
 }
 
 
+bool parse_scope(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                 size_t *cursor, size_t *out_index, ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+    SourcePos pos = token->pos;
+    size_t name, capacity, body;
+    AstNode node = {0};
+
+    (*cursor)++;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_IDENTIFIER) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_EXPECTED_VARIABLE_NAME);
+        return false;
+    }
+    if (!intern_token(ast, token, &name, errors)) return false;
+    (*cursor)++;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_EQUALS) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_EXPECTED_EQUALS);
+        return false;
+    }
+    (*cursor)++;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_IDENTIFIER || strcmp(token->text, "Store") != 0 ||
+        token_at(tokens, *cursor + 1) == NULL ||
+        token_at(tokens, *cursor + 1)->type != TOKEN_LPAREN) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_SCOPE_STORE);
+        return false;
+    }
+    *cursor += 2;
+    if (!parse_expression(tokens, string_bytes, ast, cursor, &capacity, errors)) return false;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_RPAREN) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_EXPECTED_RPAREN);
+        return false;
+    }
+    (*cursor)++;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_DO) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_SCOPE_DO);
+        return false;
+    }
+    (*cursor)++;
+    if (!parse_block(tokens, string_bytes, ast, cursor, &body, errors)) return false;
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_END) {
+        error_report_at(errors, position_at(tokens, *cursor), MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
+        return false;
+    }
+    (*cursor)++;
+    node.kind = AST_SCOPE;
+    node.pos = pos;
+    node.name_index = name;
+    node.left_child = capacity;
+    node.right_child = body;
+    return push_node(ast, &node, out_index);
+}
+
+
 bool parse_while(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
@@ -888,6 +947,7 @@ bool parse_statement(
             token->type != TOKEN_KEYWORD_CONST &&
             token->type != TOKEN_KEYWORD_WHILE &&
             token->type != TOKEN_KEYWORD_FOR &&
+            token->type != TOKEN_KEYWORD_SCOPE &&
             token->type != TOKEN_KEYWORD_RETURN &&
             token->type != TOKEN_EOF &&
             !parse_expression(tokens, string_bytes, ast, cursor, &expression, errors)) {
@@ -908,6 +968,9 @@ bool parse_statement(
     if (token->type == TOKEN_KEYWORD_MATCH) {
         return parse_match(tokens, string_bytes, ast, cursor, false,
                            out_index, errors);
+    }
+    if (token->type == TOKEN_KEYWORD_SCOPE) {
+        return parse_scope(tokens, string_bytes, ast, cursor, out_index, errors);
     }
     if (token->type == TOKEN_KEYWORD_WHILE) {
         return parse_while(tokens, string_bytes, ast, cursor, out_index, errors);

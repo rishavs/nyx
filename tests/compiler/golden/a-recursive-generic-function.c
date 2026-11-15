@@ -23,6 +23,8 @@ int32_t nyx_u_nyx_genfn_0(int32_t nyx_u_x, int32_t nyx_u_n)
 
 int32_t nyx_inner_nyx_u_nyx_genfn_0(int32_t nyx_u_x, int32_t nyx_u_n)
 {
+    int32_t nyx_match_1;
+    int32_t nyx_match_0;
     (void)nyx_u_x;
     (void)nyx_u_n;
 #line 2 "test.nip"
@@ -31,13 +33,15 @@ int32_t nyx_inner_nyx_u_nyx_genfn_0(int32_t nyx_u_x, int32_t nyx_u_n)
         return nyx_u_x;
     }
 #line 5 "test.nip"
-    return nyx_u_nyx_genfn_0(nyx_u_x, (int32_t)((uint32_t)(nyx_u_n) - (uint32_t)(1)));
+    return (nyx_match_0 = nyx_u_x, (nyx_match_1 = (int32_t)((uint32_t)(nyx_u_n) - (uint32_t)(1)), nyx_u_nyx_genfn_0(nyx_match_0, nyx_match_1)));
 }
 
 int32_t nyx_program_value(void)
 {
+    int32_t nyx_match_3;
+    int32_t nyx_match_2;
 #line 8 "test.nip"
-    int32_t nyx_u_n = nyx_u_nyx_genfn_0(1, 0);
+    int32_t nyx_u_n = (nyx_match_2 = 1, (nyx_match_3 = 0, nyx_u_nyx_genfn_0(nyx_match_2, nyx_match_3)));
     return nyx_u_n;
 }
 

@@ -301,7 +301,9 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
     ast_free(&ast);
     ast_initialized = false;
 
-    if (!analyser_analyse(&program, &errors)) {
+    if (!(config != NULL && config->skip_escape_analysis
+              ? analyser_validate(&program, &errors)
+              : analyser_analyse(&program, &errors))) {
         goto failed;
     }
     if (!generator_generate(&program, config == NULL ? NULL : config->header_name,

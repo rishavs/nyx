@@ -330,7 +330,7 @@ TEST("assignment: an assignment to an unknown name")
 TEST("assignment: an assignment to a store")
 {
     return compile_fails(
-        "var s: Store = Store(8)\ns = Store(8)\n",
+        "global s: Store = Store(8)\ns = Store(8)\n",
         "an assignment to a store",
         MESSAGE_CHECKER_ASSIGN_TARGET, "s");
 }
@@ -630,4 +630,41 @@ TEST("const Store")
         "const s: Store = Store(16)\n",
         "const Store",
         MESSAGE_CHECKER_CONST_STORE);
+}
+
+TEST("duplicate struct field")
+{
+    return compile_fails("type P\n  x: Int32\n  y: Int32\n  x: Bool\nend\n",
+                         "a struct with two fields of one name",
+                         MESSAGE_CHECKER_DUPLICATE_FIELD, "x", "P");
+}
+
+TEST("duplicate field in a generic struct")
+{
+    return compile_fails("type G<T>\n  a: T\n  a: Int32\nend\n",
+                         "a generic struct with two fields of one name",
+                         MESSAGE_CHECKER_DUPLICATE_FIELD, "a", "G");
+}
+
+TEST("expanding generic recursion is rejected before instantiation")
+{
+    return compile_fails(
+        "type Pair<T> a: T b: T end\n"
+        "type Node<T> value: T next: Handle<Node<Pair<T>>> | Nil end\n",
+        "expanding recursion", MESSAGE_CHECKER_EXPANDING_RECURSION, "Node");
+}
+
+TEST("a generic self reference must keep its parameter order")
+{
+    return compile_fails(
+        "type Node<T, U> value: T next: Handle<Node<U, T>> | Nil end\n",
+        "swapped self reference", MESSAGE_CHECKER_EXPANDING_RECURSION, "Node");
+}
+
+TEST("a generic self reference with its own parameters is accepted")
+{
+    return compile_accepts(
+        "type Node<T, U> value: T other: U next: Handle<Node<T, U>> | Nil end\n"
+        "var n: Node<Int32, Bool> = Node(1, true, nil)\n",
+        "own parameters in order");
 }

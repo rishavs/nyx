@@ -16,10 +16,11 @@ A program is a sequence of items, read in source order:
 - a value declaration, `var name [: Type] = expression` or
   `const name [: Type] = expression`;
 - a global store declaration, `global name: Store = Store(bytes)`;
+- a scoped store, `scope name = Store(capacity) do ... end`;
 - a function declaration, `fun name(parameters): Type ... end`;
 - an `if`, `match`, `for`, or `while` statement;
 - an assignment, including indexed and field assignments;
-- an expression statement, which must be a call, such as `points.reset()`.
+- an expression statement, which must be a call, such as `print(x)`.
 
 `while` and the other block statements are valid at program level, inside a
 function body, or inside another block.
@@ -70,7 +71,11 @@ C identifiers.
 A declared name must also survive emission into C. The checker rejects a name
 that is a C11 keyword, a C identifier the generated code uses (such as `main`,
 `int32_t`, `bool`, `size_t`, `printf`, or `malloc`), or begins with `nyx_`.
-The `nyx_` prefix is reserved for the generator's own types, helpers, and
+Every name a program chooses (type, field, variable, parameter, function) is
+emitted into the generated C with the prefix `nyx_u_`, so no program name can
+collide with libc, a C keyword, a macro such as `EOF`, or a generator name. The
+generated names are internal; a C driver that calls a Nippy function must spell
+it `nyx_u_<name>`. The `nyx_` prefix is reserved for the generator's own types, helpers, and
 instantiation names, so source names cannot collide with them.
 
 There is no requirement that a program contain a value declaration. A program of
@@ -116,7 +121,7 @@ A type is a type expression. The implemented forms are:
   ordinary passable value.
 - **`Handle<T>`** — an opaque reference to one `T` allocated in a store.
 - **`Text`** — a built-in dynamic-length, immutable byte string, backed by
-  a Store or by static literal data. It carries a store id, offset, generation,
+  a Store or by static literal data. It carries a store reference, offset, generation,
   and byte length; it does not hold a pointer.
 - **`TextBuilder`** — a built-in mutable builder for dynamic strings. It is a
   store-backed value with `append`, `append_byte`, `byte_len`, and `finish`.
@@ -152,7 +157,8 @@ nominal: two structs with identical fields but different names are different
 types and do not convert into each other. Aliases are transparent, so they do
 not create a new type.
 
-A struct type has one or more fields, each of which is `name : Type`. A field may
+A struct type has one or more fields, each of which is `name : Type`, and the
+field names within one struct are unique; a repeated name is an error. A field may
 have any non-function storable value type: `Int32`, `Bool`, a struct, a
 union, an alias, or — inside a generic declaration — a type parameter. Function
 types are not accepted as struct field types yet, but they are accepted as union
@@ -165,9 +171,9 @@ A by-value type is capped at 64 KiB. This covers structs, fixed `Array<T,N>`,
 put the data in a Store instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`,
 and `Handle` are descriptors and their payload does not count.
 
-`alloc<...>` and `Handle<...>` require a fixed type; they reject allocator-backed
-values other than handles, directly and transitively through structs/unions. `List`, `Text`, and
-`TextBuilder` use their dedicated constructors. A collection cannot be an
+`alloc<...>` and `Handle<...>` accept `Text` and handles in otherwise
+eligible payloads. Lists, slices, tables, records, builders, and Stores are
+rejected throughout the payload graph. A collection cannot be an
 `Array`/`List`/`Slice` element; wrap it in a named struct if it must be nested.
 `Text` and `String<N>` are items: `List<Text>` is valid even though `Text` is
 not fixed. A type may not contain itself by value;
@@ -212,7 +218,7 @@ Expressions are:
 - struct constructors, written as calls whose name resolves to a struct type;
 - `typeof expression is Type` tests;
 - `if` expressions and `match` expressions;
-- store and handle methods: `s.alloc<T>(value)`, `s.reset()`, `h.read()`,
+- store and handle methods: `s.alloc<T>(value)`, `h.read()`,
   `h.write(value)`;
 - fixed-string methods: `s.byte_len()`, `s.byte_at(i)`;
 - Error methods: `e.header()`, `e.description()`, `e.filename()`, `e.line()`,
@@ -759,7 +765,7 @@ case; indirect mutation through another function or alias remains.
 Iterating a list checks its length before each read and again after each body
 execution. If `push` or `pop` changes the length indirectly, the program fails
 with a deterministic runtime error instead of visiting a shifted range. Dynamic
-list reads still check store id, generation, and bounds; string byte reads do the
+list reads still check the store reference, generation, and bounds; string byte reads do the
 same.
 
 Iteration is by byte for strings; UTF-8 codepoint iteration is not implemented.
@@ -874,29 +880,100 @@ narrowings intact.
 
 ## Stores and handles
 
-Dynamic memory is managed only by arenas, called **Stores**. A store is declared
-at program level with `global` and is visible everywhere:
+Dynamic memory is managed only by arenas, called **Stores**. A Store declared
+with `global` lasts for the program. A Store introduced by `scope` lasts through
+its body. Either can be passed to a function with a `Store` parameter.
 
 ```nippy
 global points: Store = Store(4096)
+
+scope scratch = Store(256) do
+  print(scratch.copy("temporary"))
+end
 ```
 
 - `global name: Store = Store(bytes)`. The annotation must be `Store`; a
-  `global` declaration of any other type is rejected. The older `var ...: Store`
-  spelling is still accepted for compatibility, but `global` is canonical.
-- `Store(bytes)` takes a constant `Int32` expression, interpreted as bytes
-  (literals and `+`). `Store(0)` is allowed; a literal negative byte size is a
-  compile-time error.
-- Stores are visible inside function bodies. This is the one exception to the
-  rule that functions cannot see program-level variables: a store is a
+  `global` declaration of any other type is rejected, and a `Store` declared
+  with `var` or `const` is rejected.
+- `Store(bytes)` in a `global` takes a constant `Int32` expression, interpreted
+  as bytes (literals and `+`). `Store(0)` is allowed; a literal negative byte
+  size is a compile-time error.
+- Global Stores are visible inside function bodies. This is the one exception
+  to the rule that functions cannot see program-level variables: a store is a
   resource, not ordinary storage.
-- Stores are not first-class: they cannot be passed, returned, stored in a
-  field, used as a union alternative, or used as a value. Only `s.alloc`,
-  `s.reset`, `s.concat`, `s.copy`, `s.text`, `s.builder`, `s.list`, and
-  `s.table` take a store.
+- `scope name = Store(capacity) do block end` is a statement wherever
+  statements are allowed. Its name follows the no-shadowing rule and is not
+  visible in its own capacity. The capacity is an `Int32` expression evaluated
+  once on entry; zero is valid, a constant negative capacity is a compile-time
+  error, and a dynamic negative capacity traps before initialisation. It is an
+  initial reservation in bytes. `scope` is a reserved word.
+- Each entered scope starts with a fresh empty Store. On fallthrough, `return`,
+  `break`, or `continue`, every Store exited by that edge is released in reverse
+  order of entry. A `return` evaluates its value before the cleanup. A trap
+  terminates the program without running cleanup. A scope that is never entered
+  allocates nothing.
+- A scope inside a loop keeps its buffer for the loop's activation: the first
+  entry allocates, later iterations start it empty again, and the buffer is
+  released when the loop ends or a `return` leaves it. This is invisible to the
+  program: each entry is a fresh Store and handles from an earlier entry are
+  stale. A scope in a function called from a loop allocates on every call.
+- A Store may be passed directly to an immutable `Store` parameter, including
+  through generic functions, methods, and `Fun` values. The parameter may be
+  forwarded or used as a receiver for `alloc`, `concat`, `copy`, `text`,
+  `builder`, `list`, and `table`. A Store capability cannot be assigned, copied
+  to a binding, returned, stored in a field, used as a union alternative, or
+  inferred as a generic type argument. A `Fun` type may name `Store` only as a
+  direct parameter.
 - The declared size is an initial reservation, not a cap. Stores grow by
-  doubling as needed. `reset()` keeps the grown capacity.
-- Stores are freed at program exit.
+  doubling as needed.
+- There is no `reset()`. Global Stores are freed at program exit.
+
+### Lifetimes and escapes
+
+A value allocated in a Store must not outlive it. The compiler rejects a program
+in which a value from a `scope` Store could be reached after the scope ends.
+Every Store has a depth: global Stores are zero, a function's parameters are one
+level inside the activation, and each nested `scope` is one deeper. A value
+carries the Stores it may point into: handles, `Text`, `TextBuilder`, lists,
+slices, and tables, and any struct, union, or array holding one. While a struct
+or union stays inline, its fields and alternatives are tracked separately, so
+`b.names` has the facts of that field alone. Primitives,
+fixed strings, `Error`, and functions carry none. `a.concat`, `a.copy`, and
+`a.text` copy bytes, so their result belongs to `a` regardless of the input.
+
+A value may be written only to a destination that outlives it:
+
+- an assignment, `var` initialiser, field write, or element write of an inline
+  value (struct, union, `Array`, `Record`) needs the value to outlive the
+  variable, whose depth is the innermost `scope` enclosing its declaration;
+- `push`, `set`, indexed write, table or record insertion, `alloc`, and handle
+  `write` need the value to outlive the Store that holds the destination;
+- `return` needs the value to outlive the activation, so a value from a `scope`
+  Store opened inside the function cannot be returned.
+
+Reading from a list, table, slice, or handle yields a value no deeper than its
+container. The shallowest Store a container could be in is unknown after such a
+read, so a container reached by reading another container cannot receive
+deeper values. A call result is derived only from the arguments the callee's body
+returns (or global memory). Variables are tracked flow-insensitively and loops
+are analysed to a fixed point.
+
+A direct call is checked against a summary of the callee's body: for each
+parameter, which other parameters' storage it may write that parameter into,
+whether it may write it into global memory, and which parameters its result may
+come from. The call is rejected when an argument's Store is deeper than a
+destination it may be written into. Summaries are computed to a fixed point
+over the call graph, so recursion is covered. A call through a function value
+assumes the callee may write any argument into any other, but not into global
+memory; a function that may write a parameter into a global Store cannot be
+used as a function value. The analysis is conservative: it never accepts an
+escaping program, but it rejects some correct ones. Diagnostics name the
+originating Store and the destination:
+`a value from Store 'scratch' cannot be stored in 'result', which outlives it`.
+
+The analysis runs only when a program contains a `scope`; without one every
+Store is global. Runtime generation and bounds checks remain in the generated
+program as a second line of defence.
 
 Allocation returns an opaque handle:
 
@@ -906,22 +983,16 @@ var n: Handle<Int32> = points.alloc<Int32>(13)
 var b: Handle<Byte> = points.alloc<Byte>(7)
 ```
 
-`alloc<T>(value)` copies one fixed value into the arena and returns
-`Handle<T>`. A fixed type may contain checked handles but not other
-allocator-backed fields:
+`alloc<T>(value)` copies an eligible value into the arena and returns
+`Handle<T>`. Eligible values include primitives, functions, Error, fixed
+strings, Text, ranges, handles, arrays, and structs or unions composed of
+eligible payloads. The checker follows handle edges and rejects List, Slice,
+TextBuilder, Record, Table, and Store anywhere in the payload graph. Collection
+element restrictions still apply. Recursive handle graphs are checked with a
+visited set. Generation and bounds checks remain in force when handles or Text
+are read.
 
-```text
-fixed: primitives, functions, Error, String<N>, Handle<T>, Range<T>,
-       Array<T,N> with fixed elements,
-       structs/unions whose fields/alternatives are fixed
-not fixed: Text, List, Slice, TextBuilder, Record, Table, Store
-```
-
-`Text`, `List`, and `TextBuilder` use their dedicated constructors.
-`Array<T,N>` is fixed and can be allocated directly. A store may hold fixed
-values of many different types, one allocation at a time.
-
-`Handle<T>` records the store id, a byte offset, and the store generation. It is
+`Handle<T>` records a store reference, a byte offset, and the store generation. It is
 opaque: there is no field access. Its operations are:
 
 ```nippy
@@ -936,14 +1007,14 @@ p.write(Point(3, 4))
   `===` additionally requires matching handle types, returning false for
   different types. Both operators validate every handle operand first, so
   comparing a stale handle traps even when the types differ.
-- Both check the store id, the store generation, and the offset bounds. A
+- Both check the store reference, the store generation, and the offset bounds. A
   failure is a deterministic runtime diagnostic, not undefined behaviour.
-- Handles survive growth because they hold offsets, not pointers.
+- Handles survive growth because they use a stable Store reference and an offset
+  into the movable buffer.
 
-`points.reset()` sets the used size to zero, increments the store generation,
-and invalidates every handle from that store. The memory is retained and reused;
-there is no per-object free. Using an invalidated handle is a runtime error
-(`nippy: stale handle`).
+A Store's generation changes only when its storage is released, which the
+compiler's escape check keeps unreachable from safe programs. There is no
+per-object free. A stale handle would trap (`nippy: stale handle`).
 
 Allocation failure (running out of memory while growing) aborts with
 `nippy: out of memory`. Allocation never returns uninitialized memory.
@@ -1010,7 +1081,7 @@ var last: Int32 | Nil = xs.pop()
 - `store.list<T>(capacity)` allocates the list state and initial buffer.
   Capacity may be `0`; a literal negative capacity is a compile-time error.
 - `push(value)` adds one element and grows the buffer by doubling when needed.
-  Old buffers remain in the store until reset.
+  Old buffers remain in the store until it ends.
 - `pop()` removes the last element and returns `T | Nil`.
 - `xs[i]` reads and `xs[i] = value` writes; both are bounds-checked.
 - `xs.get(i)` returns `T | Nil`; an out-of-range index returns `nil` instead of
@@ -1018,8 +1089,7 @@ var last: Int32 | Nil = xs.pop()
 - `len()` returns the current length.
 - Dynamic lists are mutable. Copying a `List<T>` copies the descriptor and all
   copies alias the same list state, like `TextBuilder`.
-- `reset()` invalidates the list descriptor and its elements; access is a
-  runtime stale check.
+- A list must not outlive its Store (see Lifetimes and escapes).
 - There is no per-list free.
 - List literals are only valid for fixed `Array<T,N>`. A dynamic list must be
   created with `store.list<T>(capacity)`.
@@ -1076,7 +1146,7 @@ var t: Table<String<8>, Int32> =
   compile-time error.
 - Grows by rehashing.
 - Copies alias the same arena state.
-- `reset()` invalidates it.
+- It must not outlive its Store.
 - Same operations as Record, plus `t.get(key): V | Nil`, which returns `nil`
   for a missing key instead of trapping.
 
@@ -1140,12 +1210,15 @@ var first: Int32 = s[0]  // 20
 - `slice.slice(start, length)` returns a subview.
 - `Slice<T>` has `len()`, `[]` reads, and `s.get(i): T | Nil`. It has no
   mutation operations.
-- The view stores `{store, offset, length, generation}`. It does not allocate
-  or own storage.
-- Parent `set`/`xs[i] =` writes are visible through the view.
-- Parent `push` may allocate a new buffer; the old buffer stays alive until
-  reset, so the view still reads the old element range safely.
-- `reset()` invalidates the view through the generation check.
+- A slice is a **live window** onto its list. It stores the list's identity, the
+  index of its first element, and its length, and finds the list's buffer
+  afresh on every access. It does not allocate or own storage.
+- Parent writes (`xs[i] =`, `set`) are visible through the view, and so are
+  writes made after the parent list has grown: growing moves the list's buffer,
+  and the window follows it. A slice never reads a stale copy.
+- If the list shrinks (`pop`) until the window no longer fits inside it, any use
+  of the slice (`len`, `[]`, `get`, iteration) traps with a list-bounds error.
+- A slice must not outlive its list's Store.
 - Arrays do not support `.slice`: their inline data has no stable
   address for a non-owning view. Copy the Array instead if a detached
   sequence is needed.
@@ -1170,12 +1243,12 @@ var b: Byte = joined.byte_at(0)
 var same: Bool = joined == "hello world"
 ```
 
-- A `Text` value is a descriptor `{ store id, offset, byte length,
+- A `Text` value is a descriptor `{ store reference, offset, byte length,
   generation, static data }`. It does not store a pointer in the source model.
 - Static literals have a static data pointer and no store; they never become
   stale.
 - Arena-backed strings are allocated with `store.copy`, `store.concat`, or
-  `store.text`. They are invalidated by `store.reset()`, like handles.
+  `store.text`. They follow their Store's lifetime, like handles.
 - The descriptor is copied by value. Strings are immutable; slicing and copying
   cannot mutate an existing string.
 - `byte_len()` is the byte length, not a codepoint count.
@@ -1236,10 +1309,9 @@ var s: Text = b.finish()
 - `TextBuilder` is a value. Copying it copies the descriptor, and all copies
   alias the same builder state; appends through one copy are visible through
   another. This is memory-safe but deliberately shared, not unique ownership.
-- Builder state and buffers live in the store. `reset()` invalidates the
-  builder and every `Text` it produced; later use is a runtime stale check.
+- Builder state and buffers live in the store and end with it.
 - Growth allocates a new buffer in the same store, copies the old bytes, and
-  abandons the old buffer until reset. There is no per-builder free.
+  abandons the old buffer until the store ends. There is no per-builder free.
 - Builder length is `Int32` on the surface; allocation failure is fatal.
 - Strings are byte sequences. `append_byte(0)` can embed a NUL; methods use the
   stored length, so this is well-defined. C projection is not implemented and
@@ -1551,20 +1623,18 @@ the callee's function type, with union injection allowed at each argument.
 
 A program's value declarations are evaluated in source order, once, before
 `main`'s body runs in the generated C. Function declarations define code; a
-function body is evaluated when it is called. There are no side effects other
-than control flow yet, so the observable evaluation order is argument evaluation
-from left to right, followed by the call.
+function body is evaluated when it is called. Function-call arguments are
+evaluated from left to right, followed by the call. Dynamic-list index
+assignment evaluates the receiver and index, checks the index, evaluates the
+new value, and checks the index again before writing.
 
 An `if` evaluates its condition, then exactly one branch. A `while` evaluates its
 condition before each iteration. `&&` and `||` short-circuit. A struct
 constructor evaluates its arguments in the order written, then stores them in
 field order. Union injection stores a tag and the payload; `typeof x is T` reads the
-tag and has no other side effect. A store allocation bumps the arena offset; a
-reset discards every allocation in that store and bumps its generation.
-
-All storage is program-level or parameter storage for now. The stack/heap
-distinction, scopes, local storage, and lifetime regions are deliberately
-deferred.
+tag and has no other side effect. A store allocation bumps the arena offset. A `scope`
+evaluates its capacity, enters a fresh Store, runs its body, and releases the
+Store on every exit.
 
 ## The pointer model
 
@@ -1585,9 +1655,9 @@ language's behaviour:
   and `Float64` become `float` and `double`; `Bool` becomes `bool`; and `Nil`
   becomes a one-byte `nyx_nil` typedef.
 - `Text` becomes a `nyx_string` descriptor with a static-data pointer, store
-  id, byte offset, byte length, and generation. A static literal points at a
+  reference, byte offset, byte length, and generation. A static literal points at a
   generated read-only byte array. Arena-backed strings are allocated by the
-  store runtime and checked for store id, generation, and bounds on access.
+  store runtime and checked for store reference, generation, and bounds on access.
 - `TextBuilder` becomes a `nyx_builder` descriptor pointing at an aligned
   builder-state record in the store. The state holds the buffer offset, current
   length, and capacity. Growth and finishing are runtime helpers.
@@ -1596,8 +1666,8 @@ language's behaviour:
 - `List<T>` becomes a `nyx_list` descriptor pointing at store-backed state.
   The state holds the element-buffer offset, length, and capacity; push, pop,
   grow, index, and set are runtime helpers.
-- `Slice<T>` becomes a `nyx_slice` descriptor with store id, offset, length,
-  and generation. List/sub-slice creation and indexed reads are runtime
+- `Slice<T>` becomes a `nyx_slice` descriptor with store reference, the
+  parent list's state offset, the first element's index, length, and generation. List/sub-slice creation and indexed reads are runtime
   helpers; no allocation occurs.
 - `String<N>` becomes a `nyx_string_N` struct with a `uint8_t data[N+1]` array
   and a `uint32_t length`. A literal becomes a compound literal with its byte
@@ -1634,7 +1704,7 @@ language's behaviour:
   file.
 - A store becomes an entry in a global `nyx_store` table. The generated source
   carries the arena helpers: initialize, grow, allocate, bounds/generation
-  checks, write, reset, and free. `Handle<T>` becomes the opaque
+  checks, write, and free. A `scope` is a C block holding the Store header, with a per-activation cleanup chain. `Handle<T>` becomes the opaque
   `nyx_handle` struct. Call statements become `(void)(call);`.
 - Text helpers check `byte_at` bounds and compare bytes for equality. Error
   field methods become direct struct-member reads. The helper runtime is emitted
@@ -1690,8 +1760,8 @@ If compilation fails with no diagnostic recorded, the message is exactly
   nested generic construction may need an intermediate annotated variable.
 - Using a generic function as a first-class value.
 - The bidirectional pointer model and general ownership checking. Stores are
-  the implemented dynamic-memory model; there is no per-object free, no
-  first-class store value, and no local store declaration yet.
+  the implemented dynamic-memory model; there is no per-object free and no
+  first-class store value.
 - Exposing handle fields (`index`, `store`, `generation`); handles are opaque.
 - Compile-time folding of arithmetic for numeric widths other than `Int32`,
   and `const` bindings of other numeric types inside constant expressions.
@@ -1704,8 +1774,12 @@ If compilation fails with no diagnostic recorded, the message is exactly
 - The `build ... as ... do` block syntax; `TextBuilder` is first-class now.
 - C string projection (`cstr`), foreign string adoption, and explicit
   dynamic-to-fixed conversion.
-- Region/escape checking for dynamic strings and lists; they are runtime-checked
-  until scoped arenas exist.
+- Finer lifetime summaries: calls are checked per field only for struct
+  parameters of two to eight fields (not for nested paths or union alternatives),
+  and the analysis is conservative after reads from a Store and at function
+  values.
+- A chunked non-moving allocator, recycling across calls, and removing the
+  runtime generation fields.
 - Array slices and dynamic list literals.
 - Scoped `access` blocks for reading store data; `read` currently copies.
 - Concurrency and multithreading.

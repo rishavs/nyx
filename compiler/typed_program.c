@@ -23,6 +23,7 @@ void typed_program_init(TypedProgram *program)
     program->max_string_capacity = NIPPY_DEFAULT_MAX_STRING_CAPACITY;
     program->max_list_capacity = NIPPY_DEFAULT_MAX_LIST_CAPACITY;
     program->max_print_depth = NIPPY_DEFAULT_MAX_PRINT_DEPTH;
+    program->contains_scope = false;
 }
 
 void typed_program_free(TypedProgram *program)
@@ -56,6 +57,9 @@ bool typed_program_push(TypedProgram *program, const TypedNode *node,
         return false;
     }
     *out_index = program->nodes.length;
+    if (node->kind == TYPED_SCOPE) {
+        program->contains_scope = true;
+    }
     return list_push(&program->nodes, node);
 }
 

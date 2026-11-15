@@ -47,7 +47,6 @@ typedef enum {
     TYPED_IS,
     TYPED_STORE_DECLARATION,
     TYPED_STORE_ALLOC,
-    TYPED_STORE_RESET,
     TYPED_HANDLE_READ,
     TYPED_HANDLE_WRITE,
     TYPED_EXPRESSION_STATEMENT,
@@ -94,7 +93,8 @@ typedef enum {
     TYPED_RANGE_CREATE,
     TYPED_ERROR_CONSTRUCT,
     TYPED_ERROR_THROW,
-    TYPED_ERROR_FIELD
+    TYPED_ERROR_FIELD,
+    TYPED_SCOPE
 } TypedNodeKind;
 
 typedef enum {
@@ -181,7 +181,8 @@ typedef struct {
     size_t children_count;
     /* Secondary type link for TYPED_IS (the tested type). */
     size_t auxiliary_type;
-    /* Global store id for the store/handle nodes; TYPED_NO_NODE otherwise. */
+    /* Global Store id for allocation nodes, or TYPED_NO_NODE with name_index
+       identifying a Store capability. Handle reads and writes carry neither. */
     size_t store_id;
     /* TYPED_STRING_LITERAL points into TypedProgram.bytes. */
     size_t string_offset;
@@ -228,6 +229,9 @@ typedef struct {
     int max_string_capacity;
     int max_list_capacity;
     int max_print_depth;
+    /* True once a TYPED_SCOPE node has been pushed. The analyser and the
+       generator read it instead of scanning every node. */
+    bool contains_scope;
 } TypedProgram;
 
 void typed_program_init(TypedProgram *program);

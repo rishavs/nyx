@@ -61,10 +61,10 @@ TEST("dynamic list access reports its source location")
 
 TEST("stale dynamic list access reports its source location")
 {
-    TestResult result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "arena.reset()\n"
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
+        "scope arena = Store(64) do xs = arena.list<Int32>(1) end\n"
         "print(xs[0])\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list access location");
     if (result != TEST_PASS) return result;
@@ -87,25 +87,28 @@ TEST("list bounds")
 TEST("stale list")
 {
     const char *source =
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "xs.push(1)\n"
-        "arena.reset()\n"
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
+        "scope arena = Store(64) do\n"
+        " xs = arena.list<Int32>(1)\n"
+        " xs.push(1)\n"
+        "end\n"
         "xs.push(2)\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale dynamic list");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale dynamic list");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:7:")
                ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("stale list length reports its source location")
 {
-    TestResult result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "arena.reset()\nprint(xs.len())\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
+        "scope arena = Store(64) do xs = arena.list<Int32>(1) end\n"
+        "print(xs.len())\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list length location");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
@@ -114,18 +117,20 @@ TEST("stale list length reports its source location")
 
 TEST("stale list pop and optional get report their source locations")
 {
-    TestResult result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "arena.reset()\nprint(xs.pop())\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
+        "scope arena = Store(64) do xs = arena.list<Int32>(1) end\n"
+        "print(xs.pop())\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list pop location");
     if (result != TEST_PASS ||
         !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
         return TEST_FAIL;
-    result = run_generated_failure(
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
-        "arena.reset()\nprint(xs.get(0))\n",
+    result = run_escaped_failure(
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
+        "scope arena = Store(64) do xs = arena.list<Int32>(1) end\n"
+        "print(xs.get(0))\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list get location");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
@@ -318,17 +323,21 @@ TEST("list slice")
 TEST("stale slice")
 {
     const char *source =
-        "global arena: Store = Store(64)\n"
-        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "global keep: Store = Store(64)\n"
+        "var xs: List<Int32> = keep.list<Int32>(1)\n"
         "xs.push(1)\n"
         "var s: Slice<Int32> = xs.slice(0, 1)\n"
-        "arena.reset()\n"
+        "scope arena = Store(64) do\n"
+        " var ys: List<Int32> = arena.list<Int32>(1)\n"
+        " ys.push(1)\n"
+        " s = ys.slice(0, 1)\n"
+        "end\n"
         "var n: Int32 = s[0]\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale slice");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale slice");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:6:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:10:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -476,16 +485,18 @@ TEST("Table missing")
 TEST("Table stale")
 {
     const char *source =
-        "global arena: Store = Store(64)\n"
+        "global keep: Store = Store(64)\n"
         "var t: Table<String<8>, Int32> = "
-        "arena.table<String<8>, Int32>(2)\n"
-        "arena.reset()\n"
+        "keep.table<String<8>, Int32>(2)\n"
+        "scope arena = Store(64) do\n"
+        " t = arena.table<String<8>, Int32>(2)\n"
+        "end\n"
         "var n: Int32 = t[\"a\"]\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale Table");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale Table");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:6:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -638,4 +649,88 @@ TEST("union list get")
         "run()\n";
 
     return run_generated(source, "1\nnil\n", "union list get");
+}
+
+TEST("arena descriptors survive growth across stores")
+{
+    return run_generated(
+        "global first: Store = Store(1)\n"
+        "global second: Store = Store(1)\n"
+        "var h = first.alloc<Int32>(7)\n"
+        "var text = first.copy(\"hello\")\n"
+        "var xs = first.list<Int32>(1)\n"
+        "xs.push(3)\n"
+        "var view = xs.slice(0, 1)\n"
+        "var table = first.table<String<8>, Int32>(1)\n"
+        "table[\"x\"] = 9\n"
+        "var builder = second.builder(1)\n"
+        "builder.append(text)\n"
+        "xs.push(4) xs.push(5)\n"
+        "table[\"y\"] = 10 table[\"z\"] = 11\n"
+        "print(h.read(), text, view[0], table[\"x\"], builder.finish())\n",
+        "7 hello 3 9 hello\n", "descriptors after growth in two stores");
+}
+
+TEST("collection parameters need no global store")
+{
+    return run_generated(
+        "fun first(xs: List<Int32>): Int32 return xs[0] end\n"
+        "fun window(xs: Slice<Int32>): Int32 return xs[0] end\n"
+        "fun lookup(t: Table<String<8>, Int32>): Int32 return t[\"x\"] end\n",
+        "", "collection access helpers without global Stores");
+}
+
+TEST("list assignment survives Store growth on the right")
+{
+    return run_generated(
+        "global arena: Store = Store(1)\n"
+        "fun index(): Int32 print(\"index\") return 0 end\n"
+        "fun grow(): Int32\n"
+        "  print(\"value\")\n"
+        "  var text: Text = arena.copy(\"a long string forcing the store buffer to grow\")\n"
+        "  return text.byte_len()\n"
+        "end\n"
+        "var xs: List<Int32> = arena.list<Int32>(1)\n"
+        "xs.push(1)\n"
+        "xs[index()] = grow()\n"
+        "print(xs[0])\n",
+        "index\nvalue\n46\n", "list assignment across Store growth");
+}
+
+TEST("a slice follows its list when the list grows")
+{
+    /* A slice is a window onto its list. Growing the list moves the buffer,
+       and the window must follow instead of reading the old copy. */
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "var l: List<Int32> = arena.list<Int32>(2)\n"
+        "l.push(1)\n"
+        "l.push(2)\n"
+        "var s = l.slice(0, 2)\n"
+        "var t = s.slice(1, 1)\n"
+        "l.push(3)\n"
+        "l.push(4)\n"
+        "l.push(5)\n"
+        "l[0] = 99\n"
+        "l[1] = 98\n"
+        "print(s[0], s[1], s.len(), t[0])\n";
+
+    return run_generated(source, "99 98 2 98\n", "slice after list growth");
+}
+
+TEST("a slice traps when its list shrinks below the window")
+{
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "var l: List<Int32> = arena.list<Int32>(4)\n"
+        "l.push(1)\n"
+        "l.push(2)\n"
+        "l.push(3)\n"
+        "var s = l.slice(1, 2)\n"
+        "l.pop()\n"
+        "l.pop()\n"
+        "print(s.len())\n";
+
+    return run_generated_failure(source, MESSAGE_RUNTIME_LIST_BOUNDS + 7,
+                                 "slice window past the list end");
 }

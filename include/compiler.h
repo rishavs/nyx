@@ -16,7 +16,7 @@ typedef struct {
     int error_header_capacity;
     int error_description_capacity;
     int error_filename_capacity;
-    /* Source-size limit in bytes. 0 selects 4096. Enforced by
+    /* Source-size limit in bytes. 0 selects 1 MiB. Enforced by
        compiler_compile and by the command-line driver's read. */
     int max_source_bytes;
     /* Upper bound for String<N> capacities. 0 selects 4096. */
@@ -25,6 +25,12 @@ typedef struct {
     int max_list_capacity;
     /* Maximum pretty-print nesting depth. 0 selects 16. */
     int max_print_depth;
+    /* Test seam: skip the scoped-Store escape analysis. The runtime
+       generation checks stay in the generated program, so a program that lets
+       a value outlive its scope traps instead of being rejected. Lets the
+       suite exercise those checks, which analysis otherwise makes
+       unreachable. Never set it for user programs. */
+    bool skip_escape_analysis;
 } CompilerConfig;
 
 typedef struct {

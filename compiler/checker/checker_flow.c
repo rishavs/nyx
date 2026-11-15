@@ -13,6 +13,9 @@ static bool typed_statement_breaks_loop(const TypedProgram *program,
     if (node->kind == TYPED_BREAK) {
         return true;
     }
+    if (node->kind == TYPED_SCOPE) {
+        return typed_statement_breaks_loop(program, node->right_child);
+    }
     if (node->kind == TYPED_MATCH_BIND_STATEMENT) {
         return typed_statement_breaks_loop(program, node->right_child);
     }
@@ -74,6 +77,9 @@ bool typed_statement_returns(const TypedProgram *program, size_t index)
     if (node->kind == TYPED_RETURN) {
         return true;
     }
+    if (node->kind == TYPED_SCOPE) {
+        return typed_statement_returns(program, node->right_child);
+    }
     if (node->kind == TYPED_MATCH_BIND_STATEMENT) {
         return typed_statement_returns(program, node->right_child);
     }
@@ -106,6 +112,9 @@ bool typed_statement_terminates(const TypedProgram *program,
 {
     const TypedNode *node = typed_program_node(program, index);
 
+    if (node != NULL && node->kind == TYPED_SCOPE) {
+        return typed_statement_terminates(program, node->right_child);
+    }
     if (node != NULL && node->kind == TYPED_MATCH_BIND_STATEMENT) {
         return typed_statement_terminates(program, node->right_child);
     }

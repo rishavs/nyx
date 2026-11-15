@@ -230,3 +230,8 @@ bool program_uses_numeric_conversion(const TypedProgram *program)
     }
     return false;
 }
+
+bool program_uses_scope(const TypedProgram *program)
+{
+    return program->contains_scope;
+}

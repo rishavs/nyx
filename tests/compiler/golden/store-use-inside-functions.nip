@@ -1,4 +1,4 @@
-var s: Store = Store(16)
+global s: Store = Store(16)
 
 fun make(x: Int32): Handle<Int32>
   return s.alloc<Int32>(x)

@@ -81,7 +81,7 @@ TEST("store range trap")
 {
     return run_generated_trap(
         "    nyx_handle handle = {0};\n"
-        "    handle.store = 9999;\n"
+        "    handle.store = NULL;\n"
         "    handle.generation = 1;\n"
         "    (void)nyx_handle_pointer(handle, sizeof(int32_t));\n",
         MESSAGE_RUNTIME_STORE_RANGE, "store range trap");
@@ -91,7 +91,7 @@ TEST("handle bounds trap")
 {
     return run_generated_trap(
         "    nyx_handle handle = {0};\n"
-        "    handle.store = 0;\n"
+        "    handle.store = &nyx_stores[0];\n"
         "    handle.offset = 999999;\n"
         "    handle.generation = nyx_stores[0].generation;\n"
         "    (void)nyx_handle_pointer(handle, sizeof(int32_t));\n",
@@ -118,4 +118,21 @@ TEST("store OOM trap includes its location")
         "    nyx_store_reserve_at(&store, (size_t)-1, \"source.nip\", 2, 3, 4);\n"
         "    return 0;\n",
         "nippy: source.nip:2:3 (byte 4):", "positioned store OOM trap");
+}
+
+TEST("handle parameter can be printed without a global store")
+{
+    return run_generated("fun show(h: Handle<Int32>) print(h) end\n",
+                         "", "handle printer without a store");
+}
+
+TEST("handle operations compile without a global store")
+{
+    return run_generated(
+        "fun touch(h: Handle<Int32>): Int32\n"
+        "  h.write(3)\n"
+        "  if h == h then return h.read() end\n"
+        "  return 0\n"
+        "end\n",
+        "", "handle operations without a global store");
 }

@@ -3,7 +3,7 @@
 bool check_collection_method(CheckContext *ctx, const AstNode *node,
     const char *method, size_t ast_index, bool *handled)
 {
-    const StoreEntry *store = NULL;
+    StoreEntry store = {0};
     TypedNode typed = {0};
 
     if (strcmp(method, "len") == 0 ||
@@ -530,7 +530,7 @@ map_len_fallthrough:
         typed.name_index = TYPED_NO_NODE;
         typed.left_child = coerced;
         typed.right_child = TYPED_NO_NODE;
-        typed.store_id = store->id;
+        if (!set_store_reference(ctx, &typed, &store)) return false;
         typed.children_start = 0;
         typed.children_count = 0;
         return emit_node(ctx, &typed, ast_index, &(size_t){0});
@@ -592,7 +592,7 @@ map_len_fallthrough:
         typed.name_index = TYPED_NO_NODE;
         typed.left_child = coerced;
         typed.right_child = TYPED_NO_NODE;
-        typed.store_id = store->id;
+        if (!set_store_reference(ctx, &typed, &store)) return false;
         typed.children_start = 0;
         typed.children_count = 0;
         return emit_node(ctx, &typed, ast_index, &(size_t){0});

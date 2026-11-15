@@ -1,6 +1,8 @@
 /* Analyser stage: typed-program validation, driven by hand-built malformed programs. */
 
 #include "compile_support.h"
+#include "lexer.h"
+#include "parser.h"
 
 TEST("overflowing child run is rejected")
 {
@@ -689,4 +691,82 @@ TEST("fixed-type string literal")
     }
     typed_program_free(&program);
     return TEST_PASS;
+}
+
+TEST("capability validation reports allocation failure")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedNode node = {0};
+    size_t index;
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    node.kind = TYPED_BLOCK;
+    node.name_index = TYPED_NO_NODE;
+    node.type_index = TYPED_NO_NODE;
+    node.auxiliary_type = TYPED_NO_NODE;
+    node.left_child = TYPED_NO_NODE;
+    node.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &node, &index) ||
+        !list_push(&program.roots, &index)) {
+        typed_program_free(&program);
+        return TEST_ERROR;
+    }
+    nippy_alloc_fail_after(0);
+    ok = !analyser_analyse(&program, &errors) &&
+         error_contains(&errors, MESSAGE_ANALYSER_OUT_OF_MEMORY);
+    nippy_alloc_reset();
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("named Store capability belongs to its function")
+{
+    const char *source =
+        "fun first(a: Store): Text return a.copy(\"x\") end\n"
+        "fun second(b: Store): Text return b.copy(\"x\") end\n";
+    LexerResult lexed = lexer_tokenize(source);
+    Ast ast;
+    TypedProgram program;
+    ErrorState errors;
+    size_t foreign = TYPED_NO_NODE;
+    size_t i;
+    bool changed = false, ok;
+
+    error_init(&errors);
+    typed_program_init(&program);
+    if (!lexed.succeeded ||
+        !parser_parse(&lexed.tokens, &lexed.string_bytes, &ast, &errors)) {
+        lexer_result_free(&lexed);
+        typed_program_free(&program);
+        return TEST_ERROR;
+    }
+    ok = checker_check(&ast, &program, &errors);
+    ast_free(&ast);
+    lexer_result_free(&lexed);
+    if (!ok) {
+        typed_program_free(&program);
+        return TEST_ERROR;
+    }
+    foreign = typed_program_copy_symbol(&program, "b", 1);
+    for (i = 0; i < program.nodes.length; i++) {
+        TypedNode *node = (TypedNode *)list_get(&program.nodes, i);
+        if (node->kind == TYPED_STRING_COPY && node->store_id == TYPED_NO_NODE &&
+            strcmp(typed_program_symbol_text(&program, node->name_index), "a") == 0) {
+            node->name_index = foreign;
+            changed = true;
+            break;
+        }
+    }
+    error_init(&errors);
+    {
+        char expected[256];
+        expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_STORE_ID, i);
+        ok = changed && !analyser_analyse(&program, &errors) &&
+             error_contains(&errors, expected);
+    }
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
 }

@@ -418,3 +418,50 @@ TEST("fallback: unknown error")
     }
     return TEST_PASS;
 }
+
+/* The default source limit is 1 MiB, so a program of that order must compile in
+   about a second. A pass that is quadratic in the number of functions or
+   scopes makes this test time out. */
+TEST("a program near the source limit compiles")
+{
+    const size_t functions = 1500;
+    size_t capacity = functions * 200 + 512;
+    char *source;
+    size_t length = 0;
+    size_t i;
+    CompilerResult result;
+    TestResult status;
+
+    if (getenv("NIPPY_POISON_BUILD") != NULL) {
+        return TEST_TODO;
+    }
+    source = malloc(capacity);
+    if (source == NULL) {
+        return TEST_ERROR;
+    }
+    length += (size_t)snprintf(
+        source + length, capacity - length,
+        "global root: Store = Store(65536)\n"
+        "fun put(l: List<Text>, t: Text) l.push(t) end\n");
+    for (i = 0; i < functions; i++) {
+        length += (size_t)snprintf(
+            source + length, capacity - length,
+            "fun f%zu(s: Store, l: List<Text>, t: Text)\n"
+            " scope x = Store(64) do l.push(s.copy(x.copy(\"a\"))) end\n"
+            " %s\nend\n",
+            i, i == 0 ? "put(l, t)" : "f0(s, l, t)");
+    }
+    length += (size_t)snprintf(
+        source + length, capacity - length,
+        "scope s = Store(4096) do\n var l: List<Text> = s.list<Text>(8)\n"
+        " f%zu(s, l, s.copy(\"z\"))\n print(l.len())\nend\n", functions - 1);
+    result = compiler_compile(source, &test_config);
+    status = result.succeeded ? TEST_PASS : TEST_FAIL;
+    if (!result.succeeded) {
+        fprintf(stderr, "  large program did not compile: %s\n",
+                result.error_message == NULL ? "(none)" : result.error_message);
+    }
+    compiler_result_free(&result);
+    free(source);
+    return status;
+}

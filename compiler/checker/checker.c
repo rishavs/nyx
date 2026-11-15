@@ -471,6 +471,55 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
                            out_typed);
     }
 
+    if (node->kind == AST_SCOPE) {
+        const char *name = ast_symbol_text(ctx->ast, node->name_index);
+        size_t capacity, int32_type, store_type, body;
+        size_t locals_start = ctx->locals->length;
+        VariableEntry entry = {0};
+        bool checked;
+
+        if (name == NULL || find_variable(ctx->locals, name) != NULL ||
+            (!ctx->in_function && find_variable(ctx->globals, name) != NULL) ||
+            find_store(ctx->stores, name) != NULL || find_type(ctx->types, name) != NULL ||
+            find_function(ctx, name) != NULL || is_builtin_type_name(name) ||
+            is_builtin_function_name(name)) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
+                            name == NULL ? "" : name);
+            return false;
+        }
+        if (!check_reserved_name(ctx, node->pos, name) ||
+            !check_negative_capacity(ctx, node->left_child) ||
+            !builtin_type(ctx, NIPPY_TYPE_INT32, &int32_type)) return false;
+        if (!check_expression_coerced(ctx, node->left_child, int32_type, &capacity)) {
+            if (!ctx->errors->reported)
+                error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_SCOPE_CAPACITY);
+            return false;
+        }
+        if (!builtin_type(ctx, NIPPY_TYPE_STORE, &store_type)) return false;
+        memcpy(entry.name, name, strlen(name) + 1);
+        entry.type_index = store_type;
+        entry.is_const = true;
+        if (!list_push(ctx->locals, &entry)) {
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            return false;
+        }
+        checked = check_block(ctx, node->right_child, return_type, &body);
+        ctx->locals->length = locals_start;
+        if (!checked) return false;
+        typed.kind = TYPED_SCOPE;
+        typed.type_index = store_type;
+        typed.pos = node->pos;
+        typed.name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
+        if (typed.name_index == TYPED_NO_NODE) {
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+            return false;
+        }
+        typed.left_child = capacity;
+        typed.right_child = body;
+        typed.store_id = TYPED_NO_NODE;
+        return emit_node(ctx, &typed, ast_index, out_typed);
+    }
+
     if (node->kind == AST_WHILE) {
         size_t condition;
         size_t body;
@@ -1077,6 +1126,7 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
             break;
         case AST_IF:
         case AST_MATCH:
+        case AST_SCOPE:
         case AST_WHILE:
             checked = check_statement(&ctx, ast_root, TYPED_NO_NODE,
                                       &(size_t){0});
@@ -1137,7 +1187,9 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
                 type->child_count == 1) {
                 size_t element = *(const size_t *)list_get(&program->type_children,
                                                             type->first_child);
-                if (!is_fixed_type(program, element)) {
+                bool valid;
+                if (!check_handle_payload(&ctx, element, &valid)) goto done;
+                if (!valid) {
                     error_report(errors, MESSAGE_CHECKER_HANDLE_FIXED);
                     had_errors = true;
                     break;

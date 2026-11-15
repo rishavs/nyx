@@ -241,13 +241,98 @@ bool is_fixed_type(const TypedProgram *program, size_t type_index)
     return is_fixed_type_depth(program, type_index, NIPPY_TYPE_DEPTH);
 }
 
+/* Payload validation follows handle edges too; recursive handle graphs are
+   finite even when their inline layout is recursive through an opaque handle. */
+bool check_handle_payload(CheckContext *ctx, size_t type_index, bool *valid)
+{
+    const TypedProgram *program = ctx->program;
+    unsigned char *seen;
+    List pending;
+    bool ok = false;
+
+    *valid = false;
+    seen = nippy_malloc(program->types.length == 0 ? 1 : program->types.length);
+    if (seen == NULL) {
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        return false;
+    }
+    memset(seen, 0, program->types.length);
+    list_init(&pending, sizeof(size_t));
+    if (!list_push(&pending, &type_index)) goto out_of_memory;
+    while (pending.length != 0) {
+        const TypedType *type;
+        size_t current;
+        size_t i;
+
+        if (!list_pop(&pending, &current)) goto out_of_memory;
+        if (current >= program->types.length) goto done;
+        if (seen[current]) continue;
+        seen[current] = 1;
+        type = typed_program_type(program, current);
+        if (type == NULL) goto done;
+        if (nippy_type_is_numeric(type->kind)) continue;
+        switch (type->kind) {
+        case NIPPY_TYPE_BOOL:
+        case NIPPY_TYPE_NIL:
+        case NIPPY_TYPE_STRING:
+        case NIPPY_TYPE_DYNAMIC_STRING:
+        case NIPPY_TYPE_FUNCTION:
+        case NIPPY_TYPE_ERROR:
+        case NIPPY_TYPE_RANGE:
+            break;
+        case NIPPY_TYPE_HANDLE:
+        case NIPPY_TYPE_FIXED_LIST:
+        case NIPPY_TYPE_UNION:
+            if ((type->kind == NIPPY_TYPE_HANDLE ||
+                 type->kind == NIPPY_TYPE_FIXED_LIST) && type->child_count != 1)
+                goto done;
+            for (i = 0; i < type->child_count; i++) {
+                const size_t *child = list_get(&program->type_children,
+                                               type->first_child + i);
+                if (child == NULL) goto done;
+                if (!list_push(&pending, child)) goto out_of_memory;
+            }
+            break;
+        case NIPPY_TYPE_STRUCT: {
+            const TypedNode *decl = typed_program_node(program, type->declaration_node);
+            if (decl == NULL || decl->kind != TYPED_TYPE_DECLARATION) goto done;
+            for (i = 0; i < decl->children_count; i++) {
+                const size_t *child = list_get(&program->children,
+                                               decl->children_start + i);
+                const TypedNode *field = child == NULL ? NULL :
+                                         typed_program_node(program, *child);
+                if (field == NULL || field->kind != TYPED_FIELD) goto done;
+                if (!list_push(&pending, &field->type_index)) goto out_of_memory;
+            }
+            break;
+        }
+        default:
+            goto done;
+        }
+    }
+    *valid = true;
+done:
+    ok = true;
+    goto cleanup;
+out_of_memory:
+    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+cleanup:
+    list_free(&pending);
+    free(seen);
+    return ok;
+}
+
 bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
 {
     size_t i;
 
-    if (ctx->handle_depth == 0 && !is_fixed_type(ctx->program, element)) {
-        error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
-        return false;
+    if (ctx->handle_depth == 0) {
+        bool valid;
+        if (!check_handle_payload(ctx, element, &valid)) return false;
+        if (!valid) {
+            error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+            return false;
+        }
     }
     for (i = 0; i < ctx->program->types.length; i++) {
         const TypedType *type = typed_program_type(ctx->program, i);
@@ -722,19 +807,19 @@ static bool type_layout_depth(CheckContext *ctx, size_t type_index,
     case NIPPY_TYPE_LIST:
     case NIPPY_TYPE_TEXT_BUILDER:
     case NIPPY_TYPE_TABLE:
-        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(void *));
         layout_member(&result, SCALAR_LAYOUT(size_t));
         layout_member(&result, SCALAR_LAYOUT(uint64_t));
         break;
     case NIPPY_TYPE_DYNAMIC_STRING:
         layout_member(&result, SCALAR_LAYOUT(const uint8_t *));
-        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(void *));
         layout_member(&result, SCALAR_LAYOUT(size_t));
         layout_member(&result, SCALAR_LAYOUT(size_t));
         layout_member(&result, SCALAR_LAYOUT(uint64_t));
         break;
     case NIPPY_TYPE_SLICE:
-        layout_member(&result, SCALAR_LAYOUT(uint32_t));
+        layout_member(&result, SCALAR_LAYOUT(void *));
         layout_member(&result, SCALAR_LAYOUT(size_t));
         layout_member(&result, SCALAR_LAYOUT(size_t));
         layout_member(&result, SCALAR_LAYOUT(size_t));

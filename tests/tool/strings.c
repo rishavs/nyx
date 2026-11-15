@@ -110,13 +110,13 @@ TEST("dynamic strings")
 TEST("stale dynamic string")
 {
     const char *source =
-        "global arena: Store = Store(16)\n"
-        "var s: Text = arena.copy(\"hi\")\n"
-        "arena.reset()\n"
+        "global keep: Store = Store(16)\n"
+        "var s: Text = keep.copy(\"hi\")\n"
+        "scope arena = Store(16) do s = arena.copy(\"hi\") end\n"
         "var b: Byte = s.byte_at(0)\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale dynamic string");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale dynamic string");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
@@ -140,26 +140,25 @@ TEST("dynamic string bounds")
 TEST("stale dynamic string length")
 {
     const char *source =
-        "global arena: Store = Store(16)\n"
-        "var s: Text = arena.copy(\"hi\")\n"
-        "arena.reset()\n"
+        "global keep: Store = Store(16)\n"
+        "var s: Text = keep.copy(\"hi\")\n"
+        "scope arena = Store(16) do s = arena.copy(\"hi\") end\n"
         "var n: Int32 = s.byte_len()\n";
 
-    return run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                 "stale dynamic string length");
+    return run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                               "stale dynamic string length");
 }
 
 TEST("copying a stale string reports the copy location")
 {
-    TestResult result = run_generated_failure(
-        "global a: Store = Store(16)\n"
+    TestResult result = run_escaped_failure(
         "global b: Store = Store(16)\n"
-        "var s: Text = a.copy(\"hi\")\n"
-        "a.reset()\n"
+        "var s: Text = b.copy(\"hi\")\n"
+        "scope a = Store(16) do s = a.copy(\"hi\") end\n"
         "var copy: Text = b.copy(s)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale string copy location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -195,16 +194,18 @@ TEST("TextBuilder")
 TEST("stale TextBuilder")
 {
     const char *source =
-        "global arena: Store = Store(64)\n"
-        "var b: TextBuilder = arena.builder(4)\n"
-        "b.append(\"hi\")\n"
-        "arena.reset()\n"
+        "global keep: Store = Store(64)\n"
+        "var b: TextBuilder = keep.builder(4)\n"
+        "scope arena = Store(64) do\n"
+        " b = arena.builder(4)\n"
+        " b.append(\"hi\")\n"
+        "end\n"
         "b.append(\"x\")\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale TextBuilder");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale TextBuilder");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:7:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -340,4 +341,27 @@ TEST("Error::throw")
         "Error(E, desc, test.nip, 1, 23, 22)\n";
 
     return run_generated(source, expected, "Error::throw");
+}
+
+TEST("copy and concat from the same growing store")
+{
+    return run_generated(
+        "global arena: Store = Store(1)\n"
+        "var a: Text = arena.copy(\"alpha\")\n"
+        "var b: Text = arena.concat(a, a)\n"
+        "var c: Text = arena.copy(b)\n"
+        "var builder = arena.builder(1)\n"
+        "builder.append(c)\n"
+        "builder.append(a)\n"
+        "print(a, b, c, builder.finish())\n",
+        "alpha alphaalpha alphaalpha alphaalphaalpha\n",
+        "same-store copying across growth");
+}
+
+TEST("text and builder parameters need no global store")
+{
+    return run_generated(
+        "fun size(t: Text): Int32 return t.byte_len() end\n"
+        "fun finish(b: TextBuilder): Text return b.finish() end\n",
+        "", "Text and builder helpers without global Stores");
 }

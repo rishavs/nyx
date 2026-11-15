@@ -126,7 +126,7 @@ static bool emit_one_equality(const TypedProgram *p, size_t index, TextBuffer *o
             "    nyx_table_state_%zu *sa = nyx_table_%zu_state_at(a, file, line, column, pos);\n"
             "    nyx_table_state_%zu *sb = nyx_table_%zu_state_at(b, file, line, column, pos);\n"
             "    if (sa->length != sb->length) return false;\n"
-            "    nyx_store *as = &nyx_stores[a.store], *bs = &nyx_stores[b.store];\n"
+            "    nyx_store *as = a.store, *bs = b.store;\n"
             "    %s *keys = (%s *)(void *)(as->data + sa->keys_offset);\n"
             "    %s *av = (%s *)(void *)(as->data + sa->values_offset);\n"
             "    %s *bv = (%s *)(void *)(bs->data + sb->values_offset);\n"
@@ -221,16 +221,9 @@ bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *e
         }
     }
     if (ok && validate_handle) {
-        if (count_store_declarations(p) != 0) {
-            ok = buffer_append(out,
-                "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
-                "{ (void)nyx_handle_pointer_at(h, 0, file, line, column, pos); }\n\n");
-        } else {
-            ok = buffer_append(out,
-                "#include <stdio.h>\n#include <stdlib.h>\n"
-                "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
-                "{ (void)h; fflush(stdout); fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, \"" MESSAGE_RUNTIME_STORE_RANGE "\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1); exit(1); }\n\n");
-        }
+        ok = buffer_append(out,
+            "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
+            "{ (void)nyx_handle_pointer_at(h, 0, file, line, column, pos); }\n\n");
     }
     for (i = 0; ok && i < types.length; i++) {
         size_t type = *(const size_t *)list_get(&types, i);

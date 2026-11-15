@@ -231,6 +231,10 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
         snprintf(out, out_size, "uint8_t");
         return true;
     }
+    if (type->kind == NIPPY_TYPE_STORE) {
+        snprintf(out, out_size, "nyx_store *");
+        return true;
+    }
     if (type->kind == NIPPY_TYPE_HANDLE) {
         snprintf(out, out_size, "nyx_handle");
         return true;
@@ -553,6 +557,28 @@ size_t find_store_declaration(const TypedProgram *program,
 bool store_id_is_valid(const TypedProgram *program, size_t store_id)
 {
     return find_store_declaration(program, store_id) != TYPED_NO_NODE;
+}
+
+bool store_reference_is_valid(const TypedProgram *program, const TypedNode *node)
+{
+    if (node->store_id != TYPED_NO_NODE)
+        return store_id_is_valid(program, node->store_id);
+    return valid_identifier(typed_program_symbol_text(program, node->name_index));
+}
+
+bool emit_store_reference(const TypedProgram *program, const TypedNode *node,
+                          TextBuffer *buffer, ErrorState *errors)
+{
+    if (!store_reference_is_valid(program, node)) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+        return false;
+    }
+    if (node->store_id == TYPED_NO_NODE) {
+        char name[USER_NAME_CAPACITY];
+        return buffer_append(buffer, user_c_name(program, node->name_index,
+                                                  name, sizeof(name)));
+    }
+    return buffer_appendf(buffer, "&nyx_stores[%zu]", node->store_id);
 }
 
 bool type_is_c_aggregate(const TypedProgram *program, size_t type_index)

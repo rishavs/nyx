@@ -1,2 +1,2 @@
-var s: Store = Store(16)
-s.reset()
+global s: Store = Store(16)
+s.alloc<Int32>(1)

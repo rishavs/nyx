@@ -4,7 +4,7 @@
 - Start date: 2026-11-13
 - RFC PR: pending
 - Tracking issue: pending
-- Status: proposed, implementation specification
+- Status: implemented, with a conservative analysis (see Implementation status)
 
 ## Summary
 
@@ -454,6 +454,44 @@ behavior, and migration. Follow-up decisions include the measured value of
 recycling, chunked growth, and removing generation fields, and which programs
 justify more precise indirect calls or reads through arena memory. Those
 changes require their own specification and evidence.
+
+## Implementation status
+
+Implemented: the `scope` statement and its cleanup on every exit; Store
+parameters and capability rules; `global` as the only Store declaration (a
+`var`/`const` Store is rejected); removal of `reset()`; escape checking for
+assignments, inline writes, arena writes, returns, direct calls (including
+recursion), and function values, with per-field and per-alternative facts for
+inline structs and unions; diagnostics that name the origin Store and the
+destination and add notes at the allocation and at the retaining operation;
+rejection of expanding generic recursion at the declaration; loop recycling of
+scope buffers; and the descriptor ABI over stable Store headers. Runtime
+generation and bounds checks remain, and each entered scope gets a unique
+generation.
+
+Deviations from the text below:
+
+- The escape analysis is in the analyser (`compiler/analyser/analyser_regions.c`),
+  not the checker. A value has one depth range (`[lo, hi]`, standing for
+  `floor` and `upper`) and a set of parameter slots it derives from, rather
+  than separate `upper`, `backing`, and `floor` facts. A call summary is kept
+  per parameter slot: one slot per field for a struct parameter of two to eight
+  fields, otherwise one per parameter; unions and nested paths are not split
+  across calls. It is sound but less precise after an arena read. ARCH.md
+  describes it.
+- A function that may write a parameter into a global Store is rejected where it
+  becomes a function value, instead of at each indirect call.
+- The witness for a call error is the allocation and the retaining operation
+  in the callee, not a full chain through nested helpers.
+- A type may still refer to a type declared later through a `Handle` (mutual
+  recursion), which the tests already relied on; only a generic type's
+  self-reference with other arguments is rejected.
+
+Measurements (this machine, 2,000,000 iterations of a scope holding a handle
+and a copied string): the scope inside the loop takes 0.12 s and one buffer
+allocation; the same body in a handler called from the loop takes 0.15 s and
+allocates 2,000,000 times. Compiling a 61 KB program of 400 functions, each
+with a scope and a call chain, takes 0.85 s including the C compiler.
 
 ## Implementation plan
 

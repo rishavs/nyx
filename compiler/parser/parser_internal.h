@@ -98,6 +98,8 @@ bool make_if_node(Ast *ast, size_t condition, size_t then_block, size_t else_blo
     SourcePos pos, size_t *out_index);
 bool parse_if(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
+bool parse_scope(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                 size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_while(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_for(const TokenList *tokens, const List *string_bytes, Ast *ast,

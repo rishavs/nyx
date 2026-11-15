@@ -39,23 +39,27 @@ TEST("list record and table equality")
 
 TEST("stale table equality")
 {
-    TestResult result = run_generated_failure(
-        "global s: Store = Store(32)\n"
-        "var a: Table<String<4>, Int32> = s.table<String<4>, Int32>(1)\n"
-        "var b: Table<String<4>, Int32> = s.table<String<4>, Int32>(1)\n"
-        "s.reset()\nprint(a == b)\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(32)\n"
+        "var a: Table<String<4>, Int32> = keep.table<String<4>, Int32>(1)\n"
+        "var b: Table<String<4>, Int32> = keep.table<String<4>, Int32>(1)\n"
+        "scope s = Store(32) do\n"
+        " a = s.table<String<4>, Int32>(1)\n"
+        " b = s.table<String<4>, Int32>(1)\n"
+        "end\nprint(a == b)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale table equality");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:5:")
+    return file_contains(test_path("runtime.log"), "nippy: test.nip:8:")
                ? TEST_PASS : TEST_FAIL;
 }
 
 TEST("string equality validates stale strings even when lengths differ")
 {
-    TestResult result = run_generated_failure(
-        "global s: Store = Store(32)\n"
-        "var text: Text = s.copy(\"long\")\n"
-        "s.reset()\nprint(text == \"x\")\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(32)\n"
+        "var text: Text = keep.copy(\"long\")\n"
+        "scope s = Store(32) do text = s.copy(\"long\") end\n"
+        "print(text == \"x\")\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale text equality");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
@@ -75,11 +79,14 @@ TEST("cross type string equality")
 
 TEST("stale list equality")
 {
-    return run_generated_failure(
-        "global s: Store = Store(32)\n"
-        "var a: List<Int32> = s.list<Int32>(1)\n"
-        "var b: List<Int32> = s.list<Int32>(1)\n"
-        "s.reset()\nprint(a == b)\n",
+    return run_escaped_failure(
+        "global keep: Store = Store(32)\n"
+        "var a: List<Int32> = keep.list<Int32>(1)\n"
+        "var b: List<Int32> = keep.list<Int32>(1)\n"
+        "scope s = Store(32) do\n"
+        " a = s.list<Int32>(1)\n"
+        " b = s.list<Int32>(1)\n"
+        "end\nprint(a == b)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list equality");
 }
 
@@ -115,33 +122,37 @@ TEST("handles nested in comparable composites")
 
 TEST("stale handle equality")
 {
-    return run_generated_failure(
-        "global s: Store = Store(32) var h = s.alloc<Int32>(1)\n"
-        "s.reset() print(h == h)\n", MESSAGE_RUNTIME_STALE_HANDLE + 7,
+    return run_escaped_failure(
+        "global keep: Store = Store(32) var h = keep.alloc<Int32>(1)\n"
+        "scope s = Store(32) do h = s.alloc<Int32>(1) end print(h == h)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7,
         "stale handle equality");
 }
 
 TEST("stale handle strict equality across types")
 {
-    return run_generated_failure(
-        "global s: Store = Store(32) var h = s.alloc<Int32>(1)\n"
-        "s.reset() var w = s.alloc<Int64>(1) print(h === w)\n",
+    return run_escaped_failure(
+        "global keep: Store = Store(32) var h = keep.alloc<Int32>(1)\n"
+        "scope s = Store(32) do h = s.alloc<Int32>(1) end\n"
+        "var w = keep.alloc<Int64>(1) print(h === w)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale mixed handle strict equality");
 }
 
 TEST("stale right handle strict equality")
 {
-    return run_generated_failure(
-        "global s: Store = Store(32) var old = s.alloc<Int32>(1)\n"
-        "s.reset() var current = s.alloc<Int64>(1) print(current === old)\n",
+    return run_escaped_failure(
+        "global keep: Store = Store(32) var old = keep.alloc<Int32>(1)\n"
+        "scope s = Store(32) do old = s.alloc<Int32>(1) end\n"
+        "var current = keep.alloc<Int64>(1) print(current === old)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale right handle strict equality");
 }
 
 TEST("stale handle strict equality with value")
 {
-    return run_generated_failure(
-        "global s: Store = Store(32) var old = s.alloc<Int32>(1)\n"
-        "s.reset() print(3 === old)\n", MESSAGE_RUNTIME_STALE_HANDLE + 7,
+    return run_escaped_failure(
+        "global keep: Store = Store(32) var old = keep.alloc<Int32>(1)\n"
+        "scope s = Store(32) do old = s.alloc<Int32>(1) end print(3 === old)\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + 7,
         "stale handle strict equality with value");
 }
 

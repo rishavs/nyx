@@ -1,7 +1,7 @@
 #include "generator_internal.h"
 
 
-bool emit_list_runtime(const TypedProgram *program, size_t store_count,
+bool emit_list_runtime(const TypedProgram *program,
                               TextBuffer *source, ErrorState *errors)
 {
     bool ok = true;
@@ -76,7 +76,7 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                        type->fixed_length,
                        element_name, i, list_name);
     }
-    if (store_count > 0) {
+    {
         bool dynamic_list = false;
 
         for (i = 0; i < program->types.length; i++) {
@@ -98,16 +98,16 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "static NIPPY_UNUSED nyx_store *nyx_list_store_at("
                            "nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n"
                            "{\n"
-                           "    if (list.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                           "    if (list.store == NULL) {\n"
                            "        nyx_list_fail_at(\""
                            MESSAGE_RUNTIME_STORE_RANGE "\", file, line, column, pos);\n"
                            "    }\n"
-                           "    if (nyx_stores[list.store].generation != "
+                           "    if (list.store->generation != "
                            "list.generation) {\n"
                            "        nyx_list_fail_at(\""
                            MESSAGE_RUNTIME_STALE_HANDLE "\", file, line, column, pos);\n"
                            "    }\n"
-                           "    return &nyx_stores[list.store];\n"
+                           "    return list.store;\n"
                            "}\n\n"
                            "static NIPPY_UNUSED nyx_store *nyx_list_store(nyx_list list)\n"
                            "{ return nyx_list_store_at(list, NULL, 0, 0, 0); }\n\n"
@@ -162,7 +162,7 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
             ok = ok && buffer_append(
                            source,
                            "static NIPPY_UNUSED nyx_list nyx_list_create("
-                           "nyx_store *store, uint32_t id, int32_t capacity,\n"
+                           "nyx_store *store, int32_t capacity,\n"
                            "                                              "
                            "size_t element_size, size_t alignment, const char *file, size_t line, size_t column, size_t pos)\n"
                            "{\n"
@@ -186,16 +186,16 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\", file, line, column, pos);\n"
                            "    }\n"
                            "    bytes = cap * element_size;\n"
-                           "    buffer = nyx_store_alloc_bytes_aligned_at(store, id,\n"
+                           "    buffer = nyx_store_alloc_bytes_aligned_at(store,\n"
                            "        bytes == 0 ? 1 : bytes, alignment, file, line, column, pos);\n"
                            "    state.offset = buffer;\n"
                            "    state.length = 0;\n"
                            "    state.capacity = cap;\n"
-                           "    handle = nyx_store_alloc_at(store, id, &state, "
+                           "    handle = nyx_store_alloc_at(store, &state, "
                            "sizeof(state),\n"
                            "                               "
                            "_Alignof(nyx_list_state), file, line, column, pos);\n"
-                           "    list.store = id;\n"
+                           "    list.store = store;\n"
                            "    list.offset = handle.offset;\n"
                            "    list.generation = handle.generation;\n"
                            "    return list;\n"
@@ -243,7 +243,7 @@ bool emit_list_runtime(const TypedProgram *program, size_t store_count,
                            "        }\n"
                            "        new_bytes = capacity * element_size;\n"
                            "        new_offset = nyx_store_alloc_bytes_aligned_at(\n"
-                           "            nyx_list_store_at(list, file, line, column, pos), list.store, "
+                           "            nyx_list_store_at(list, file, line, column, pos), "
                            "new_bytes,\n"
                            "            alignment, file, line, column, pos);\n"
                            "        store = nyx_list_store_at(list, file, line, column, pos);\n"
@@ -639,13 +639,13 @@ bool emit_slice_runtime(const TypedProgram *program, TextBuffer *source,
                    source,
                    "static NIPPY_UNUSED nyx_store *nyx_slice_store_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
-                   "    if (slice.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                   "    if (slice.store == NULL) {\n"
                    "        nyx_list_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    if (nyx_stores[slice.store].generation != slice.generation) {\n"
+                   "    if (slice.store->generation != slice.generation) {\n"
                    "        nyx_list_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    return &nyx_stores[slice.store];\n"
+                   "    return slice.store;\n"
                    "}\n"
                    "\n"
                    "static NIPPY_UNUSED nyx_list_state *nyx_slice_window_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"

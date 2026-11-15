@@ -54,7 +54,11 @@ bool emit_expr_literals(const TypedProgram *program, const TypedNode *node,
         return true;
     }
     if (node->kind == TYPED_IDENTIFIER) {
+        const TypedType *identifier_type = typed_program_type(program, node->type_index);
         *handled = true;
+        if (identifier_type != NULL && identifier_type->kind == NIPPY_TYPE_STORE) {
+            return emit_store_reference(program, node, buffer, errors);
+        }
         if (node->is_self) {
             if (!buffer_append(buffer, "(*nyx_self)")) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);

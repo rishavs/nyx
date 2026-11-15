@@ -5,7 +5,7 @@
 TEST("store alloc/read")
 {
     const char *source =
-        "var s: Store = Store(1)\n"
+        "global s: Store = Store(1)\n"
         "var n: Int32 = s.alloc<Int32>(42).read()\n";
 
     return run_generated(source, "42\n", "store alloc/read");
@@ -14,7 +14,7 @@ TEST("store alloc/read")
 TEST("store write")
 {
     const char *source =
-        "var s: Store = Store(1)\n"
+        "global s: Store = Store(1)\n"
         "fun roundtrip(h: Handle<Int32>): Int32\n"
         "  h.write(42)\n"
         "  return h.read()\n"
@@ -27,7 +27,7 @@ TEST("store write")
 TEST("store byte")
 {
     const char *source =
-        "var s: Store = Store(1)\n"
+        "global s: Store = Store(1)\n"
         "fun byte_ok(): Int32\n"
         "  if s.alloc<Byte>(255).read() == 255 then\n"
         "    return 1\n"
@@ -42,7 +42,7 @@ TEST("store byte")
 TEST("store growth")
 {
     const char *source =
-        "var s: Store = Store(1)\n"
+        "global s: Store = Store(1)\n"
         "var a0: Handle<Int32> = s.alloc<Int32>(0)\n"
         "var a1: Handle<Int32> = s.alloc<Int32>(1)\n"
         "var a2: Handle<Int32> = s.alloc<Int32>(2)\n"
@@ -71,13 +71,13 @@ TEST("store growth")
 TEST("stale handle")
 {
     const char *source =
-        "var s: Store = Store(16)\n"
-        "var h: Handle<Int32> = s.alloc<Int32>(1)\n"
-        "s.reset()\n"
+        "global keep: Store = Store(16)\n"
+        "var h: Handle<Int32> = keep.alloc<Int32>(1)\n"
+        "scope s = Store(16) do h = s.alloc<Int32>(1) end\n"
         "var n: Int32 = h.read()\n";
 
-    TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
-                                              "stale handle");
+    TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
+                                            "stale handle");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
@@ -85,10 +85,10 @@ TEST("stale handle")
 
 TEST("stale handle write reports its source location")
 {
-    TestResult result = run_generated_failure(
-        "var s: Store = Store(16)\n"
-        "var h: Handle<Int32> = s.alloc<Int32>(1)\n"
-        "s.reset()\nh.write(2)\n",
+    TestResult result = run_escaped_failure(
+        "global keep: Store = Store(16)\n"
+        "var h: Handle<Int32> = keep.alloc<Int32>(1)\n"
+        "scope s = Store(16) do h = s.alloc<Int32>(1) end\nh.write(2)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale handle write location");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
@@ -98,8 +98,8 @@ TEST("stale handle write reports its source location")
 TEST("two stores")
 {
     const char *source =
-        "var a: Store = Store(1)\n"
-        "var b: Store = Store(1)\n"
+        "global a: Store = Store(1)\n"
+        "global b: Store = Store(1)\n"
         "var n: Int32 = a.alloc<Int32>(1).read() + "
         "b.alloc<Int32>(2).read()\n";
 
@@ -112,7 +112,7 @@ TEST("Error in store")
         "fun line_of(h: Handle<Error>): Int32\n"
         "  return h.read().line()\n"
         "end\n"
-        "var arena: Store = Store(4096)\n"
+        "global arena: Store = Store(4096)\n"
         "var n: Int32 = line_of(arena.alloc<Error>("
         "Error(\"E\", \"d\", \"f\", 9, 2, 3)))\n";
 
@@ -125,7 +125,7 @@ TEST("Text in store")
         "fun len_of(h: Handle<String<16>>): Int32\n"
         "  return h.read().byte_len()\n"
         "end\n"
-        "var arena: Store = Store(32)\n"
+        "global arena: Store = Store(32)\n"
         "var n: Int32 = len_of(arena.alloc<String<16>>(\"hi\"))\n";
 
     return run_generated(source, "2\n", "Text in a store");
@@ -149,7 +149,7 @@ TEST("byte assignment")
 TEST("handle assignment")
 {
     const char *source =
-        "var arena: Store = Store(16)\n"
+        "global arena: Store = Store(16)\n"
         "fun swap(h: Handle<Int32>, other: Handle<Int32>): Int32\n"
         "  h = other\n"
         "  return h.read()\n"

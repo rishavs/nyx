@@ -13,8 +13,10 @@ int32_t nyx_u_adder(int32_t nyx_u_x, int32_t nyx_u_y)
 
 int32_t nyx_program_value(void)
 {
+    int32_t nyx_match_1;
+    int32_t nyx_match_0;
 #line 5 "test.nip"
-    int32_t nyx_u_sum = nyx_u_adder(1, 2);
+    int32_t nyx_u_sum = (nyx_match_0 = 1, (nyx_match_1 = 2, nyx_u_adder(nyx_match_0, nyx_match_1)));
     return nyx_u_sum;
 }
 

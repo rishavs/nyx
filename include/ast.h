@@ -60,7 +60,8 @@ typedef enum {
     AST_INDEX,
     AST_INDEX_ASSIGNMENT,
     AST_MEMBER_ACCESS,
-    AST_MEMBER_ASSIGNMENT
+    AST_MEMBER_ASSIGNMENT,
+    AST_SCOPE
 } AstNodeKind;
 
 /* Names live inline: a List element may not hold a pointer, so a symbol is a

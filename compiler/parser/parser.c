@@ -9,7 +9,7 @@ bool token_opens_nesting(TokenType type)
            type == TOKEN_KEYWORD_WHILE || type == TOKEN_KEYWORD_FOR ||
            type == TOKEN_KEYWORD_MATCH || type == TOKEN_KEYWORD_FUN ||
            type == TOKEN_KEYWORD_METHOD || type == TOKEN_KEYWORD_STATIC ||
-           type == TOKEN_KEYWORD_TYPE;
+           type == TOKEN_KEYWORD_TYPE || type == TOKEN_KEYWORD_SCOPE;
 }
 
 bool token_closes_nesting(TokenType type)
@@ -239,6 +239,13 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
             if (!list_push(&ast->roots, &statement)) {
                 error_report_fatal(errors,
                              MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                return false;
+            }
+        } else if (token->type == TOKEN_KEYWORD_SCOPE) {
+            size_t statement;
+            if (!parse_scope(tokens, string_bytes, ast, &cursor, &statement, errors)) goto recover;
+            if (!list_push(&ast->roots, &statement)) {
+                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
                 return false;
             }
         } else if (token->type == TOKEN_KEYWORD_WHILE) {

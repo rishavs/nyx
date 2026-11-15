@@ -24,6 +24,7 @@ item               = declaration
                    | match-statement
                    | for-statement
                    | while-statement
+                   | scope-statement
                    | assignment-statement
                    | expression-statement ;
 
@@ -60,8 +61,8 @@ value-declaration  = ( "var" | "const" ), identifier,
 local-declaration  = ( "var" | "const" ), identifier,
                      [ ":", type ], "=", expression ;
 
-(* The checker requires a global declaration's type to be Store. The legacy
-   "var name: Store = Store(bytes)" spelling is still accepted. *)
+(* The checker requires a global declaration's type to be Store, and a Store
+   declared with "var" or "const" is rejected. *)
 global-declaration = "global", identifier, [ ":", type ], "=", expression ;
 
 (* ---- functions ---- *)
@@ -91,6 +92,7 @@ block              = { statement } ;
 statement          = return-statement
                    | if-statement
                    | while-statement
+                   | scope-statement
                    | match-statement
                    | for-statement
                    | break-statement
@@ -117,6 +119,11 @@ if-statement       = "if", expression, "then", block,
                      [ "else", block ], "end" ;
 
 while-statement    = "while", expression, "do", block, "end" ;
+
+(* The capacity is an Int32 expression evaluated once on entry, before the
+   name is visible. The Store lives through the block. *)
+scope-statement    = "scope", identifier, "=", "Store", "(", expression, ")",
+                     "do", block, "end" ;
 
 match-statement    = "match", [ "typeof" ], expression,
                      "with", pattern, "then", block,
@@ -165,10 +172,9 @@ type-name          = identifier ;
                         dynamic list. String<N> is a fixed-capacity
                         inline string; N is a byte capacity in 0..4096 by
                         default (the configured maximum can raise or lower that
-                        bound, up to 1 MiB). Store is only valid as the
-                        annotation on a store declaration; Handle needs exactly
-                        one type argument, whose type is fixed (no
-                        allocator-backed fields). *)
+                        bound, up to 1 MiB). Store is valid as the annotation on
+                        a store declaration or direct function parameter;
+                        Handle needs exactly one eligible payload type. *)
 
 (* ---- expressions ---- *)
 
@@ -301,7 +307,7 @@ identifier         = letter-or-underscore, { letter-or-digit-or-underscore } ;
                         "type", "fun", "return", "if", "then", "elseif",
                         "else", "while", "for", "typeof", "is", "match",
                         "with", "in", "do", "break", "continue", "true",
-                        "false", "nil", and "end" are keywords and are not
+                        "false", "nil", "scope", and "end" are keywords and are not
                         identifiers. Longer names are a lexer error. *)
 
 letter-or-underscore = "A" | ... | "Z" | "a" | ... | "z" | "_" ;
@@ -335,6 +341,7 @@ match              = "match" ;
 with               = "with" ;
 in                 = "in" ;
 do                 = "do" ;
+scope              = "scope" ;
 break              = "break" ;
 continue           = "continue" ;
 true               = "true" ;
@@ -375,7 +382,10 @@ end                = "end" ;
 "."                = "." ;
 
 (* end-of-input is the end of the source string. The driver rejects sources
-   larger than 4096 bytes and sources containing a NUL byte before lexing. *)
+   larger than 1048576 bytes (by default) and sources containing a NUL byte
+   before lexing. A UTF-8 byte order mark (EF BB BF) at the very start is
+   skipped; it takes no column, but byte offsets still count it. Anywhere else
+   its bytes are lexer errors. *)
 
 (* ---- stores ---- *)
 
@@ -386,10 +396,10 @@ end                = "end" ;
 
    `bytes` is a constant Int32 expression (literals, `const` bindings, and
    arithmetic/bitwise operators). Stores are
-   global, non-first-class, and allocated at program start. The methods are:
+   global (allocated at program start) or introduced by a scope-statement,
+   and non-first-class. The methods are:
 
        points.alloc<T>(value)   -> Handle<T>
-       points.reset()           -> Nil
        points.concat(a, b)      -> Text
        points.copy(s)           -> Text
        points.text(f)         -> Text
@@ -452,7 +462,7 @@ end                = "end" ;
        global s: Store = 16    (* checker: store 's' must be initialised ... *)
    A global declaration must be a Store:
        global x: Int32 = 1     (* checker: global 'x' must be declared ... *)
-   A store is not a value, parameter, field, or union alternative:
+   A store is not a general value, field, or union alternative:
        var t = s               (* checker: store 's' is not a value *)
    alloc needs a fixed type:
        s.alloc<List<Int32>>(xs) (* checker: Handle requires a fixed type *)

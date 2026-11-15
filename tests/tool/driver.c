@@ -40,7 +40,7 @@ static const char *const oom_source =
     "var s: Int32 = identity(Int32(7))\n"
     "var t: Int32 = classify(true)\n"
     "var u: Int32 = add(1, 2)\n"
-    "var arena: Store = Store(16)\n"
+    "global arena: Store = Store(16)\n"
     "var stored: Handle<Int32> = arena.alloc<Int32>(1)\n"
     "var byte_value: Byte = 7\n";
 
@@ -98,14 +98,17 @@ finished:
 
 TEST("source too large")
 {
-    char big[4097];
+    const size_t size = NIPPY_DEFAULT_MAX_SOURCE_BYTES + 1;
+    unsigned char *big = malloc(size);
     char expected[256];
     TestResult result = TEST_ERROR;
     int status;
 
-    memset(big, 'a', sizeof(big));
-    if (!write_bytes(test_path("source.nip"), (const unsigned char *)big,
-                     sizeof(big))) {
+    if (big == NULL) {
+        goto finished;
+    }
+    memset(big, 'a', size);
+    if (!write_bytes(test_path("source.nip"), big, size)) {
         fprintf(stderr, "  could not write the oversized source\n");
         goto finished;
     }
@@ -116,7 +119,8 @@ TEST("source too large")
         goto finished;
     }
     expect_message(expected, sizeof(expected),
-                   MESSAGE_DRIVER_SOURCE_TOO_LARGE, test_path("source.nip"), 4096);
+                   MESSAGE_DRIVER_SOURCE_TOO_LARGE, test_path("source.nip"),
+                   NIPPY_DEFAULT_MAX_SOURCE_BYTES);
     if (!file_contains(test_path("log"), expected)) {
         fprintf(stderr, "  missing \"source is larger than\" diagnostic\n");
         result = TEST_FAIL;
@@ -125,10 +129,11 @@ TEST("source too large")
     result = TEST_PASS;
 
 finished:
+    free(big);
     return result;
 }
 
-TEST("source limit can be raised")
+TEST("source limit can be changed")
 {
     unsigned char source[5000];
     const char suffix[] = "\nvar x: Int32 = 1\n";
@@ -145,13 +150,22 @@ TEST("source limit can be raised")
         fprintf(stderr, "  could not write the large source\n");
         goto finished;
     }
+    /* 5000 bytes is over the old 4096-byte default and under the current one. */
+    snprintf(command, sizeof(command), "%s %s %s > %s 2>&1", nippy_binary(),
+             test_path("source.nip"), test_path("bin"), test_path("log"));
+    status = system(command);
+    if (status != 0) {
+        fprintf(stderr, "  the default limit rejected a 5000-byte source\n");
+        result = TEST_FAIL;
+        goto finished;
+    }
     snprintf(command, sizeof(command),
-             "%s --max-source-bytes 8192 %s %s > %s 2>&1",
+             "%s --max-source-bytes 4096 %s %s > %s 2>&1",
              nippy_binary(), test_path("source.nip"), test_path("bin"),
              test_path("log"));
     status = system(command);
-    if (status != 0) {
-        fprintf(stderr, "  raised source limit did not compile the source\n");
+    if (status == 0) {
+        fprintf(stderr, "  a lowered source limit did not apply\n");
         result = TEST_FAIL;
         goto finished;
     }
@@ -526,4 +540,94 @@ TEST("C compiler failures")
 
 finished:
     return result;
+}
+
+TEST("the output may not overwrite the source")
+{
+    /* `nippy x.nip x.nip` once replaced the source with the binary. Any of
+       the three files the compiler writes (`out`, `out.c`, `out.h`) being the
+       source is refused before anything is written. */
+    static const char *const sources[] = {"same", "same.c", "same.h"};
+    char expected[512];
+    TestResult result = TEST_ERROR;
+    size_t i;
+
+    for (i = 0; i < sizeof(sources) / sizeof(sources[0]); i++) {
+        const char *source_path = test_path(sources[i]);
+        char kept[1024];
+        int status;
+
+        snprintf(kept, sizeof(kept), "%s", source_path);
+        if (!write_text(kept, "print(1)\n")) {
+            fprintf(stderr, "  could not write the source\n");
+            return TEST_ERROR;
+        }
+        status = run_compiler(kept, test_path("same"), test_path("log"));
+        expect_message(expected, sizeof(expected),
+                       MESSAGE_DRIVER_OUTPUT_IS_SOURCE, kept);
+        if (status == 0 || !file_contains(test_path("log"), expected)) {
+            fprintf(stderr, "  %s was not refused as an output\n", kept);
+            return TEST_FAIL;
+        }
+        if (!file_equals(kept, "print(1)\n")) {
+            fprintf(stderr, "  %s was changed\n", kept);
+            return TEST_FAIL;
+        }
+        remove(kept);
+    }
+    result = TEST_PASS;
+    return result;
+}
+
+TEST("a different spelling of the source path is still the source")
+{
+    char spelled[1100];
+    char expected[1600];
+    int status;
+
+    if (!write_text(test_path("src.nip"), "print(1)\n")) {
+        return TEST_ERROR;
+    }
+    /* The same file reached through a `./` component. */
+    {
+        char directory[1024];
+        char *slash;
+
+        snprintf(directory, sizeof(directory), "%s", test_path("src.nip"));
+        slash = strrchr(directory, '/');
+        *slash = '\0';
+        snprintf(spelled, sizeof(spelled), "%.1000s/./src.nip", directory);
+    }
+    status = run_compiler(test_path("src.nip"), spelled, test_path("log"));
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_DRIVER_OUTPUT_IS_SOURCE, spelled);
+    if (status == 0 || !file_contains(test_path("log"), expected)) {
+        fprintf(stderr, "  an equivalent spelling was not recognised\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TEST("the driver accepts a source file that starts with a byte order mark")
+{
+    static const unsigned char source[] =
+        "\xef\xbb\xbfvar x: Int32 = 7\nprint(x)\n";
+    char command[2048];
+
+    if (!write_bytes(test_path("source.nip"), source, sizeof(source) - 1)) {
+        return TEST_ERROR;
+    }
+    snprintf(command, sizeof(command), "%s %s %s", nippy_binary(),
+             test_path("source.nip"), test_path("bin"));
+    if (run_command(command, test_path("log")) != 0) {
+        fprintf(stderr, "  a BOM-prefixed source did not compile\n");
+        return TEST_FAIL;
+    }
+    snprintf(command, sizeof(command), "%s", test_path("bin"));
+    if (run_command(command, test_path("out")) != 0 ||
+        !file_equals(test_path("out"), "7\n")) {
+        fprintf(stderr, "  the BOM-prefixed program printed the wrong output\n");
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
 }

@@ -471,8 +471,9 @@ used as a value, and there is no explicit call-site type-argument syntax.
 
 ## Memory: Stores and handles
 
-Dynamic memory is managed by arenas called **Stores**. A store is declared with
-`global` and an initial byte size:
+Dynamic memory is managed by arenas called **Stores**. A Store declared with
+`global` lasts for the program. A Store introduced by `scope` lasts through its
+body and is released on every way out of it:
 
 ```nippy
 global points: Store = Store(4096)
@@ -484,37 +485,83 @@ var b: Handle<Byte> = points.alloc<Byte>(7)
 var q: Point = p.read()
 p.write(Point(3, 4))
 
-points.reset()
+scope scratch = Store(256) do
+  var tmp = scratch.copy("scratch text")
+  print(tmp)
+end
 ```
 
-- `alloc<T>(value)` copies a fixed value `T` into the store and returns an
-  opaque `Handle<T>` containing a store id, byte offset, and generation.
-  `Handle`, `Text`, `List`, `Slice`, `TextBuilder`, and `Store` are not
-  fixed types. `List`, `Text`, and `TextBuilder` use their dedicated
-  constructors; `Array<T,N>` is fixed and may be allocated.
+- `alloc<T>(value)` copies an eligible value `T` into the store and returns an
+  opaque `Handle<T>` containing a store reference, byte offset, and generation.
+  Payloads can contain `Text` and handles, including in structs and arrays.
+  Lists, slices, tables, records, builders, and Stores cannot occur in a
+  handle payload, including through nested handles.
 - `read()` / `write(value)` access the allocated value through the handle. Both
-  check the store id, generation, and bounds and fail deterministically.
-- `reset()` invalidates every handle from that store while keeping the arena's
-  capacity for reuse.
+  check the store reference, generation, and bounds and fail deterministically.
+- There is no `reset()`. A `scope` Store is released when its body ends,
+  whether by falling through, `return`, `break`, or `continue`; each entered
+  scope starts empty. Move scratch allocation into a repeated `scope` block.
 - A literal negative `Store(bytes)` size is a compile-time error.
 - Stores grow by doubling, so the declared size is an initial reservation.
 - `Byte` is an alias for `Uint8` and maps to `uint8_t`. Integer literals are
   typed as `Byte` where a Byte is expected and must be in `0..255`; Byte values
   support the same integer operators as other integer types.
-- Stores are global and non-first-class: function bodies can name them, but a
-  store cannot be passed, returned, copied, or stored in a field.
+- A Store is declared with `global` or `scope` and can be passed as a direct
+  `Store` parameter to functions, methods, and function values. A Store
+  capability can be forwarded or used as an allocation receiver; it cannot be
+  assigned, copied into a binding, returned, or stored in a field.
+- `scope name = Store(capacity) do ... end` evaluates the `Int32` capacity once
+  on entry. Zero is valid; a constant negative capacity is rejected and a
+  dynamic negative one traps. Its name follows the no-shadowing rule, and
+  `scope` is a reserved word.
+
+For example, a function can allocate in the Store chosen by its caller:
+
+```nippy
+fun label(output: Store, input: Text): Text
+  return output.concat("label: ", input)
+end
+
+scope output = Store(256) do
+  var result: Text = ""
+  scope scratch = Store(64) do
+    var input = scratch.copy("example")
+    result = label(output, input)
+  end
+  print(result)
+end
+```
+
+This prints `label: example`. `concat` copies the input bytes into `output`, so
+`result` refers to `output`, which outlives it. Writing `result = input` is
+rejected at compile time: `a value from Store 'scratch' cannot be stored in
+'result', which outlives it`.
+
+### Lifetimes
+
+The compiler rejects a program in which a value allocated in a `scope` Store
+could outlive that scope: by assigning it to a longer-lived variable, field or
+array, by returning it, by writing it into a longer-lived list, table or handle,
+or by passing it to a function that may keep it. Handles, `Text`, lists,
+slices, tables, builders, and any struct, union or array that holds them carry
+the lifetime of the Store they came from. Copy bytes into the longer-lived Store
+(`outer.copy(text)`) to promote a value. The check is local and conservative: it
+looks at each function body and a summary of the functions it calls, never at
+runtime data, so it can reject a correct program but not accept an escaping one.
+A function used as a value must not retain its arguments in a global Store.
+Runtime generation and bounds checks remain as a second line of defence.
+
 - Stores also create builders, dynamic lists, and dynamic tables: `s.builder(bytes)`,
   `s.list<T>(capacity)`, and `s.table<K,V>(capacity)`.
-- `global` requires the declared type to be `Store`. The older `var` spelling
-  with a `Store` annotation is still accepted for compatibility; `global` is the
-  canonical form.
+- `global` requires the declared type to be `Store`, and a `Store` declaration
+  must use `global`; the older `var s: Store = Store(n)` spelling is rejected.
 
 Call expressions can be used as statements at program level and inside function
 bodies; the value is discarded:
 
 ```nippy
-fun clear()
-  points.reset()
+fun touch()
+  points.alloc<Int32>(1)
 end
 ```
 
@@ -614,9 +661,8 @@ var first: Int32 = xs[0]      // 10
 - `get(i)` returns `T | Nil`, returning `nil` for an out-of-range index.
 - Dynamic lists are mutable. Copying one copies the descriptor, and all copies
   alias the same list state, like `TextBuilder`.
-- Dynamic `push` grows the buffer; old buffers remain until reset.
-- `reset()` invalidates dynamic lists and their descriptors; access is a
-  runtime stale check.
+- Dynamic `push` grows the buffer; old buffers remain until the Store ends.
+- A list's descriptor must not outlive its Store; the compiler checks this.
 
 List literals are always `Array<T,N>`; create a dynamic list with
 `arena.list<T>()`. A non-empty literal infers its type when every element has one
@@ -635,12 +681,11 @@ handles, fixed strings, `Text`, and `Error`. Collections are not elements:
 `Array`, `List`, `Slice`, and `TextBuilder` are rejected. Store is not a
 value and is not listable. To nest a collection, wrap it in a named struct.
 
-`alloc<T>` and `Handle<T>` require a **fixed type**. Fixed types contain no
-allocator-backed fields other than handles: primitives, function types, `Error`, `String<N>`, `Handle<T>`, `Range<T>`,
-`Array<T,N>` whose elements are fixed, and structs/unions whose fields or
-alternatives are fixed. `Text`, `List`, `Slice`, `TextBuilder`,
-`Record`, and `Table` are not fixed. `List`, `Text`, and `TextBuilder` have dedicated constructors;
-`Array` is fixed and uses `alloc` when arena storage is required.
+`alloc<T>` and `Handle<T>` accept primitives, functions, `Error`,
+`String<N>`, `Text`, handles, ranges, arrays, and structs or unions composed of
+eligible payloads. Lists, slices, tables, records, builders, and Stores are
+excluded throughout the payload graph. Collection element restrictions still
+apply independently.
 
 Structs may refer to themselves or later-declared structs through handles:
 
@@ -707,7 +752,7 @@ var n: Int32 = t.len()
   a compile-time error.
 - Tables grow by rehashing.
 - Copies alias the same table state.
-- `reset()` invalidates a Table.
+- A Table must not outlive its Store; the compiler checks this.
 - `t.get(key)` returns `V | Nil`, returning `nil` for a missing key.
 
 Both print as `{key: value, ...}`. Iteration yields key/value pairs:
@@ -754,8 +799,8 @@ var first: Int32 = s[0]  // 20
 - A slice of a slice is another view.
 - Parent `xs[i] = value` writes are visible through a slice.
 - Parent `push` may allocate a new buffer; the slice keeps reading the old
-  buffer, which remains allocated until reset.
-- `reset()` invalidates slices through the generation check.
+  buffer, which remains allocated until the Store ends.
+- A slice must not outlive its list's Store; the compiler checks this.
 - Slices are only for dynamic `List<T>`; Arrays do not have stable
   addresses for a non-owning view, so `.slice` on `Array<T,N>` is rejected.
 
@@ -785,8 +830,8 @@ var same: Bool = joined == "hello world"
   zero-copy view.
 - `byte_len()`, `byte_at(i)`, `slice(start, length)`, and content equality work
   on both static and arena-backed strings.
-- Arena texts are invalidated by `store.reset()`, like handles. Access is
-  runtime-checked for store id, generation, and bounds.
+- Arena texts follow their Store's lifetime, like handles. Access is
+  runtime-checked for store reference, generation, and bounds.
 - `Text` and `String<N>` do not convert implicitly. Copy a fixed value with
   `arena.text(fixed)`.
 
@@ -811,7 +856,7 @@ var len: Int32 = out.byte_len()   // 12
   builder remains usable.
 - Copying a `TextBuilder` copies the descriptor and all copies alias the same
   state, so appends through one are visible through another.
-- Builder buffers live in the Store and are reset with it.
+- Builder buffers live in the Store and end with it.
 
 ### Fixed strings
 
@@ -967,11 +1012,11 @@ To compile a program by hand, pass the Nippy source path and output binary path:
 ./bin/nippy path/to/source.nip bin/program
 ```
 
-The default source limit is 4096 bytes. Raise it for a larger program with
+The default source limit is 1 MiB (1,048,576 bytes). Change it with
 `--max-source-bytes`, for example:
 
 ```sh
-./bin/nippy --max-source-bytes 1048576 path/to/source.nip bin/program
+./bin/nippy --max-source-bytes 4194304 path/to/source.nip bin/program
 ```
 
 The compiler builds in a temporary directory, then publishes the executable and

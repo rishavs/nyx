@@ -120,7 +120,7 @@ the goal.
 |---|---|
 | Rule 8 — incremental compilation | Absent for Nippy programs: every compile regenerates all the C. The repository's own build is incremental (one object per source, headers tracked). |
 | Rule 10 — concurrency | Absent, and no design recorded yet. |
-| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB; the analyser validates typed-program links, but there is no ownership or lifetime analysis yet. |
+| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB; the analyser validates typed-program links and, for programs using `scope`, rejects any value that could outlive the scoped Store it came from (conservative, local, no heap points-to). There is no per-object ownership analysis. |
 
 ## Documentation map
 

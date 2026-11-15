@@ -309,15 +309,15 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
         char element_name[NIPPY_IDENTIFIER_MAX + 32];
 
         if (element_type == NULL ||
-            !store_id_is_valid(program, node->store_id) ||
+            !store_reference_is_valid(program, node) ||
             !format_c_type(program, node->auxiliary_type, element_name,
                            sizeof(element_name), errors)) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!buffer_appendf(buffer,
-                            "nyx_list_create(&nyx_stores[%zu], %zu, ",
-                            node->store_id, node->store_id) ||
+        if (!buffer_append(buffer, "nyx_list_create(") ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
                             element_name, element_name, node->pos.line,
@@ -484,9 +484,9 @@ bool emit_expr_collections(const TypedProgram *program, const TypedNode *node,
     }
     if (node->kind == TYPED_TABLE_CREATE) {
         *handled = true;
-        if (!buffer_appendf(buffer,
-                            "nyx_table_%zu_create(&nyx_stores[%zu], %zu, ",
-                            node->type_index, node->store_id, node->store_id) ||
+        if (!buffer_appendf(buffer, "nyx_table_%zu_create(", node->type_index) ||
+            !emit_store_reference(program, node, buffer, errors) ||
+            !buffer_append(buffer, ", ") ||
             !emit_expression(program, node->left_child, buffer, errors) ||
             !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
                             node->pos.line, node->pos.column, node->pos.offset)) {

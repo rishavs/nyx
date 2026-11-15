@@ -189,16 +189,24 @@ TEST("unbounded recursive generic instantiations are rejected")
 {
     return compile_fails(
         "type Wrap<T> value: T end\n"
-        "type Grow<T> next: Handle<Grow<Wrap<T>>> | Nil end\n"
+        "type Grow<T> next: Handle<Other<T>> | Nil end\n"
+        "type Other<T> next: Handle<Grow<Wrap<T>>> | Nil end\n"
         "var value: Grow<Int64> = Grow(nil)\n",
         "unbounded recursive generic", MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH,
         (size_t)64);
 }
 
-TEST("recursive handles still reject allocator-backed targets")
+TEST("recursive handles can reach Text")
 {
-    return compile_fails("type A b: Handle<B> end\ntype B value: Text end\n",
-                         "handle to nonfixed type", MESSAGE_CHECKER_HANDLE_FIXED);
+    return compile_accepts("type A b: Handle<B> end\ntype B value: Text end\n",
+                           "handle to a type containing Text");
+}
+
+TEST("recursive handles reject mutable collection payloads")
+{
+    return compile_fails("type A b: Handle<B> end\n"
+                         "type B a: Handle<A> xs: List<Int32> end\n",
+                         "recursive handle to a list", MESSAGE_CHECKER_HANDLE_FIXED);
 }
 
 TEST("incompatible union injection")

@@ -1,6 +1,37 @@
 #include "parser_internal.h"
 
+#include "limits_config.h"
+
+/* How many parse_type calls are open on this thread. Type arguments nest
+   without any token the pre-scan in parser.c can count (`<` is also the
+   comparison operator), so the type parser counts its own recursion. The
+   counter is per thread so concurrent compiles do not disturb each other. */
+static _Thread_local size_t type_nesting;
+
+static bool parse_type_body(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+);
+
 bool parse_type(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    bool ok;
+
+    if (type_nesting >= NIPPY_MAX_PARSE_NESTING) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_NESTING_LIMIT, NIPPY_MAX_PARSE_NESTING);
+        return false;
+    }
+    type_nesting++;
+    ok = parse_type_body(tokens, string_bytes, ast, cursor, out_index, errors);
+    type_nesting--;
+    return ok;
+}
+
+static bool parse_type_body(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
 )

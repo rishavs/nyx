@@ -173,10 +173,11 @@ typedef enum {
    how a generated program is built, so the public helpers below stay thin. */
 static TestResult build_and_run(const char *source, const char *driver,
                                 Expectation expectation, const char *expected,
-                                const char *what)
+                                const char *what, bool skip_escape_analysis)
 {
     CompilerConfig config = {.header_name = "runtime.h",
-                             .source_name = "test.nip"};
+                             .source_name = "test.nip",
+                             .skip_escape_analysis = skip_escape_analysis};
     CompilerResult compiled = compiler_compile(source, &config);
     TestResult result = TEST_ERROR;
     char header[1024];
@@ -277,19 +278,25 @@ finished:
 TestResult run_generated(const char *source, const char *expected,
                          const char *what)
 {
-    return build_and_run(source, NULL, EXPECT_OUTPUT, expected, what);
+    return build_and_run(source, NULL, EXPECT_OUTPUT, expected, what, false);
 }
 
 
 TestResult run_generated_driver(const char *source, const char *driver,
                                 const char *expected, const char *what)
 {
-    return build_and_run(source, driver, EXPECT_OUTPUT, expected, what);
+    return build_and_run(source, driver, EXPECT_OUTPUT, expected, what, false);
 }
 
 
 TestResult run_generated_failure(const char *source, const char *log_needle,
                                  const char *what)
 {
-    return build_and_run(source, NULL, EXPECT_FAILURE, log_needle, what);
+    return build_and_run(source, NULL, EXPECT_FAILURE, log_needle, what, false);
+}
+
+TestResult run_escaped_failure(const char *source, const char *log_needle,
+                               const char *what)
+{
+    return build_and_run(source, NULL, EXPECT_FAILURE, log_needle, what, true);
 }

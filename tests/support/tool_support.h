@@ -46,4 +46,10 @@ TestResult run_generated_driver(const char *source, const char *driver,
 TestResult run_generated_failure(const char *source, const char *log_needle,
                                  const char *what);
 
+/* As run_generated_failure, with the escape analysis skipped, for programs
+   that deliberately let a value outlive its scope so the runtime generation
+   check can be exercised. */
+TestResult run_escaped_failure(const char *source, const char *log_needle,
+                               const char *what);
+
 #endif

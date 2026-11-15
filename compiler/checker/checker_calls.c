@@ -1,5 +1,98 @@
 #include "checker_internal.h"
 
+typedef struct {
+    size_t value;
+    size_t temporary;
+} CallBinding;
+
+/* Bind values in source order before emitting the expression. A method
+   receiver stays an lvalue for mutation. An optional order maps source order
+   to the expression's field-ordered child positions. */
+bool emit_sequenced_expression(CheckContext *ctx, TypedNode *call,
+                               size_t ast_index, const List *order)
+{
+    List bindings;
+    size_t first = call->is_method_call ? 1 : 0;
+    size_t result, i;
+    bool ok = false;
+
+    if (first > call->children_count ||
+        (order != NULL && order->length != call->children_count - first)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return false;
+    }
+    if (call->children_count - first < 2)
+        return emit_node(ctx, call, ast_index, &(size_t){0});
+    list_init(&bindings, sizeof(CallBinding));
+    for (i = first; i < call->children_count; i++) {
+        size_t slot = order == NULL ? i : *(const size_t *)list_get(order, i - first);
+        size_t *child;
+        if (slot < first || slot >= call->children_count) {
+            error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+            goto done;
+        }
+        child = (size_t *)list_get(&ctx->program->children,
+                                   call->children_start + slot);
+        const TypedNode *value = child == NULL ? NULL :
+                                 typed_program_node(ctx->program, *child);
+        size_t *scope = (size_t *)list_get(&ctx->program->match_scopes,
+                                          ctx->match_scope);
+        TypedMatchTemporary temporary;
+        TypedNode reference = {0};
+        CallBinding binding;
+        size_t reference_index;
+
+        if (value == NULL || scope == NULL) {
+            error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+            goto done;
+        }
+        binding.value = *child;
+        binding.temporary = ctx->program->match_temporaries.length;
+        temporary.type_index = value->type_index;
+        temporary.next = *scope;
+        reference.kind = TYPED_MATCH_TEMPORARY;
+        reference.type_index = value->type_index;
+        reference.pos = value->pos;
+        reference.name_index = TYPED_NO_NODE;
+        reference.left_child = TYPED_NO_NODE;
+        reference.right_child = TYPED_NO_NODE;
+        reference.integer_value_u = binding.temporary;
+        if (!list_push(&ctx->program->match_temporaries, &temporary) ||
+            !typed_program_push(ctx->program, &reference, &reference_index) ||
+            !list_push(&bindings, &binding)) {
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            goto done;
+        }
+        *scope = binding.temporary;
+        *(size_t *)list_get(&ctx->program->children, call->children_start + slot) =
+            reference_index;
+    }
+    if (!typed_program_push(ctx->program, call, &result)) {
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        goto done;
+    }
+    for (i = bindings.length; i > 0; i--) {
+        const CallBinding *binding = list_get(&bindings, i - 1);
+        TypedNode wrapper = {0};
+        wrapper.kind = TYPED_MATCH_BIND_EXPRESSION;
+        wrapper.type_index = call->type_index;
+        wrapper.pos = call->pos;
+        wrapper.name_index = TYPED_NO_NODE;
+        wrapper.left_child = binding->value;
+        wrapper.right_child = result;
+        wrapper.integer_value_u = binding->temporary;
+        if (!typed_program_push(ctx->program, &wrapper, &result)) {
+            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+            goto done;
+        }
+    }
+    *mapping_slot(ctx->mapping, ast_index) = result;
+    ok = true;
+done:
+    list_free(&bindings);
+    return ok;
+}
+
 static bool check_range_call(CheckContext *ctx, const AstNode *node,
                              size_t ast_index)
 {
@@ -218,7 +311,7 @@ bool check_function_call(CheckContext *ctx, const AstNode *node,
     typed.children_start = children_start;
     typed.children_count = values.length;
 
-    ok = emit_node(ctx, &typed, ast_index, &(size_t){0});
+    ok = emit_sequenced_expression(ctx, &typed, ast_index, NULL);
 
 done:
     list_free(&values);
@@ -397,7 +490,7 @@ bool check_associated_function_call(CheckContext *ctx, const AstNode *node,
     typed.children_start = children_start;
     typed.children_count = values.length;
     typed.is_method_call = is_method;
-    ok = emit_node(ctx, &typed, ast_index, &(size_t){0});
+    ok = emit_sequenced_expression(ctx, &typed, ast_index, NULL);
 
 done:
     list_free(&values);
@@ -737,7 +830,8 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
                             MESSAGE_CHECKER_BUILTIN_RESERVED, parameter_name);
             goto done;
         }
-        if (find_variable(&locals, parameter_name) != NULL) {
+        if (find_variable(&locals, parameter_name) != NULL ||
+            find_store(ctx->stores, parameter_name) != NULL) {
             error_report_at(ctx->errors, parameter->pos,
                             MESSAGE_CHECKER_DUPLICATE_PARAMETER,
                             parameter_name);
@@ -748,17 +842,12 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
             goto done;
         }
         {
-            const TypedType *resolved =
-                typed_program_type(ctx->program, parameter_type);
-
-            if (resolved != NULL && resolved->kind == NIPPY_TYPE_STORE) {
-                error_report_at(ctx->errors, parameter->pos,
-                                MESSAGE_CHECKER_STORE_TYPE);
+            const TypedType *resolved = typed_program_type(ctx->program, parameter_type);
+            if (resolved == NULL ||
+                (resolved->kind != NIPPY_TYPE_STORE &&
+                 !check_type_value_size(ctx, parameter_type, parameter->pos))) {
                 goto done;
             }
-        }
-        if (!check_type_value_size(ctx, parameter_type, parameter->pos)) {
-            goto done;
         }
         typed_parameter.kind = TYPED_PARAMETER;
         typed_parameter.type_index = parameter_type;
@@ -782,6 +871,7 @@ bool check_generic_body(CheckContext *ctx, size_t entry_index,
         memset(&local, 0, sizeof(local));
         memcpy(local.name, parameter_name, strlen(parameter_name) + 1);
         local.type_index = parameter_type;
+        local.is_const = typed_program_type(ctx->program, parameter_type)->kind == NIPPY_TYPE_STORE;
         local.is_self_pointer = parameter->is_self;
         if (!list_push(&locals, &local)) {
             error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
@@ -973,12 +1063,17 @@ bool check_generic_call(CheckContext *ctx, const AstNode *node,
                 bound_parameter = infer_find(&infer, type_name);
             }
         }
-        if (!check_expression_expected(
-                ctx, argument_ast,
-                bound_parameter == TYPED_NO_NODE
-                    ? TYPED_NO_NODE : infer.types[bound_parameter],
-                &value)) {
-            goto done;
+        {
+            size_t expected_argument = bound_parameter == TYPED_NO_NODE
+                                           ? TYPED_NO_NODE : infer.types[bound_parameter];
+            if (parameter_type_node != NULL && parameter_type_node->kind == AST_TYPE_NAME) {
+                const char *type_name = ast_symbol_text(ctx->ast, parameter_type_node->name_index);
+                if (type_name != NULL && strcmp(type_name, "Store") == 0 &&
+                    !builtin_type(ctx, NIPPY_TYPE_STORE, &expected_argument)) goto done;
+            }
+            if (!check_expression_expected(ctx, argument_ast, expected_argument, &value)) {
+                goto done;
+            }
         }
         if (bound_parameter != TYPED_NO_NODE &&
             infer.types[bound_parameter] == TYPED_NO_NODE &&
@@ -1023,6 +1118,13 @@ bool check_generic_call(CheckContext *ctx, const AstNode *node,
     }
     if (!infer_finish(ctx, &infer, &env, display_name)) {
         goto done;
+    }
+    for (i = 0; i < env.count; i++) {
+        const TypedType *argument_type = typed_program_type(ctx->program, env.types[i]);
+        if (argument_type != NULL && argument_type->kind == NIPPY_TYPE_STORE) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_TYPE);
+            goto done;
+        }
     }
 
     for (i = 0; i < declaration->children_count; i++) {
@@ -1183,7 +1285,7 @@ bool check_generic_call(CheckContext *ctx, const AstNode *node,
             typed.children_start = children_start;
             typed.children_count = coerced.length;
             typed.is_method_call = is_method;
-            if (!emit_node(ctx, &typed, ast_index, &(size_t){0})) {
+            if (!emit_sequenced_expression(ctx, &typed, ast_index, NULL)) {
                 list_free(&coerced);
                 goto done;
             }

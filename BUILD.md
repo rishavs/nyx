@@ -31,6 +31,23 @@ make golden-update  # regenerate the golden tests' expected output
 make clean          # remove the build outputs under bin/
 ```
 
+`make test-poison` runs both suites against a compiler whose internal lists
+**move and poison their old storage on every push and pop**. A pointer into a
+list is valid only until the next push, because the array can move; in the
+normal build it moves rarely, so a pointer held across a push usually keeps
+working and the bug hides until the array happens to grow at the wrong moment.
+In the poisoned build (`-DNIPPY_POISON_LISTS`, see `compiler/list.c`) the old
+block is overwritten with `0xDD` and freed at once, so such a pointer fails
+immediately and a crash prints the functions on the stack. It builds into
+`bin/obj-poison` and the `-poison` binaries, and is slower than `make test`,
+so tests that depend on allocation counts or that build thousands of nodes
+report `TODO` there. Run it after any change to the checker or the generator.
+
+Tests that must see a runtime generation trap, which the escape analysis makes
+unreachable from accepted programs, use `run_escaped_failure`
+(`tests/support/tool_support.h`). It compiles with
+`CompilerConfig.skip_escape_analysis` set and lets a value outlive its `scope`.
+
 `make` is the default target and builds only the compiler. `make test` builds
 `bin/nippy` and both test binaries, runs the compiler suite and the tool suite,
 and exits non-zero if either fails.
@@ -133,8 +150,8 @@ make clean && make 2>&1 | grep -iE 'warning|error'
 printf 'var x : Int32 = 13\n' > tmp/t.nip
 ./bin/nippy tmp/t.nip tmp/t && ./tmp/t
 
-# Raise the default 4096-byte source limit
-./bin/nippy --max-source-bytes 1048576 path/to/source.nip bin/program
+# Change the default 1 MiB source limit
+./bin/nippy --max-source-bytes 65536 path/to/source.nip bin/program
 
 # Inspect the generated IR
 cat tmp/t.c tmp/t.h

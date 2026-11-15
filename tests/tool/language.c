@@ -26,13 +26,14 @@ TEST("recursive generic nodes and forward references")
 
 TEST("recursive node handles remain generation checked")
 {
-    return run_generated_failure(
+    return run_escaped_failure(
         "type Node value: Int64 next: Handle<Node> | Nil end\n"
-        "global first: Store = Store(512)\n"
         "global second: Store = Store(512)\n"
-        "var tail = first.alloc<Node>(Node(2, nil))\n"
-        "var head = second.alloc<Node>(Node(1, tail))\n"
-        "first.reset()\n"
+        "var head = second.alloc<Node>(Node(1, nil))\n"
+        "scope first = Store(512) do\n"
+        " var tail = first.alloc<Node>(Node(2, nil))\n"
+        " head.write(Node(1, tail))\n"
+        "end\n"
         "var item = head.read()\n"
         "if typeof item.next is Handle<Node> then\n"
         " var link: Handle<Node> = item.next print(link.read().value)\n"
@@ -816,4 +817,137 @@ TEST("recursion guard")
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"), "nippy: test.nip:1:")
                ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("handles can contain Text and other handles")
+{
+    return run_generated(
+        "type Node value: Text next: Handle<Node> | Nil end\n"
+        "global arena: Store = Store(8)\n"
+        "var text: Text = arena.copy(\"hello\")\n"
+        "var text_handle = arena.alloc<Text>(text)\n"
+        "var node = arena.alloc<Node>(Node(text_handle.read(), nil))\n"
+        "var pointer = arena.alloc<Handle<Node>>(node)\n"
+        "print(pointer.read().read().value)\n",
+        "hello\n", "handles with Text and recursive handle payloads");
+}
+
+TEST("Text loaded from a handle remains generation checked")
+{
+    return run_escaped_failure(
+        "global storage: Store = Store(8)\n"
+        "var value = storage.alloc<Text>(\"\")\n"
+        "scope source = Store(8) do value.write(source.copy(\"hello\")) end\n"
+        "print(value.read())\n",
+        MESSAGE_RUNTIME_STALE_HANDLE + sizeof(MESSAGE_RUNTIME_PREFIX) - 1,
+        "stale Text stored in a handle");
+}
+
+TEST("caller-owned Store descriptors work without globals")
+{
+    const char *source =
+        "fun read(h: Handle<Int32>): Int32 return h.read() end\n"
+        "fun size(t: Text): Int32 return t.byte_len() end\n";
+    const char *driver =
+        "#include \"runtime.h\"\n"
+        "#include <stdio.h>\n"
+        "#include <string.h>\n"
+        "int32_t nyx_u_read(nyx_handle h);\n"
+        "int32_t nyx_u_size(nyx_string t);\n"
+        "int main(void) {\n"
+        "  union { max_align_t align; unsigned char data[64]; } memory = {0};\n"
+        "  nyx_store store = { memory.data, 64, 64, 1 };\n"
+        "  int32_t value = 19;\n"
+        "  nyx_handle h = { &store, 0, 1 };\n"
+        "  nyx_string t = { NULL, &store, 16, 5, 1 };\n"
+        "  memcpy(memory.data, &value, sizeof(value));\n"
+        "  memcpy(memory.data + 16, \"hello\", 6);\n"
+        "  printf(\"%d %d\\n\", (int)nyx_u_read(h), (int)nyx_u_size(t));\n"
+        "  return 0;\n"
+        "}\n";
+    return run_generated_driver(source, driver, "19 5\n",
+                                "caller-owned Store descriptors");
+}
+
+TEST("Store parameters forward through direct generic and indirect calls")
+{
+    return run_generated(
+        "fun copy(s: Store, value: Text): Text return s.copy(value) end\n"
+        "fun generic<T>(s: Store, value: T): Handle<T> return s.alloc<T>(value) end\n"
+        "fun forward(s: Store): Text return copy(s, \"ok\") end\n"
+        "fun indirect(f: Fun<(Store, Text):Text>, s: Store): Text\n"
+        "  return f(s, \"go\") end\n"
+        "global arena: Store = Store(1)\n"
+        "print(forward(arena), generic(arena, 42).read(), indirect(copy, arena))\n",
+        "ok 42 go\n", "Store parameters and function values");
+}
+
+TEST("function arguments evaluate left to right")
+{
+    return run_generated(
+        "fun side(x: Int64): Int64 print(x) return x end\n"
+        "fun pair(a: Int64, b: Int64): Int64 return a + b end\n"
+        "fun generic<T>(a: T, b: T): T return a end\n"
+        "fun indirect(f: Fun<(Int64, Int64):Int64>): Int64\n"
+        "  return f(side(5), side(6)) end\n"
+        "print(pair(side(1), side(2)))\n"
+        "print(generic(side(3), side(4)))\n"
+        "print(indirect(pair))\n",
+        "1\n2\n3\n3\n4\n3\n5\n6\n11\n",
+        "direct, generic, and indirect argument order");
+}
+
+TEST("constructor arguments evaluate in source order")
+{
+    return run_generated(
+        "type P a: Int64 b: Int64 c: Int64 = 9 end\n"
+        "fun side(x: Int64): Int64 print(x) return x end\n"
+        "var first = P(side(1), side(2))\n"
+        "var second = P(b = side(3), a = side(4))\n"
+        "print(first, second)\n",
+        "1\n2\n3\n4\nP { a: 1, b: 2, c: 9 } P { a: 4, b: 3, c: 9 }\n",
+        "positional and named constructor argument order");
+}
+
+TEST("program names that are libc names")
+{
+    /* C has one global namespace, and the generated file includes headers that
+       fill it. Names are emitted with a prefix, so none of these collide. */
+    const char *source =
+        "type P\n"
+        "  x: Int32\n"
+        "  EOF: Int32\n"
+        "end\n"
+        "fun div(a: Int32, b: Int32): Int32\n"
+        "  return a / b\n"
+        "end\n"
+        "fun remove(EOF: Int32): Int32\n"
+        "  return EOF + 1\n"
+        "end\n"
+        "fun puts(x: Int32): Int32\n"
+        "  return x\n"
+        "end\n"
+        "var stdin: Int32 = div(10, 2)\n"
+        "var p: P = P(1, 2)\n"
+        "print(stdin, remove(p.EOF), puts(7), p)\n";
+
+    return run_generated(source, "5 3 7 P { x: 1, EOF: 2 }\n",
+                         "program names that are libc names");
+}
+
+TEST("a variable narrowed to Nil can be used")
+{
+    /* Nil carries no payload in the union, so reading it must not read a
+       payload member. */
+    const char *source =
+        "fun describe(a: Int32 | Nil): Int32\n"
+        "  if typeof a is Nil then\n"
+        "    print(a)\n"
+        "    return 0\n"
+        "  end\n"
+        "  return a\n"
+        "end\n"
+        "print(describe(nil), describe(4))\n";
+
+    return run_generated(source, "nil\n0 4\n", "narrowed to Nil");
 }

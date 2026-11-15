@@ -167,3 +167,83 @@ TEST("generic function as value")
     return compile_fails(source, "a generic function used as a value",
                          MESSAGE_CHECKER_GENERIC_AS_VALUE, "identity");
 }
+
+TEST("more generic instantiations than the limit")
+{
+    /* The limit is a count (4096) and has nothing to do with type depth. A
+       program of 4097 distinct struct types, each passed to one generic
+       function, needs a larger source than the default limit allows. */
+    enum { count = 4097 };
+    size_t capacity = (size_t)count * 96 + 128;
+    char *source = malloc(capacity);
+    char expected[256];
+    CompilerConfig config = test_config;
+    CompilerResult result;
+    size_t used = 0;
+    TestResult status = TEST_FAIL;
+    int i;
+
+    if (source == NULL) {
+        return TEST_ERROR;
+    }
+    /* The poisoned build copies a list on every push, so thousands of nodes
+       make it quadratic. It adds nothing here: the limit is a plain count. */
+    if (getenv("NIPPY_POISON_BUILD") != NULL) {
+        fprintf(stderr, "  skipped: too slow in the poisoned build\n");
+        free(source);
+        return TEST_TODO;
+    }
+    used += (size_t)snprintf(source + used, capacity - used,
+                             "fun id<T>(x: T): T\n  return x\nend\n");
+    for (i = 0; i < count; i++) {
+        used += (size_t)snprintf(source + used, capacity - used,
+                                 "type S%d\n  v: Int32\nend\n"
+                                 "var r%d = id(S%d(1))\n", i, i, i);
+    }
+    config.max_source_bytes = (int)capacity;
+    result = compiler_compile(source, &config);
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_CHECKER_TOO_MANY_INSTANTIATIONS, "id", 4096);
+    if (result.succeeded ||
+        result.error_message == NULL ||
+        strstr(result.error_message, expected) == NULL) {
+        fprintf(stderr, "  expected \"%s\", got \"%s\"\n", expected,
+                result.error_message == NULL ? "(none)"
+                                             : result.error_message);
+    } else {
+        status = TEST_PASS;
+    }
+    compiler_result_free(&result);
+    free(source);
+    return status;
+}
+
+TEST("many generic instantiations under the limit are accepted")
+{
+    enum { count = 200 };
+    char source[count * 96 + 128];
+    size_t used = 0;
+    CompilerConfig config = test_config;
+    CompilerResult result;
+    TestResult status = TEST_FAIL;
+    int i;
+
+    used += (size_t)snprintf(source + used, sizeof(source) - used,
+                             "fun id<T>(x: T): T\n  return x\nend\n");
+    for (i = 0; i < count; i++) {
+        used += (size_t)snprintf(source + used, sizeof(source) - used,
+                                 "type S%d\n  v: Int32\nend\n"
+                                 "var r%d = id(S%d(1))\n", i, i, i);
+    }
+    config.max_source_bytes = (int)sizeof(source);
+    result = compiler_compile(source, &config);
+    if (result.succeeded) {
+        status = TEST_PASS;
+    } else {
+        fprintf(stderr, "  %s\n", result.error_message == NULL
+                                      ? "(no diagnostic)"
+                                      : result.error_message);
+    }
+    compiler_result_free(&result);
+    return status;
+}

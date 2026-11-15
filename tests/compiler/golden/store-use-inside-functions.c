@@ -4,6 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define NIPPY_UNUSED __attribute__((unused))
+#else
+#define NIPPY_UNUSED
+#endif
+
 #define NIPPY_STORE_COUNT 1
 
 static nyx_store nyx_stores[NIPPY_STORE_COUNT];
@@ -86,15 +92,14 @@ static inline void nyx_store_reserve_at(nyx_store *store, size_t required, const
 static inline void nyx_store_reserve(nyx_store *store, size_t required)
 { nyx_store_reserve_at(store, required, NULL, 0, 0, 0); }
 
-static inline nyx_handle nyx_store_alloc_at(nyx_store *store, size_t id,
-                                      const void *value, size_t size,
+static inline nyx_handle nyx_store_alloc_at(nyx_store *store, const void *value, size_t size,
                                       size_t align, const char *file, size_t line, size_t column, size_t pos)
 {
     nyx_handle handle;
     size_t offset;
     size_t end;
 
-    if (id >= (size_t)NIPPY_STORE_COUNT) {
+    if (store == NULL) {
         nyx_panic_at("nippy: invalid store id", file, line, column, pos);
     }
     if (size == 0) {
@@ -108,24 +113,24 @@ static inline nyx_handle nyx_store_alloc_at(nyx_store *store, size_t id,
     nyx_store_reserve_at(store, end, file, line, column, pos);
     memcpy(store->data + offset, value, size);
     store->used = end;
-    handle.store = (uint32_t)id;
+    handle.store = store;
     handle.offset = offset;
     handle.generation = store->generation;
     return handle;
 }
 
-static inline nyx_handle nyx_store_alloc(nyx_store *store, size_t id, const void *value, size_t size, size_t align)
-{ return nyx_store_alloc_at(store, id, value, size, align, NULL, 0, 0, 0); }
+static inline nyx_handle nyx_store_alloc(nyx_store *store, const void *value, size_t size, size_t align)
+{ return nyx_store_alloc_at(store, value, size, align, NULL, 0, 0, 0); }
 
 static inline unsigned char *nyx_handle_pointer_at(nyx_handle handle,
                                            size_t size, const char *file, size_t line, size_t column, size_t pos)
 {
     nyx_store *store;
 
-    if ((size_t)handle.store >= (size_t)NIPPY_STORE_COUNT) {
+    if (handle.store == NULL) {
         nyx_panic_at("nippy: invalid store id", file, line, column, pos);
     }
-    store = &nyx_stores[handle.store];
+    store = handle.store;
     if (handle.generation != store->generation) {
         nyx_panic_at("nippy: stale handle", file, line, column, pos);
     }
@@ -148,19 +153,7 @@ static inline void nyx_handle_write_at(nyx_handle handle, const void *value,
 static inline void nyx_handle_write(nyx_handle handle, const void *value, size_t size)
 { nyx_handle_write_at(handle, value, size, NULL, 0, 0, 0); }
 
-static inline void nyx_store_reset_at(nyx_store *store, const char *file, size_t line, size_t column, size_t pos)
-{
-    store->used = 0;
-    if (store->generation == UINT64_MAX) {
-        nyx_panic_at("nippy: stale handle", file, line, column, pos);
-    }
-    store->generation++;
-}
-
-static inline void nyx_store_reset(nyx_store *store)
-{ nyx_store_reset_at(store, NULL, 0, 0, 0); }
-
-static void nyx_store_free(nyx_store *store)
+static NIPPY_UNUSED void nyx_store_free(nyx_store *store)
 {
     free(store->data);
     store->data = NULL;
@@ -171,7 +164,6 @@ static void nyx_store_free(nyx_store *store)
     (void)nyx_store_alloc;
     (void)nyx_handle_pointer;
     (void)nyx_handle_write;
-    (void)nyx_store_reset;
 }
 
 #line 3 "test.nip"
@@ -179,7 +171,7 @@ nyx_handle nyx_u_make(int32_t nyx_u_x)
 {
     (void)nyx_u_x;
 #line 4 "test.nip"
-    return nyx_store_alloc_at(&nyx_stores[0], 0, &(int32_t){ nyx_u_x }, sizeof(int32_t), _Alignof(int32_t), __FILE__, 4, 12, 71);
+    return nyx_store_alloc_at(&nyx_stores[0], &(int32_t){ nyx_u_x }, sizeof(int32_t), _Alignof(int32_t), __FILE__, 4, 12, 74);
 }
 
 #line 7 "test.nip"
@@ -187,7 +179,7 @@ int32_t nyx_u_read_it(nyx_handle nyx_u_h)
 {
     (void)nyx_u_h;
 #line 8 "test.nip"
-    return (*(int32_t *)nyx_handle_pointer_at(nyx_u_h, sizeof(int32_t), __FILE__, 8, 12, 140));
+    return (*(int32_t *)nyx_handle_pointer_at(nyx_u_h, sizeof(int32_t), __FILE__, 8, 12, 143));
 }
 
 int32_t nyx_program_value(void)

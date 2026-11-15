@@ -233,9 +233,14 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         }
         break;
     case NIPPY_TYPE_HANDLE:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"<handle store=%u offset=%zu "
-                           "generation=%llu>\", value.store, value.offset, "
+        if (!buffer_append(source, "    size_t store_id = 0;\n") ||
+            (count_store_declarations(program) > 0 &&
+             !buffer_append(source,
+                            "    while (store_id < NIPPY_STORE_COUNT && "
+                            "value.store != &nyx_stores[store_id]) store_id++;\n")) ||
+            !buffer_append(source,
+                           "    fprintf(stdout, \"<handle store=%zu offset=%zu "
+                           "generation=%llu>\", store_id, value.offset, "
                            "(unsigned long long)value.generation);\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
@@ -467,7 +472,7 @@ bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
         }
         if (!buffer_appendf(source,
             "    nyx_table_state_%zu *state = nyx_table_%zu_state_at(value, file, line, column, pos);\n"
-            "    nyx_store *store = &nyx_stores[value.store];\n"
+            "    nyx_store *store = value.store;\n"
             "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
             "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
             "    uint8_t *states = (uint8_t *)(void *)(store->data + "

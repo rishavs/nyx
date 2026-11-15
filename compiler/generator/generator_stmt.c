@@ -1,5 +1,13 @@
 #include "generator_internal.h"
 
+/* How many loops enclose the statement being emitted that open scopes. Scopes
+   inside a loop recycle their buffer; see emit_statement. */
+static _Thread_local unsigned scope_loop_depth;
+
+
+static bool emit_loop_scope_mark(const TypedProgram *program, TextBuffer *source,
+                                 ErrorState *errors, size_t depth);
+
 static bool emit_inline_failure(TextBuffer *source, SourcePos pos,
                                 const char *message)
 {
@@ -133,7 +141,7 @@ bool emit_map_for(const TypedProgram *program, const TypedNode *node,
         if (!append_indent(source, depth + 2) ||
             !buffer_appendf(source,
                             "nyx_store *nyx_for_store_%zu = "
-                            "&nyx_stores[nyx_for_src_%zu.store];\n",
+                            "nyx_for_src_%zu.store;\n",
                             offset, offset) ||
             !append_indent(source, depth + 2) ||
             !buffer_appendf(source,
@@ -179,7 +187,8 @@ bool emit_map_for(const TypedProgram *program, const TypedNode *node,
             }
         }
     }
-    if (!emit_block(program, node->right_child, depth + 2, effective_source,
+    if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
+        !emit_block(program, node->right_child, depth + 2, effective_source,
                     source, errors) ||
         !append_indent(source, depth + 1) ||
         !buffer_append(source, "}\n") ||
@@ -191,6 +200,85 @@ bool emit_map_for(const TypedProgram *program, const TypedNode *node,
     return true;
 }
 
+
+/* Scope frames live for the whole activation, not the C block of their scope,
+   so a header never dangles and a recycled buffer can outlive one iteration. */
+static bool emit_scope_frames_at(const TypedProgram *program, size_t index,
+                                 TextBuffer *source, ErrorState *errors,
+                                 size_t *budget)
+{
+    const TypedNode *node = typed_program_node(program, index);
+    size_t i;
+
+    /* A tree visits each node once, so the node count bounds the walk and a
+       malformed, cyclic program cannot make it run forever. */
+    if (node == NULL || node->kind == TYPED_FUNCTION_DECLARATION ||
+        *budget == 0) {
+        return true;
+    }
+    (*budget)--;
+    if (node->kind == TYPED_SCOPE &&
+        !buffer_appendf(source,
+                        "    nyx_scope_frame nyx_scope_frame_%zu = {0}; "
+                        "(void)nyx_scope_frame_%zu;\n", index, index)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    if (node->left_child != TYPED_NO_NODE &&
+        !emit_scope_frames_at(program, node->left_child, source, errors,
+                              budget)) {
+        return false;
+    }
+    if (node->right_child != TYPED_NO_NODE &&
+        !emit_scope_frames_at(program, node->right_child, source, errors,
+                              budget)) {
+        return false;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        if (!emit_scope_frames_at(
+                program,
+                *(const size_t *)list_get(&program->children,
+                                          node->children_start + i),
+                source, errors, budget)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool emit_scope_frames(const TypedProgram *program, size_t index,
+                       TextBuffer *source, ErrorState *errors)
+{
+    size_t budget = program->nodes.length;
+
+    return emit_scope_frames_at(program, index, source, errors, &budget);
+}
+
+bool emit_scope_frame_declaration(const TypedProgram *program, size_t subtree,
+                                  TextBuffer *source, ErrorState *errors)
+{
+    if (!program_uses_scope(program)) return true;
+    if (!buffer_append(source,
+                       "    nyx_scope_frame *nyx_scope_top = NULL; (void)nyx_scope_top;\n"
+                       "    nyx_scope_frame *nyx_cache_top = NULL; (void)nyx_cache_top;\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return subtree == TYPED_NO_NODE ||
+           emit_scope_frames(program, subtree, source, errors);
+}
+
+static bool emit_loop_scope_mark(const TypedProgram *program, TextBuffer *source,
+                                 ErrorState *errors, size_t depth)
+{
+    if (!program_uses_scope(program)) return true;
+    if (!append_indent(source, depth) ||
+        !buffer_append(source, "nyx_scope_frame *nyx_loop_mark = nyx_scope_top; (void)nyx_loop_mark;\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
 
 bool emit_block(const TypedProgram *program, size_t block_index,
                        size_t depth, const char *effective_source,
@@ -216,9 +304,92 @@ bool emit_block(const TypedProgram *program, size_t block_index,
 }
 
 
+static bool subtree_has_scope_at(const TypedProgram *program, size_t index,
+                                 size_t *budget)
+{
+    const TypedNode *node = typed_program_node(program, index);
+    size_t i;
+
+    if (node == NULL || node->kind == TYPED_FUNCTION_DECLARATION ||
+        *budget == 0) {
+        return false;
+    }
+    (*budget)--;
+    if (node->kind == TYPED_SCOPE) {
+        return true;
+    }
+    if (node->left_child != TYPED_NO_NODE &&
+        subtree_has_scope_at(program, node->left_child, budget)) {
+        return true;
+    }
+    if (node->right_child != TYPED_NO_NODE &&
+        subtree_has_scope_at(program, node->right_child, budget)) {
+        return true;
+    }
+    for (i = 0; i < node->children_count; i++) {
+        if (subtree_has_scope_at(
+                program,
+                *(const size_t *)list_get(&program->children,
+                                          node->children_start + i),
+                budget)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool subtree_has_scope(const TypedProgram *program, size_t index)
+{
+    size_t budget = program->nodes.length;
+
+    return subtree_has_scope_at(program, index, &budget);
+}
+
+static bool emit_statement_body(const TypedProgram *program, size_t node_index,
+                                size_t depth, const char *effective_source,
+                                TextBuffer *source, ErrorState *errors);
+
+/* A loop whose body opens scopes reuses each scope's buffer across iterations.
+   The cached buffers are released when the loop ends, or by a return. */
 bool emit_statement(const TypedProgram *program, size_t node_index,
-                           size_t depth, const char *effective_source,
-                           TextBuffer *source, ErrorState *errors)
+                    size_t depth, const char *effective_source,
+                    TextBuffer *source, ErrorState *errors)
+{
+    const TypedNode *node = typed_program_node(program, node_index);
+    bool ok;
+
+    if (node == NULL || (node->kind != TYPED_WHILE && node->kind != TYPED_FOR) ||
+        !subtree_has_scope(program, node_index)) {
+        return emit_statement_body(program, node_index, depth, effective_source,
+                                   source, errors);
+    }
+    if (!append_indent(source, depth) ||
+        !buffer_appendf(source,
+                        "{ nyx_scope_frame *nyx_cache_mark_%zu = nyx_cache_top;\n",
+                        node_index)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    scope_loop_depth++;
+    ok = emit_statement_body(program, node_index, depth + 1, effective_source,
+                             source, errors);
+    scope_loop_depth--;
+    if (!ok) {
+        return false;
+    }
+    if (!append_indent(source, depth + 1) ||
+        !buffer_appendf(source,
+                        "nyx_scope_release(&nyx_cache_top, nyx_cache_mark_%zu); }\n",
+                        node_index)) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    return true;
+}
+
+static bool emit_statement_body(const TypedProgram *program, size_t node_index,
+                                size_t depth, const char *effective_source,
+                                TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
 
@@ -252,6 +423,52 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
         return true;
     }
 
+    if (node->kind == TYPED_SCOPE) {
+        char store_name[USER_NAME_CAPACITY];
+        const char *name = user_c_name(program, node->name_index, store_name, sizeof(store_name));
+        if (!valid_identifier(name) || !append_indent(source, depth) ||
+            !buffer_append(source, "{\n") || !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "int32_t nyx_scope_capacity_%zu = ", node_index) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source,
+                scope_loop_depth > 0
+                    ? "nyx_scope_enter_cached(&nyx_scope_top, &nyx_cache_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n"
+                    : "nyx_scope_enter(&nyx_scope_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n",
+                node_index, node_index, node->pos.line, node->pos.column, node->pos.offset) ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "nyx_store *%s = &nyx_scope_frame_%zu.store; (void)%s;\n",
+                            name, node_index, name) ||
+            !emit_block(program, node->right_child, depth + 1, effective_source, source, errors) ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "nyx_scope_cleanup(&nyx_scope_top, nyx_scope_frame_%zu.previous);\n", node_index) ||
+            !append_indent(source, depth) || !buffer_append(source, "}\n")) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+
+    if (node->kind == TYPED_RETURN && program_uses_scope(program)) {
+        char return_type[NIPPY_IDENTIFIER_MAX + 32];
+        if (!format_c_type(program, node->type_index, return_type, sizeof(return_type), errors) ||
+            !append_indent(source, depth) || !buffer_append(source, "{\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "%s nyx_scope_result_%zu = ", return_type, node_index) ||
+            !emit_expression(program, node->left_child, source, errors) ||
+            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+            !buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, NULL);\n"
+                                   "    nyx_scope_release(&nyx_cache_top, NULL);\n") ||
+            !append_indent(source, depth + 1) ||
+            !buffer_appendf(source, "return nyx_scope_result_%zu;\n", node_index) ||
+            !append_indent(source, depth) || !buffer_append(source, "}\n")) {
+            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
+        return true;
+    }
+
     if (node->kind == TYPED_RETURN) {
         if (!append_indent(source, depth) ||
             !buffer_append(source, "return ") ||
@@ -266,6 +483,12 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
     }
 
     if (node->kind == TYPED_BREAK || node->kind == TYPED_CONTINUE) {
+        if (program_uses_scope(program) &&
+            (!append_indent(source, depth) ||
+             !buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, nyx_loop_mark);\n"))) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            return false;
+        }
         if (!append_indent(source, depth) ||
             !buffer_append(source,
                            node->kind == TYPED_BREAK ? "break;\n"
@@ -324,6 +547,7 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
             !buffer_append(source, "while (") ||
             !emit_expression(program, node->left_child, source, errors) ||
             !buffer_append(source, ") {\n") ||
+            !emit_loop_scope_mark(program, source, errors, depth + 1) ||
             !emit_block(program, node->right_child, depth + 1,
                         effective_source, source, errors) ||
             !append_indent(source, depth) ||
@@ -431,7 +655,8 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
                 (!append_indent(source, depth + 2) ||
                  !buffer_appendf(source, "int32_t %s = (int32_t)nyx_idx_%zu; (void)%s;\n",
                                  index_c, offset, index_c))) goto range_error;
-            if (!emit_block(program, node->right_child, depth + 2,
+            if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
+        !emit_block(program, node->right_child, depth + 2,
                             effective_source, source, errors) ||
                 !append_indent(source, depth + 1) || !buffer_append(source, "}\n") ||
                 !append_indent(source, depth) || !buffer_append(source, "}\n"))
@@ -605,7 +830,8 @@ range_error:
                 return false;
             }
         }
-        if (!emit_block(program, node->right_child, depth + 2,
+        if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
+        !emit_block(program, node->right_child, depth + 2,
                         effective_source, source, errors)) {
             return false;
         }
@@ -761,6 +987,44 @@ range_error:
     }
 
     if (node->kind == TYPED_LIST_SET) {
+        const TypedNode *receiver = typed_program_node(program, node->left_child);
+        const TypedType *receiver_type = receiver == NULL ? NULL :
+            typed_program_type(program, receiver->type_index);
+        if (receiver_type != NULL && receiver_type->kind == NIPPY_TYPE_LIST) {
+            size_t index = *(const size_t *)list_get(&program->children, node->children_start);
+            size_t value = *(const size_t *)list_get(&program->children, node->children_start + 1);
+            char element_name[NIPPY_IDENTIFIER_MAX + 32];
+
+            if (!format_c_type(program, node->auxiliary_type, element_name,
+                               sizeof(element_name), errors) ||
+                !append_indent(source, depth) || !buffer_append(source, "{\n") ||
+                !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "nyx_list nyx_set_list_%zu = ", node_index) ||
+                !emit_expression(program, node->left_child, source, errors) ||
+                !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "int32_t nyx_set_index_%zu = ", node_index) ||
+                !emit_expression(program, index, source, errors) ||
+                !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+                !buffer_appendf(source,
+                    "(void)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
+                    "sizeof(%s), __FILE__, %zu, %zu, %zu);\n",
+                    node_index, node_index, element_name, node->pos.line,
+                    node->pos.column, node->pos.offset) ||
+                !append_indent(source, depth + 1) ||
+                !buffer_appendf(source, "%s nyx_set_value_%zu = ", element_name, node_index) ||
+                !emit_expression(program, value, source, errors) ||
+                !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
+                !buffer_appendf(source,
+                    "*(%s *)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
+                    "sizeof(%s), __FILE__, %zu, %zu, %zu) = nyx_set_value_%zu;\n",
+                    element_name, node_index, node_index, element_name,
+                    node->pos.line, node->pos.column, node->pos.offset, node_index) ||
+                !append_indent(source, depth) || !buffer_append(source, "}\n")) {
+                if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                return false;
+            }
+            return true;
+        }
         if (!append_indent(source, depth) ||
             !buffer_append(source, "(void)(") ||
             !emit_expression(program, node_index, source, errors) ||
@@ -1002,6 +1266,7 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
             !buffer_append(source, "\n{\n") ||
             !emit_match_temporaries(program, (size_t)node->integer_value_u,
                                     source, errors) ||
+            !emit_scope_frame_declaration(program, node->left_child, source, errors) ||
             !emit_function_unused_params(program, node, source, errors) ||
             !emit_block(program, node->left_child, 1, effective_source,
                         source, errors) ||
@@ -1049,6 +1314,7 @@ bool emit_function(const TypedProgram *program, const TypedNode *node,
         !buffer_append(source, "\n{\n") ||
         !emit_match_temporaries(program, (size_t)node->integer_value_u,
                                 source, errors) ||
+        !emit_scope_frame_declaration(program, node->left_child, source, errors) ||
         !emit_function_unused_params(program, node, source, errors) ||
         !emit_block(program, node->left_child, 1, effective_source, source,
                     errors) ||

@@ -289,3 +289,25 @@ TEST("bare Table")
         "bare Table",
         MESSAGE_CHECKER_TABLE_ARGS);
 }
+
+TEST("assigning a variable to an array element checks the index, not the value")
+{
+    /* The bounds check once read the wrong syntax node, so the value 100 was
+       taken for an index and a valid program was rejected. */
+    return compile_accepts(
+        "var a: Array<Int32, 3> = [1, 2, 3]\n"
+        "var limit: Int32 = 100\n"
+        "a[0] = limit\n"
+        "print(a)\n",
+        "an array element assigned a large variable");
+}
+
+TEST("a literal out-of-range index in an assignment is still rejected")
+{
+    return compile_fails(
+        "var a: Array<Int32, 2> = [1, 2]\n"
+        "var k: Int32 = 0\n"
+        "a[7] = 1\n",
+        "an out-of-range literal index on assignment",
+        MESSAGE_CHECKER_INDEX_BOUNDS, 7, (size_t)2);
+}

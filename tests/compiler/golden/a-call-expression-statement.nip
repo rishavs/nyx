@@ -1,6 +1,6 @@
-var s: Store = Store(16)
+global s: Store = Store(16)
 
-fun clear()
-  s.reset()
+fun touch()
+  s.alloc<Int32>(1)
   return
 end

@@ -678,3 +678,25 @@ TEST("match expression missing else")
         "match expression missing else",
         MESSAGE_PARSER_MATCH_EXPECTED_ELSE);
 }
+
+TEST("deeply nested generic type arguments are diagnosed")
+{
+    /* Type arguments nest without any bracket token the pre-scan counts, so
+       this exercises the type parser's own guard. 300 levels is about 1 KB. */
+    char source[2048];
+    size_t used = 0;
+    int i;
+
+    used += (size_t)snprintf(source + used, sizeof(source) - used,
+                             "type B<T>\n  v: T\nend\nvar x: ");
+    for (i = 0; i < 300; i++) {
+        used += (size_t)snprintf(source + used, sizeof(source) - used, "B<");
+    }
+    used += (size_t)snprintf(source + used, sizeof(source) - used, "Int32");
+    for (i = 0; i < 300; i++) {
+        used += (size_t)snprintf(source + used, sizeof(source) - used, ">");
+    }
+    (void)snprintf(source + used, sizeof(source) - used, " = 1\n");
+    return compile_fails(source, "nested generic type arguments",
+                         MESSAGE_PARSER_NESTING_LIMIT, 256);
+}

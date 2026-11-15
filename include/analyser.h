@@ -6,9 +6,12 @@
 
 #include <stdbool.h>
 
-/* Consumes the typed program, not the syntax tree. Today it validates the
-   program's index links; memory and ownership rules belong here once the
-   language has storage. It produces no artifact of its own. */
+/* Consumes the typed program, not the syntax tree. It validates the program's
+   index links and Store capabilities (analyser_validate), then rejects any
+   value from a scoped Store that could outlive its scope. It produces no
+   artifact of its own. */
 bool analyser_analyse(const TypedProgram *program, ErrorState *errors);
+/* The link and capability validation alone, without the escape analysis. */
+bool analyser_validate(const TypedProgram *program, ErrorState *errors);
 
 #endif

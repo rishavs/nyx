@@ -249,7 +249,7 @@ static bool emit_types_in_order(const TypedProgram *program,
                     header,
                     "typedef struct {\n"
                     "    const uint8_t *static_data;\n"
-                    "    uint32_t store;\n"
+                    "    nyx_store *store;\n"
                     "    size_t offset;\n"
                     "    size_t length;\n"
                     "    uint64_t generation;\n"
@@ -261,7 +261,7 @@ static bool emit_types_in_order(const TypedProgram *program,
             if (!buffer_append(
                     header,
                     "typedef struct {\n"
-                    "    uint32_t store;\n"
+                    "    nyx_store *store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
                     "} nyx_builder;\n\n")) {
@@ -273,7 +273,7 @@ static bool emit_types_in_order(const TypedProgram *program,
                 !buffer_append(
                     header,
                     "typedef struct {\n"
-                    "    uint32_t store;\n"
+                    "    nyx_store *store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
                     "} nyx_list;\n\n")) {
@@ -315,7 +315,7 @@ static bool emit_types_in_order(const TypedProgram *program,
                 !buffer_append(
                     header,
                     "typedef struct {\n"
-                    "    uint32_t store;\n"
+                    "    nyx_store *store;\n"
                     "    size_t offset;\n"
                     "    uint64_t generation;\n"
                     "} nyx_table;\n\n")) {
@@ -328,7 +328,7 @@ static bool emit_types_in_order(const TypedProgram *program,
                 !buffer_append(
                     header,
                     "typedef struct {\n"
-                    "    uint32_t store;\n"
+                    "    nyx_store *store;\n"
                     "    size_t offset; /* the parent list's state */\n"
                     "    size_t start;  /* index of the first element */\n"
                     "    size_t length;\n"

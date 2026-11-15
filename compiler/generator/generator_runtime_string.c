@@ -70,7 +70,6 @@ bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
 
 
 bool emit_dynamic_string_runtime(const TypedProgram *program,
-                                         size_t store_count,
                                          TextBuffer *source,
                                          ErrorState *errors)
 {
@@ -91,7 +90,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, pos, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                    "    exit(1);\n"
                    "}\n\n");
-    if (store_count > 0) {
+    {
         ok = ok && buffer_append(
                        source,
                        "static NIPPY_UNUSED const uint8_t *"
@@ -101,11 +100,11 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    if (s.static_data != NULL) {\n"
                        "        return s.static_data;\n"
                        "    }\n"
-                       "    if (s.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                       "    if (s.store == NULL) {\n"
                        "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                        "\", file, line, column, pos);\n"
                        "    }\n"
-                       "    store = &nyx_stores[s.store];\n"
+                       "    store = s.store;\n"
                        "    if (store->generation != s.generation) {\n"
                        "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
                        "\", file, line, column, pos);\n"
@@ -118,19 +117,6 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "\", file, line, column, pos);\n"
                        "    }\n"
                        "    return store->data + s.offset;\n"
-                       "}\n\n");
-    } else {
-        ok = ok && buffer_append(
-                       source,
-                       "static NIPPY_UNUSED const uint8_t *"
-                       "nyx_string_data_at(nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
-                       "{\n"
-                       "    if (s.static_data != NULL) {\n"
-                       "        return s.static_data;\n"
-                       "    }\n"
-                       "    nyx_string_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE
-                       "\", file, line, column, pos);\n"
-                       "    return NULL;\n"
                        "}\n\n");
     }
     ok = ok && buffer_append(
@@ -183,11 +169,11 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "{\n"
                    "    return nyx_string_equal_at(a, b, NULL, 0, 0, 0);\n"
                    "}\n\n");
-    if (store_count > 0) {
+    {
         ok = ok && buffer_append(
                        source,
                        "static NIPPY_UNUSED nyx_string nyx_string_from_bytes("
-                       "nyx_store *store, uint32_t id,\n"
+                       "nyx_store *store,\n"
                        "                                             "
                        "const uint8_t *bytes, size_t length, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
@@ -197,19 +183,19 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\", file, line, column, pos);\n"
                        "    }\n"
-                       "    offset = nyx_store_alloc_bytes_at(store, id, "
+                       "    offset = nyx_store_alloc_bytes_at(store, "
                        "length + 1, file, line, column, pos);\n"
                        "    memcpy(store->data + offset, bytes, length);\n"
                        "    store->data[offset + length] = 0;\n"
                        "    result.static_data = NULL;\n"
-                       "    result.store = id;\n"
+                       "    result.store = store;\n"
                        "    result.offset = offset;\n"
                        "    result.length = length;\n"
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
                        "static NIPPY_UNUSED nyx_string nyx_string_concat("
-                       "nyx_store *store, uint32_t id,\n"
+                       "nyx_store *store,\n"
                        "                                        "
                        "nyx_string a, nyx_string b, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
@@ -224,7 +210,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "\", file, line, column, pos);\n"
                        "    }\n"
                        "    total = a.length + b.length;\n"
-                       "    offset = nyx_store_alloc_bytes_at(store, id, "
+                       "    offset = nyx_store_alloc_bytes_at(store, "
                        "total + 1, file, line, column, pos);\n"
                        "    a_data = nyx_string_data_at(a, file, line, column, pos);\n"
                        "    b_data = nyx_string_data_at(b, file, line, column, pos);\n"
@@ -233,14 +219,14 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "b.length);\n"
                        "    store->data[offset + total] = 0;\n"
                        "    result.static_data = NULL;\n"
-                       "    result.store = id;\n"
+                       "    result.store = store;\n"
                        "    result.offset = offset;\n"
                        "    result.length = total;\n"
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
                        "static NIPPY_UNUSED nyx_string nyx_string_copy("
-                       "nyx_store *store, uint32_t id,\n"
+                       "nyx_store *store,\n"
                        "                                      nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
                        "    size_t offset;\n"
@@ -250,13 +236,13 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                        "\", file, line, column, pos);\n"
                        "    }\n"
-                       "    offset = nyx_store_alloc_bytes_at(store, id, "
+                       "    offset = nyx_store_alloc_bytes_at(store, "
                        "s.length + 1, file, line, column, pos);\n"
                        "    data = nyx_string_data_at(s, file, line, column, pos);\n"
                        "    memcpy(store->data + offset, data, s.length);\n"
                        "    store->data[offset + s.length] = 0;\n"
                        "    result.static_data = NULL;\n"
-                       "    result.store = id;\n"
+                       "    result.store = store;\n"
                        "    result.offset = offset;\n"
                        "    result.length = s.length;\n"
                        "    result.generation = store->generation;\n"
@@ -290,11 +276,11 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                                source,
                                "static NIPPY_UNUSED nyx_string "
                                "nyx_string_from_fixed_%zu("
-                               "nyx_store *store, uint32_t id,\n"
+                               "nyx_store *store,\n"
                                "                                             "
                                "nyx_string_%zu s, const char *file, size_t line, size_t column, size_t pos)\n"
                                "{\n"
-                               "    return nyx_string_from_bytes(store, id, "
+                               "    return nyx_string_from_bytes(store, "
                                "s.data, s.length, file, line, column, pos);\n"
                                "}\n\n",
                                type->fixed_length, type->fixed_length);
@@ -366,15 +352,15 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "static NIPPY_UNUSED nyx_store *nyx_builder_store("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
-                   "    if (b.store >= (uint32_t)NIPPY_STORE_COUNT) {\n"
+                   "    if (b.store == NULL) {\n"
                    "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    if (nyx_stores[b.store].generation != b.generation) {\n"
+                   "    if (b.store->generation != b.generation) {\n"
                    "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    return &nyx_stores[b.store];\n"
+                   "    return b.store;\n"
                    "}\n\n"
                    "static NIPPY_UNUSED nyx_builder_state *nyx_builder_get_state("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -391,7 +377,7 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
     ok = ok && buffer_append(
                    source,
                    "static NIPPY_UNUSED nyx_builder nyx_builder_create("
-                   "nyx_store *store, uint32_t id, int32_t capacity, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "nyx_store *store, int32_t capacity, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_builder_state state;\n"
                    "    nyx_handle handle;\n"
@@ -407,14 +393,14 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    buffer = nyx_store_alloc_bytes_at(store, id, cap + 1, file, line, column, pos);\n"
+                   "    buffer = nyx_store_alloc_bytes_at(store, cap + 1, file, line, column, pos);\n"
                    "    store->data[buffer] = 0;\n"
                    "    state.offset = buffer;\n"
                    "    state.length = 0;\n"
                    "    state.capacity = cap;\n"
-                   "    handle = nyx_store_alloc_at(store, id, &state, sizeof(state),\n"
+                   "    handle = nyx_store_alloc_at(store, &state, sizeof(state),\n"
                    "                               _Alignof(nyx_builder_state), file, line, column, pos);\n"
-                   "    builder.store = id;\n"
+                   "    builder.store = store;\n"
                    "    builder.offset = handle.offset;\n"
                    "    builder.generation = handle.generation;\n"
                    "    return builder;\n"
@@ -441,7 +427,7 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    }\n"
                    "    old_offset = state->offset;\n"
                    "    old_length = state->length;\n"
-                   "    offset = nyx_store_alloc_bytes_at(store, b.store, "
+                   "    offset = nyx_store_alloc_bytes_at(store, "
                    "capacity + 1, file, line, column, pos);\n"
                    "    state = nyx_builder_get_state(b, file, line, column, pos);\n"
                    "    memcpy(store->data + offset, store->data + old_offset,\n"
@@ -512,7 +498,7 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_OUT_OF_MEMORY
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    offset = nyx_store_alloc_bytes_at(store, b.store, "
+                   "    offset = nyx_store_alloc_bytes_at(store, "
                    "length + 1, file, line, column, pos);\n"
                    "    memcpy(store->data + offset, store->data + source, "
                    "length);\n"

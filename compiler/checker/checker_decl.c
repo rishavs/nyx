@@ -300,6 +300,63 @@ bool check_store_declaration(CheckContext *ctx, const AstNode *node,
 }
 
 
+/* A generic struct may mention itself only as itself, with its own type
+   parameters in declaration order. Any other argument list makes each
+   instantiation need a larger one, so it is rejected before any use. */
+static bool self_use_expands(const CheckContext *ctx, size_t type_index,
+                             const char *name, const TypeEntry *entry,
+                             unsigned depth)
+{
+    const AstNode *type = ast_get_node(ctx->ast, type_index);
+    size_t i;
+
+    if (type == NULL || depth > NIPPY_MAX_PARSE_NESTING) {
+        return false;
+    }
+    if (type->kind == AST_TYPE_APPLICATION) {
+        const char *used = ast_symbol_text(ctx->ast, type->name_index);
+
+        if (used != NULL && strcmp(used, name) == 0) {
+            if (type->children_count != entry->parameter_count) {
+                return true;
+            }
+            for (i = 0; i < type->children_count; i++) {
+                const AstNode *argument = ast_get_node(
+                    ctx->ast, *(const size_t *)list_get(
+                                  &ctx->ast->children,
+                                  type->children_start + i));
+                const char *argument_name =
+                    argument == NULL || argument->kind != AST_TYPE_NAME
+                        ? NULL
+                        : ast_symbol_text(ctx->ast, argument->name_index);
+
+                if (argument_name == NULL ||
+                    strcmp(argument_name, entry->parameters[i]) != 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    if (type->left_child != AST_NO_NODE &&
+        self_use_expands(ctx, type->left_child, name, entry, depth + 1)) {
+        return true;
+    }
+    if (type->right_child != AST_NO_NODE &&
+        self_use_expands(ctx, type->right_child, name, entry, depth + 1)) {
+        return true;
+    }
+    for (i = 0; i < type->children_count; i++) {
+        if (self_use_expands(ctx, *(const size_t *)list_get(
+                                      &ctx->ast->children,
+                                      type->children_start + i),
+                             name, entry, depth + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool check_var_declaration(CheckContext *ctx, const AstNode *node,
                                   size_t ast_index)
 {
@@ -351,6 +408,11 @@ bool check_var_declaration(CheckContext *ctx, const AstNode *node,
             if (node->is_const) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_CONST_STORE);
+                return false;
+            }
+            if (!node->is_global) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_STORE_NOT_GLOBAL, name);
                 return false;
             }
             return check_store_declaration(ctx, node, name, ast_index,
@@ -705,6 +767,23 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
                                     field_name, name);
                     return false;
                 }
+            }
+        }
+    }
+    if (entry.parameter_count > 0) {
+        size_t field;
+
+        for (field = 0; field < node->children_count; field++) {
+            const AstNode *member = ast_get_node(
+                ctx->ast, *(const size_t *)list_get(
+                              &ctx->ast->children,
+                              node->children_start + field));
+
+            if (member != NULL && member->left_child != AST_NO_NODE &&
+                self_use_expands(ctx, member->left_child, name, &entry, 0)) {
+                error_report_at(ctx->errors, member->pos,
+                                MESSAGE_CHECKER_EXPANDING_RECURSION, name);
+                return false;
             }
         }
     }

@@ -41,6 +41,7 @@ static const Keyword keywords[] = {
     KEYWORD("false", TOKEN_KEYWORD_FALSE),
     KEYWORD("nil", TOKEN_KEYWORD_NIL),
     KEYWORD("end", TOKEN_KEYWORD_END),
+    KEYWORD("scope", TOKEN_KEYWORD_SCOPE),
 };
 
 #undef KEYWORD

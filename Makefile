@@ -12,7 +12,8 @@ COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c \
 	compiler/parser/parser_expr.c compiler/parser/parser_stmt.c \
 	compiler/parser/parser_decl.c \
 	compiler/checker/checker.c compiler/checker/checker_names.c \
-	compiler/checker/checker_types.c compiler/checker/checker_type_cmp.c \
+	compiler/checker/checker_types.c \
+	compiler/checker/checker_type_cmp.c \
 	compiler/checker/checker_resolve.c \
 	compiler/checker/checker_infer.c compiler/checker/checker_expr.c \
 	compiler/checker/checker_access.c compiler/checker/checker_calls.c \
@@ -25,7 +26,7 @@ COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c \
 	compiler/checker/checker_stmt.c \
 	compiler/checker/checker_flow.c compiler/checker/checker_decl.c \
 	compiler/checker/checker_numeric.c compiler/checker/checker_base64.c \
-	compiler/analyser/analyser.c compiler/generator/generator.c \
+	compiler/analyser/analyser.c compiler/analyser/analyser_regions.c compiler/generator/generator.c \
 	compiler/generator/generator_features.c compiler/generator/generator_support.c \
 	compiler/generator/generator_types.c compiler/generator/generator_expr.c \
 	compiler/generator/generator_expr_literal.c \
@@ -145,5 +146,6 @@ test-list: $(COMPILER_TESTER) $(TOOL_TESTER)
 	@./$(COMPILER_TESTER) --list $(T); ./$(TOOL_TESTER) --list $(T); true
 
 clean:
-	rm -rf bin/obj bin/obj-poison bin/nippy bin/compiler-tester bin/tool-tester \
-		bin/nippy-poison bin/compiler-tester-poison bin/tool-tester-poison
+	rm -rf bin/obj bin/obj-poison bin/nippy bin/compiler-tester \
+		bin/tool-tester bin/nippy-poison bin/compiler-tester-poison \
+		bin/tool-tester-poison

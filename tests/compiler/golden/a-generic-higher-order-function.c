@@ -21,8 +21,10 @@ int32_t nyx_u_nyx_genfn_0(nyx_fun_3 nyx_u_f, int32_t nyx_u_x)
 
 int32_t nyx_program_value(void)
 {
+    int32_t nyx_match_1;
+    nyx_fun_0 nyx_match_0;
 #line 9 "test.nip"
-    int32_t nyx_u_n = nyx_u_nyx_genfn_0(nyx_u_inc, 1);
+    int32_t nyx_u_n = (nyx_match_0 = nyx_u_inc, (nyx_match_1 = 1, nyx_u_nyx_genfn_0(nyx_match_0, nyx_match_1)));
     return nyx_u_n;
 }
 

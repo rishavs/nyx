@@ -160,6 +160,9 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         }
     }
 
+    uses_store_or_handle = uses_store_or_handle || uses_dynamic_string ||
+                           uses_dynamic_list || uses_slice || uses_table;
+
     if (!buffer_append(&header,
                        "#ifndef NIPPY_GENERATED_H\n"
                        "#define NIPPY_GENERATED_H\n\n"
@@ -184,20 +187,26 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         goto done;
     }
 
+    if (uses_store_or_handle || uses_dynamic_string || uses_list || uses_slice || uses_table) {
+        if (!buffer_append(&header, "typedef struct nyx_store nyx_store;\n\n")) {
+            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            goto done;
+        }
+    }
     if (uses_store_or_handle) {
         if (!buffer_append(
                 &header,
                 "typedef struct {\n"
-                "    uint32_t store;\n"
+                "    nyx_store *store;\n"
                 "    size_t offset;\n"
                 "    uint64_t generation;\n"
                 "} nyx_handle;\n\n"
-                "typedef struct {\n"
+                "struct nyx_store {\n"
                 "    unsigned char *data;\n"
                 "    size_t used;\n"
                 "    size_t capacity;\n"
                 "    uint64_t generation;\n"
-                "} nyx_store;\n\n")) {
+                "};\n\n")) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             goto done;
         }
@@ -228,7 +237,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
             single_var = node;
         } else if (node->kind == TYPED_EXPRESSION_STATEMENT) {
             has_expression_statement = true;
-        } else if (node->kind == TYPED_ASSIGNMENT ||
+        } else if (node->kind == TYPED_SCOPE ||
+                   node->kind == TYPED_ASSIGNMENT ||
                    node->kind == TYPED_LIST_SET ||
                    node->kind == TYPED_MEMBER_WRITE ||
                    node->kind == TYPED_RECORD_SET ||
@@ -274,7 +284,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (store_count > 0 || program_uses_string(program) ||
+    if (uses_store_or_handle || program_uses_string(program) ||
         uses_dynamic_string || uses_list || uses_slice || uses_print ||
         uses_map || uses_arith_helpers || uses_recursion ||
         uses_conversion || uses_range) {
@@ -311,8 +321,8 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
-    if (uses_dynamic_string || uses_list || uses_slice || uses_arith_helpers ||
-        uses_conversion) {
+    if (uses_store_or_handle || uses_dynamic_string || uses_list || uses_slice ||
+        uses_arith_helpers || uses_conversion) {
         if (!buffer_append(&source,
                            "#if defined(__GNUC__) || defined(__clang__)\n"
                            "#define NIPPY_UNUSED __attribute__((unused))\n"
@@ -333,9 +343,53 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     if (uses_conversion && !emit_conversion_runtime(&source, errors)) {
         goto done;
     }
-    if (store_count > 0 &&
+    if (uses_store_or_handle &&
         !emit_store_runtime(&source, store_count, uses_dynamic_string,
                             uses_dynamic_list || uses_table, errors)) {
+        goto done;
+    }
+    if (program_uses_scope(program) && !buffer_append(&source,
+        "typedef struct nyx_scope_frame {\n"
+        "    nyx_store store;\n"
+        "    struct nyx_scope_frame *previous; /* entered scopes, innermost first */\n"
+        "    struct nyx_scope_frame *cached;   /* buffers a loop is keeping */\n"
+        "    int recycled;\n"
+        "} nyx_scope_frame;\n"
+        "/* Every entered scope gets a generation no other Store has had, so a\n"
+        "   handle kept past its scope cannot match a later one. */\n"
+        "static uint64_t nyx_scope_generation = 1;\n"
+        "static NIPPY_UNUSED void nyx_scope_enter(nyx_scope_frame **top, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
+        "    if (capacity < 0) nyx_panic_at(\"" MESSAGE_RUNTIME_NEGATIVE_CAPACITY "\", file, line, column, pos);\n"
+        "    nyx_store_init_at(&frame->store, (size_t)capacity, file, line, column, pos);\n"
+        "    frame->store.generation = ++nyx_scope_generation;\n"
+        "    frame->recycled = 0;\n"
+        "    frame->previous = *top; *top = frame;\n"
+        "}\n"
+        "/* Inside a loop: the first entry allocates and the loop keeps the buffer\n"
+        "   until it ends; later entries start it empty again. */\n"
+        "static NIPPY_UNUSED void nyx_scope_enter_cached(nyx_scope_frame **top, nyx_scope_frame **cache, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
+        "    if (capacity < 0) nyx_panic_at(\"" MESSAGE_RUNTIME_NEGATIVE_CAPACITY "\", file, line, column, pos);\n"
+        "    if (frame->store.data == NULL) {\n"
+        "        nyx_store_init_at(&frame->store, (size_t)capacity, file, line, column, pos);\n"
+        "        frame->cached = *cache; *cache = frame;\n"
+        "    } else {\n"
+        "        frame->store.used = 0;\n"
+        "    }\n"
+        "    frame->store.generation = ++nyx_scope_generation;\n"
+        "    frame->recycled = 1;\n"
+        "    frame->previous = *top; *top = frame;\n"
+        "}\n"
+        "static NIPPY_UNUSED void nyx_scope_cleanup(nyx_scope_frame **top, nyx_scope_frame *mark) {\n"
+        "    while (*top != mark) {\n"
+        "        nyx_scope_frame *frame = *top; *top = frame->previous;\n"
+        "        if (frame->recycled) { frame->store.used = 0; frame->store.generation = 0; }\n"
+        "        else nyx_store_free(&frame->store);\n"
+        "    }\n"
+        "}\n"
+        "static NIPPY_UNUSED void nyx_scope_release(nyx_scope_frame **cache, nyx_scope_frame *mark) {\n"
+        "    while (*cache != mark) { nyx_scope_frame *frame = *cache; *cache = frame->cached; nyx_store_free(&frame->store); }\n"
+        "}\n\n")) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         goto done;
     }
     if (program_uses_string(program) &&
@@ -343,22 +397,22 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
         goto done;
     }
     if (uses_dynamic_string &&
-        !emit_dynamic_string_runtime(program, store_count, &source, errors)) {
+        !emit_dynamic_string_runtime(program, &source, errors)) {
         goto done;
     }
     if (uses_dynamic_string &&
         !emit_dynamic_string_literals(program, &source, errors)) {
         goto done;
     }
-    if (uses_string_builder && store_count > 0 &&
+    if (uses_string_builder &&
         !emit_builder_runtime(&source, errors)) {
         goto done;
     }
-    if (uses_list && !emit_list_runtime(program, store_count, &source,
+    if (uses_list && !emit_list_runtime(program, &source,
                                         errors)) {
         goto done;
     }
-    if (uses_slice && uses_dynamic_list && store_count > 0 &&
+    if (uses_slice && uses_dynamic_list &&
         !emit_slice_runtime(program, &source, errors)) {
         goto done;
     }
@@ -390,11 +444,19 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
     } else {
         if (!buffer_append(&source, "int main(void)\n{\n") ||
             !emit_match_temporaries(program, 0, &source, errors) ||
+            !emit_scope_frame_declaration(program, TYPED_NO_NODE, &source, errors) ||
             !emit_store_inits(program, store_count, effective_source, &source, errors)) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
             goto done;
+        }
+        for (i = 0; i < program->roots.length; i++) {
+            if (!emit_scope_frames(program,
+                                   *(const size_t *)list_get(&program->roots, i),
+                                   &source, errors)) {
+                goto done;
+            }
         }
         for (i = 0; i < program->roots.length; i++) {
             size_t root = *(const size_t *)list_get(&program->roots, i);
@@ -406,6 +468,7 @@ bool generator_generate(const TypedProgram *program, const char *header_name,
                 goto done;
             }
             if ((node->kind == TYPED_EXPRESSION_STATEMENT ||
+                 node->kind == TYPED_SCOPE ||
                  node->kind == TYPED_ASSIGNMENT ||
                  node->kind == TYPED_LIST_SET ||
                  node->kind == TYPED_MEMBER_WRITE ||
@@ -493,6 +556,7 @@ bool append_print_program(const TypedProgram *program,
     if (!buffer_appendf(source, "%s nyx_program_value(void)\n{\n",
                         wide ? "int64_t" : "int32_t") ||
         !emit_match_temporaries(program, 0, source, errors) ||
+        !emit_scope_frame_declaration(program, TYPED_NO_NODE, source, errors) ||
         !buffer_appendf(source, "#line %zu \"%s\"\n", var->pos.line,
                         effective_source) ||
         !buffer_appendf(source, "    %s %s = ",
@@ -512,7 +576,8 @@ bool append_print_program(const TypedProgram *program,
             const TypedNode *node = typed_program_node(program, root);
 
             if (node != NULL &&
-                (node->kind == TYPED_ASSIGNMENT ||
+                (node->kind == TYPED_SCOPE ||
+                 node->kind == TYPED_ASSIGNMENT ||
                  node->kind == TYPED_LIST_SET ||
                  node->kind == TYPED_MEMBER_WRITE ||
                  node->kind == TYPED_RECORD_SET ||

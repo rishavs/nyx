@@ -61,6 +61,9 @@ const TypedType *union_alternative_type(const TypedProgram *program,
     const TypedType *union_type, size_t position);
 size_t find_store_declaration(const TypedProgram *program, size_t store_id);
 bool store_id_is_valid(const TypedProgram *program, size_t store_id);
+bool store_reference_is_valid(const TypedProgram *program, const TypedNode *node);
+bool emit_store_reference(const TypedProgram *program, const TypedNode *node,
+                          TextBuffer *buffer, ErrorState *errors);
 bool type_is_c_aggregate(const TypedProgram *program, size_t type_index);
 bool emit_children_expressions(const TypedProgram *program, const TypedNode *node,
     TextBuffer *buffer, ErrorState *errors);
@@ -99,7 +102,7 @@ bool program_uses_dynamic_string(const TypedProgram *program);
 bool program_uses_string(const TypedProgram *program);
 bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
     ErrorState *errors);
-bool emit_dynamic_string_runtime(const TypedProgram *program, size_t store_count,
+bool emit_dynamic_string_runtime(const TypedProgram *program,
     TextBuffer *source, ErrorState *errors);
 bool emit_dynamic_string_literals(const TypedProgram *program, TextBuffer *source,
     ErrorState *errors);
@@ -115,8 +118,13 @@ bool append_print_program(const TypedProgram *program, const TypedNode *var,
     ErrorState *errors);
 size_t count_store_declarations(const TypedProgram *program);
 bool program_uses_handle_or_store_type(const TypedProgram *program);
+bool program_uses_scope(const TypedProgram *program);
+bool emit_scope_frame_declaration(const TypedProgram *program, size_t subtree,
+                                  TextBuffer *source, ErrorState *errors);
+bool emit_scope_frames(const TypedProgram *program, size_t index,
+                       TextBuffer *source, ErrorState *errors);
 bool emit_builder_runtime(TextBuffer *source, ErrorState *errors);
-bool emit_list_runtime(const TypedProgram *program, size_t store_count,
+bool emit_list_runtime(const TypedProgram *program,
     TextBuffer *source, ErrorState *errors);
 bool emit_slice_runtime(const TypedProgram *program, TextBuffer *source,
                         ErrorState *errors);
