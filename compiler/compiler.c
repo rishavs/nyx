@@ -15,6 +15,52 @@
 #include <string.h>
 
 
+static bool ast_depth_within_limit_refs(const AstNode *node, size_t *j, size_t i, size_t *depths, ErrorState *errors, size_t *depth, const Ast *ast)
+{
+    size_t refs[3] = {
+        node->left_child,
+        node->right_child,
+        ((node->kind == AST_FUNCTION_DECLARATION &&
+          (node->is_method || node->is_static)) ||
+         (node->kind == AST_CALL && node->is_static))
+            ? node->owner_type_index : AST_NO_NODE
+    };
+
+    for ((*j) = 0; (*j) < 3; (*j)++) {
+        size_t child = refs[(*j)];
+
+        if (child == AST_NO_NODE) {
+            continue;
+        }
+        if (child >= i) {
+            free(depths);
+            error_report_at(errors, node->pos,
+                            MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                            NIPPY_MAX_AST_DEPTH);
+            return false;
+        }
+        if (depths[child] >= (*depth)) {
+            (*depth) = depths[child] + 1;
+        }
+    }
+    for ((*j) = 0; (*j) < node->children_count; (*j)++) {
+        const size_t *child = list_get(&ast->children,
+                                       node->children_start + (*j));
+
+        if (child == NULL || *child >= i) {
+            free(depths);
+            error_report_at(errors, node->pos,
+                            MESSAGE_PARSER_TREE_DEPTH_LIMIT,
+                            NIPPY_MAX_AST_DEPTH);
+            return false;
+        }
+        if (depths[*child] >= (*depth)) {
+            (*depth) = depths[*child] + 1;
+        }
+    }
+    return true;
+}
+
 static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
 {
     size_t *depths;
@@ -34,47 +80,9 @@ static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
         const AstNode *node = ast_get_node(ast, i);
         size_t depth = 1;
         size_t j;
-        size_t refs[3] = {
-            node->left_child,
-            node->right_child,
-            ((node->kind == AST_FUNCTION_DECLARATION &&
-              (node->is_method || node->is_static)) ||
-             (node->kind == AST_CALL && node->is_static))
-                ? node->owner_type_index : AST_NO_NODE
-        };
-
-        for (j = 0; j < 3; j++) {
-            size_t child = refs[j];
-
-            if (child == AST_NO_NODE) {
-                continue;
-            }
-            if (child >= i) {
-                free(depths);
-                error_report_at(errors, node->pos,
-                                MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                                NIPPY_MAX_AST_DEPTH);
-                return false;
-            }
-            if (depths[child] >= depth) {
-                depth = depths[child] + 1;
-            }
-        }
-        for (j = 0; j < node->children_count; j++) {
-            const size_t *child = list_get(&ast->children,
-                                           node->children_start + j);
-
-            if (child == NULL || *child >= i) {
-                free(depths);
-                error_report_at(errors, node->pos,
-                                MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                                NIPPY_MAX_AST_DEPTH);
-                return false;
-            }
-            if (depths[*child] >= depth) {
-                depth = depths[*child] + 1;
-            }
-        }
+        if (!ast_depth_within_limit_refs(node, &j, i, depths, errors, &depth, ast)) {
+        return false;
+    }
         for (j = 0; j < node->type_parameters_count; j++) {
             const size_t *child = list_get(&ast->type_parameters,
                                            node->type_parameters_start + j);
@@ -189,18 +197,13 @@ static bool resolve_error_capacity(int value, int fallback, const char *field,
     return true;
 }
 
-CompilerResult compiler_compile(const char *source, const CompilerConfig *config)
+static bool compiler_compile_ast_initialized(ErrorState *errors, const CompilerConfig *config, TypedProgram *program, bool *ast_initialized)
 {
-    CompilerResult result = {false, NULL, NULL, NULL};
-    ErrorState errors;
-    LexerResult lexed = {0};
-    Ast ast;
-    TypedProgram program;
-    bool ast_initialized = false;
+    (*ast_initialized) = false;
 
-    error_init(&errors);
-    errors.source_name = config == NULL ? NULL : config->source_name;
-    typed_program_init(&program);
+    error_init(errors);
+    (*errors).source_name = config == NULL ? NULL : config->source_name;
+    typed_program_init(program);
     if (config != NULL) {
         int max_string = config->max_string_capacity;
 
@@ -208,11 +211,11 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
             max_string = NIPPY_DEFAULT_MAX_STRING_CAPACITY;
         }
         if (max_string < 1 || max_string > NIPPY_MAX_STRING_CAPACITY) {
-            error_report(&errors, MESSAGE_COMPILER_STRING_CAPACITY,
+            error_report(errors, MESSAGE_COMPILER_STRING_CAPACITY,
                          NIPPY_MAX_STRING_CAPACITY);
-            goto failed;
+            return true;
         }
-        program.max_string_capacity = max_string;
+        (*program).max_string_capacity = max_string;
         {
             int max_list = config->max_list_capacity;
 
@@ -220,11 +223,11 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
                 max_list = NIPPY_DEFAULT_MAX_LIST_CAPACITY;
             }
             if (max_list < 1 || max_list > NIPPY_MAX_LIST_CAPACITY) {
-                error_report(&errors, MESSAGE_COMPILER_LIST_CAPACITY,
+                error_report(errors, MESSAGE_COMPILER_LIST_CAPACITY,
                              NIPPY_MAX_LIST_CAPACITY);
-                goto failed;
+                return true;
             }
-            program.max_list_capacity = max_list;
+            (*program).max_list_capacity = max_list;
         }
         {
             int max_print = config->max_print_depth;
@@ -233,32 +236,32 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
                 max_print = NIPPY_DEFAULT_MAX_PRINT_DEPTH;
             }
             if (max_print < 1 || max_print > NIPPY_MAX_PRINT_DEPTH) {
-                error_report(&errors, MESSAGE_COMPILER_PRINT_DEPTH,
+                error_report(errors, MESSAGE_COMPILER_PRINT_DEPTH,
                              NIPPY_MAX_PRINT_DEPTH);
-                goto failed;
+                return true;
             }
-            program.max_print_depth = max_print;
+            (*program).max_print_depth = max_print;
         }
         if (!resolve_error_capacity(
                 config->error_header_capacity,
                 NIPPY_DEFAULT_ERROR_HEADER_CAPACITY, "header", max_string,
-                &program.error_header_capacity, &errors) ||
+                &(*program).error_header_capacity, errors) ||
             !resolve_error_capacity(
                 config->error_description_capacity,
                 NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY, "description",
-                max_string, &program.error_description_capacity, &errors) ||
+                max_string, &(*program).error_description_capacity, errors) ||
             !resolve_error_capacity(
                 config->error_filename_capacity,
                 NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY, "filename", max_string,
-                &program.error_filename_capacity, &errors)) {
-            goto failed;
+                &(*program).error_filename_capacity, errors)) {
+            return true;
         }
     }
+    return false;
+}
 
-    if (source == NULL) {
-        error_report(&errors, MESSAGE_COMPILER_SOURCE_IS_NULL);
-        goto failed;
-    }
+static bool compiler_compile_max_source(const CompilerConfig *config, const char *source, ErrorState *errors, LexerResult *lexed, Ast *ast, bool *ast_initialized, TypedProgram *program, CompilerResult *result)
+{
     {
         int max_source = config == NULL ? 0 : config->max_source_bytes;
 
@@ -266,49 +269,71 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
             max_source = NIPPY_DEFAULT_MAX_SOURCE_BYTES;
         }
         if (strlen(source) > (size_t)max_source) {
-            error_report(&errors, MESSAGE_COMPILER_SOURCE_TOO_LARGE,
+            error_report(errors, MESSAGE_COMPILER_SOURCE_TOO_LARGE,
                          max_source);
-            goto failed;
+            return true;
         }
     }
 
-    lexed = lexer_tokenize(source);
-    if (lexed.out_of_memory) {
-        error_report(&errors, MESSAGE_LEXER_OUT_OF_MEMORY);
-        goto failed;
+    (*lexed) = lexer_tokenize(source);
+    if ((*lexed).out_of_memory) {
+        error_report(errors, MESSAGE_LEXER_OUT_OF_MEMORY);
+        return true;
     }
-    if (!lexed.succeeded) {
-        report_lexer_errors(&lexed.errors, &errors);
-        goto failed;
+    if (!(*lexed).succeeded) {
+        report_lexer_errors(&(*lexed).errors, errors);
+        return true;
     }
 
-    if (!parser_parse(&lexed.tokens, &lexed.string_bytes, &ast, &errors)) {
-        ast_initialized = true;
-        goto failed;
+    if (!parser_parse(&(*lexed).tokens, &(*lexed).string_bytes, ast, errors)) {
+        (*ast_initialized) = true;
+        return true;
     }
-    ast_initialized = true;
+    (*ast_initialized) = true;
 
-    if (!ast_depth_within_limit(&ast, &errors)) {
-        goto failed;
+    if (!ast_depth_within_limit(ast, errors)) {
+        return true;
     }
 
     /* source -> tokens -> syntax tree -> typed program. The tree has done its
        job once the checker returns, and freeing it here is what proves the
        remaining stages cannot reach back to it. */
-    if (!checker_check(&ast, &program, &errors)) {
-        goto failed;
+    if (!checker_check(ast, program, errors)) {
+        return true;
     }
-    ast_free(&ast);
-    ast_initialized = false;
+    ast_free(ast);
+    (*ast_initialized) = false;
 
     if (!(config != NULL && config->skip_escape_analysis
-              ? analyser_validate(&program, &errors)
-              : analyser_analyse(&program, &errors))) {
+              ? analyser_validate(program, errors)
+              : analyser_analyse(program, errors))) {
+        return true;
+    }
+    if (!generator_generate(program, config == NULL ? NULL : config->header_name,
+                            config == NULL ? NULL : config->source_name,
+                            &(*result).c_source, &(*result).h_source, errors)) {
+        return true;
+    }
+    return false;
+}
+
+CompilerResult compiler_compile(const char *source, const CompilerConfig *config)
+{
+    CompilerResult result = {false, NULL, NULL, NULL};
+    ErrorState errors;
+    LexerResult lexed = {0};
+    Ast ast;
+    TypedProgram program;
+    bool ast_initialized = {0};
+    if (compiler_compile_ast_initialized(&errors, config, &program, &ast_initialized)) {
         goto failed;
     }
-    if (!generator_generate(&program, config == NULL ? NULL : config->header_name,
-                            config == NULL ? NULL : config->source_name,
-                            &result.c_source, &result.h_source, &errors)) {
+
+    if (source == NULL) {
+        error_report(&errors, MESSAGE_COMPILER_SOURCE_IS_NULL);
+        goto failed;
+    }
+    if (compiler_compile_max_source(config, source, &errors, &lexed, &ast, &ast_initialized, &program, &result)) {
         goto failed;
     }
 

@@ -1,6 +1,7 @@
 #ifndef NIPPY_CHECKER_INTERNAL_H
 #define NIPPY_CHECKER_INTERNAL_H
 
+#include "macros.h"
 #include "checker.h"
 
 #include "alloc.h"

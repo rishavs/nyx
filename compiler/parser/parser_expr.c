@@ -128,82 +128,252 @@ static bool generic_static_owner_ahead(const TokenList *tokens, size_t cursor)
 }
 
 
-bool parse_primary(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
-)
+static bool parse_primary_next_type_primary(const Token *next, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor, size_t *owner_type_index, ErrorState *errors, bool *outcome, const Token **method, const Token **open, size_t *call_index, AstNode **call, size_t owner_name_index, size_t *out_index)
 {
-    const Token *token = token_at(tokens, *cursor);
-    AstNode node = {0};
+    if (next->type == TOKEN_LT) {
+        if (!parse_type_primary(tokens, string_bytes, ast, cursor,
+                                owner_type_index, errors)) {
+            do { *outcome = (false); return false; } while (0);
+        }
+        (*cursor)++;
+    } else {
+        *cursor += 2;
+    }
+    (*method) = token_at(tokens, *cursor);
+    (*open) = token_at(tokens, *cursor + 1);
+    if ((*method) == NULL || (*method)->type != TOKEN_IDENTIFIER ||
+        (*open) == NULL || (*open)->type != TOKEN_LPAREN) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_ARGUMENT);
+        do { *outcome = (false); return false; } while (0);
+    }
+    if (!parse_call(tokens, string_bytes, ast, cursor, call_index,
+                    errors)) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    (*call) = (AstNode *)list_get(&ast->nodes, (*call_index));
+    if ((*call) == NULL) {
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        do { *outcome = (false); return false; } while (0);
+    }
+    (*call)->is_static = true;
+    (*call)->second_name_index = owner_name_index;
+    (*call)->owner_type_index = (*owner_type_index);
+    *out_index = (*call_index);
+    do { *outcome = (true); return false; } while (0);
+    return true;
+}
 
-    if (token == NULL) {
+static bool parse_primary_next(const TokenList *tokens, size_t *cursor, Ast *ast, const Token *token, ErrorState *errors, const List *string_bytes, size_t *out_index, bool *outcome)
+{
+    const Token *next = token_at(tokens, *cursor + 1);
+
+    if ((next != NULL && next->type == TOKEN_DOUBLE_COLON) ||
+        generic_static_owner_ahead(tokens, *cursor)) {
+        size_t owner_name_index;
+        size_t owner_type_index = AST_NO_NODE;
+        size_t call_index;
+        const Token *method;
+        const Token *open;
+        AstNode *call;
+
+        if (!intern_token(ast, token, &owner_name_index, errors)) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        if (!parse_primary_next_type_primary(next, tokens, string_bytes, ast, cursor, &owner_type_index, errors, outcome, &method, &open, &call_index, &call, owner_name_index, out_index)) {
+        return true;
+    }
+    }
+    if (next != NULL && next->type == TOKEN_LPAREN) {
+        do { *outcome = (parse_call(tokens, string_bytes, ast, cursor, out_index, errors)); return true; } while (0);
+    }
+    return false;
+}
+
+static bool parse_primary_token(const TokenList *tokens, size_t *cursor, ErrorState *errors, const List *string_bytes, Ast *ast, size_t *out_index, const Token **token, AstNode *node, bool *outcome2)
+{
+    (*token) = token_at(tokens, *cursor);
+    (*node) = (AstNode){0};
+
+    if ((*token) == NULL) {
         error_report_at(errors, position_at(tokens, *cursor),
                         MESSAGE_PARSER_EXPECTED_EXPRESSION);
-        return false;
+        do { *outcome2 = (false); return true; } while (0);
     }
 
-    if (token->type == TOKEN_KEYWORD_TYPEOF) {
-        return parse_type_test(tokens, string_bytes, ast, cursor, out_index,
-                               errors);
+    if ((*token)->type == TOKEN_KEYWORD_TYPEOF) {
+        do { *outcome2 = (parse_type_test(tokens, string_bytes, ast, cursor, out_index,
+                               errors)); return true; } while (0);
     }
 
-    if (token->type == TOKEN_KEYWORD_IF) {
-        return parse_if_expression(tokens, string_bytes, ast, cursor,
-                                   out_index, errors);
+    if ((*token)->type == TOKEN_KEYWORD_IF) {
+        do { *outcome2 = (parse_if_expression(tokens, string_bytes, ast, cursor,
+                                   out_index, errors)); return true; } while (0);
     }
 
-    if (token->type == TOKEN_KEYWORD_MATCH) {
-        return parse_match(tokens, string_bytes, ast, cursor, true, out_index,
-                           errors);
+    if ((*token)->type == TOKEN_KEYWORD_MATCH) {
+        do { *outcome2 = (parse_match(tokens, string_bytes, ast, cursor, true, out_index,
+                           errors)); return true; } while (0);
     }
 
-    if (token->type == TOKEN_LBRACE) {
-        return parse_record_literal(tokens, string_bytes, ast, cursor,
-                                    out_index, errors);
+    if ((*token)->type == TOKEN_LBRACE) {
+        do { *outcome2 = (parse_record_literal(tokens, string_bytes, ast, cursor,
+                                    out_index, errors)); return true; } while (0);
     }
-    if (token->type == TOKEN_INTEGER || token->type == TOKEN_FLOAT) {
-        if (!push_literal(ast, token, out_index)) {
+    if ((*token)->type == TOKEN_INTEGER || (*token)->type == TOKEN_FLOAT) {
+        if (!push_literal(ast, (*token), out_index)) {
             error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-            return false;
+            do { *outcome2 = (false); return true; } while (0);
         }
         (*cursor)++;
-        return true;
+        do { *outcome2 = (true); return true; } while (0);
     }
-    if (token->type == TOKEN_LPAREN) {
-        size_t inner;
+    return false;
+}
 
-        (*cursor)++;
-        if (!parse_expression(tokens, string_bytes, ast, cursor, &inner, errors)) {
-            return false;
-        }
-        token = token_at(tokens, *cursor);
-        if (token == NULL || token->type != TOKEN_RPAREN) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_RPAREN);
-            return false;
-        }
-        (*cursor)++;
-        *out_index = inner;
-        return true;
-    }
+static bool parse_primary_push_bool_literal(const Token *token, Ast *ast, size_t *out_index, ErrorState *errors, size_t *cursor, AstNode *node, bool *outcome3)
+{
     if (token->type == TOKEN_KEYWORD_TRUE ||
         token->type == TOKEN_KEYWORD_FALSE) {
         if (!push_bool_literal(ast, token, token->type == TOKEN_KEYWORD_TRUE,
                                out_index)) {
             error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-            return false;
+            do { *outcome3 = (false); return true; } while (0);
         }
         (*cursor)++;
-        return true;
+        do { *outcome3 = (true); return true; } while (0);
     }
     if (token->type == TOKEN_KEYWORD_NIL) {
-        node.kind = AST_NIL_LITERAL;
-        node.pos = token->pos;
-        node.name_index = AST_NO_NODE;
-        node.left_child = AST_NO_NODE;
-        node.right_child = AST_NO_NODE;
+        (*node).kind = AST_NIL_LITERAL;
+        (*node).pos = token->pos;
+        (*node).name_index = AST_NO_NODE;
+        (*node).left_child = AST_NO_NODE;
+        (*node).right_child = AST_NO_NODE;
         (*cursor)++;
-        return push_node(ast, &node, out_index);
+        do { *outcome3 = (push_node(ast, node, out_index)); return true; } while (0);
+    }
+    return false;
+}
+
+static bool parse_primary_offset(const Token *token, Ast *ast, const List *string_bytes, ErrorState *errors, AstNode *node, size_t *cursor, size_t *out_index, bool *outcome4)
+{
+    if (token->type == TOKEN_STRING) {
+        size_t offset = ast->bytes.length;
+        size_t i;
+
+        for (i = 0; i < token->string_length; i++) {
+            const unsigned char *byte = list_get(
+                string_bytes, token->string_offset + i);
+
+            if (byte == NULL || !ast_push_byte(ast, *byte)) {
+                error_report_fatal(errors,
+                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                do { *outcome4 = (false); return true; } while (0);
+            }
+        }
+        (*node).kind = AST_STRING_LITERAL;
+        (*node).pos = token->pos;
+        (*node).name_index = AST_NO_NODE;
+        (*node).left_child = AST_NO_NODE;
+        (*node).right_child = AST_NO_NODE;
+        (*node).children_start = 0;
+        (*node).children_count = 0;
+        (*node).string_offset = offset;
+        (*node).string_length = token->string_length;
+        (*cursor)++;
+        do { *outcome4 = (push_node(ast, node, out_index)); return true; } while (0);
+    }
+    return false;
+}
+
+static bool parse_primary_expression(const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor, size_t *element, ErrorState *errors, List *elements, size_t *count, const Token **token)
+{
+    if (!parse_expression(tokens, string_bytes, ast, cursor,
+                          element, errors)) {
+        list_free(elements);
+        return false;
+    }
+    if (!list_push(elements, element)) {
+        error_report_fatal(errors,
+                     MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        list_free(elements);
+        return false;
+    }
+    (*count)++;
+    (*token) = token_at(tokens, *cursor);
+    if ((*token) == NULL || (*token)->type == TOKEN_EOF) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_LIST_RBRACKET);
+        list_free(elements);
+        return false;
+    }
+    return true;
+}
+
+static bool parse_primary_i(size_t count, List *elements, Ast *ast, ErrorState *errors)
+{
+    if (count > 0) {
+        size_t i;
+
+        for (i = 0; i < count; i++) {
+            size_t element = *(const size_t *)list_get(elements, i);
+
+            if (!ast_push_child(ast, element)) {
+                error_report_fatal(errors,
+                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+                list_free(elements);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool parse_primary_step(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *inner, ErrorState *errors, const Token **token)
+{
+    (*cursor)++;
+    if (!parse_expression(tokens, string_bytes, ast, cursor, inner, errors)) {
+        return false;
+    }
+    (*token) = token_at(tokens, *cursor);
+    if ((*token) == NULL || (*token)->type != TOKEN_RPAREN) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_RPAREN);
+        return false;
+    }
+    return true;
+}
+
+bool parse_primary(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    const Token *token = {0};
+    AstNode node = {0};
+    {
+        bool outcome2;
+
+        if (parse_primary_token(tokens, cursor, errors, string_bytes, ast, out_index, &token, &node, &outcome2)) {
+            return outcome2;
+        }
+    }
+    if (token->type == TOKEN_LPAREN) {
+        size_t inner;
+
+        if (!parse_primary_step(cursor, tokens, string_bytes, ast, &inner, errors, &token)) {
+        return false;
+    }
+        (*cursor)++;
+        *out_index = inner;
+        return true;
+    }
+    {
+        bool outcome3;
+
+        if (parse_primary_push_bool_literal(token, ast, out_index, errors, cursor, &node, &outcome3)) {
+            return outcome3;
+        }
     }
     if (token->type == TOKEN_LBRACKET) {
         size_t children_start;
@@ -220,25 +390,9 @@ bool parse_primary(
             for (;;) {
                 size_t element;
 
-                if (!parse_expression(tokens, string_bytes, ast, cursor,
-                                      &element, errors)) {
-                    list_free(&elements);
-                    return false;
-                }
-                if (!list_push(&elements, &element)) {
-                    error_report_fatal(errors,
-                                 MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                    list_free(&elements);
-                    return false;
-                }
-                count++;
-                token = token_at(tokens, *cursor);
-                if (token == NULL || token->type == TOKEN_EOF) {
-                    error_report_at(errors, position_at(tokens, *cursor),
-                                    MESSAGE_PARSER_EXPECTED_LIST_RBRACKET);
-                    list_free(&elements);
-                    return false;
-                }
+                if (!parse_primary_expression(tokens, string_bytes, ast, cursor, &element, errors, &elements, &count, &token)) {
+        return false;
+    }
                 if (token->type == TOKEN_COMMA) {
                     (*cursor)++;
                     continue;
@@ -254,20 +408,9 @@ bool parse_primary(
             }
         }
         children_start = ast->children.length;
-        if (count > 0) {
-            size_t i;
-
-            for (i = 0; i < count; i++) {
-                size_t element = *(const size_t *)list_get(&elements, i);
-
-                if (!ast_push_child(ast, element)) {
-                    error_report_fatal(errors,
-                                 MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                    list_free(&elements);
-                    return false;
-                }
-            }
-        }
+        if (!parse_primary_i(count, &elements, ast, errors)) {
+        return false;
+    }
         node.kind = AST_LIST_LITERAL;
         node.pos = list_pos;
         node.name_index = AST_NO_NODE;
@@ -278,82 +421,21 @@ bool parse_primary(
         list_free(&elements);
         return push_node(ast, &node, out_index);
     }
-    if (token->type == TOKEN_STRING) {
-        size_t offset = ast->bytes.length;
-        size_t i;
+    {
+        bool outcome4;
 
-        for (i = 0; i < token->string_length; i++) {
-            const unsigned char *byte = list_get(
-                string_bytes, token->string_offset + i);
-
-            if (byte == NULL || !ast_push_byte(ast, *byte)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
+        if (parse_primary_offset(token, ast, string_bytes, errors, &node, cursor, out_index, &outcome4)) {
+            return outcome4;
         }
-        node.kind = AST_STRING_LITERAL;
-        node.pos = token->pos;
-        node.name_index = AST_NO_NODE;
-        node.left_child = AST_NO_NODE;
-        node.right_child = AST_NO_NODE;
-        node.children_start = 0;
-        node.children_count = 0;
-        node.string_offset = offset;
-        node.string_length = token->string_length;
-        (*cursor)++;
-        return push_node(ast, &node, out_index);
     }
     if (token->type == TOKEN_IDENTIFIER) {
-        const Token *next = token_at(tokens, *cursor + 1);
+        {
+        bool outcome;
 
-        if ((next != NULL && next->type == TOKEN_DOUBLE_COLON) ||
-            generic_static_owner_ahead(tokens, *cursor)) {
-            size_t owner_name_index;
-            size_t owner_type_index = AST_NO_NODE;
-            size_t call_index;
-            const Token *method;
-            const Token *open;
-            AstNode *call;
-
-            if (!intern_token(ast, token, &owner_name_index, errors)) {
-                return false;
-            }
-            if (next->type == TOKEN_LT) {
-                if (!parse_type_primary(tokens, string_bytes, ast, cursor,
-                                        &owner_type_index, errors)) {
-                    return false;
-                }
-                (*cursor)++;
-            } else {
-                *cursor += 2;
-            }
-            method = token_at(tokens, *cursor);
-            open = token_at(tokens, *cursor + 1);
-            if (method == NULL || method->type != TOKEN_IDENTIFIER ||
-                open == NULL || open->type != TOKEN_LPAREN) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_ARGUMENT);
-                return false;
-            }
-            if (!parse_call(tokens, string_bytes, ast, cursor, &call_index,
-                            errors)) {
-                return false;
-            }
-            call = (AstNode *)list_get(&ast->nodes, call_index);
-            if (call == NULL) {
-                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-            call->is_static = true;
-            call->second_name_index = owner_name_index;
-            call->owner_type_index = owner_type_index;
-            *out_index = call_index;
-            return true;
+        if (parse_primary_next(tokens, cursor, ast, token, errors, string_bytes, out_index, &outcome)) {
+            return outcome;
         }
-        if (next != NULL && next->type == TOKEN_LPAREN) {
-            return parse_call(tokens, string_bytes, ast, cursor, out_index, errors);
-        }
+    }
 
         node.kind = AST_IDENTIFIER;
         node.pos = token->pos;
@@ -393,6 +475,147 @@ bool member_type_arguments_ahead(const TokenList *tokens, size_t cursor)
     return false;
 }
 
+static bool parse_postfix_token_at(const Token **token, const TokenList *tokens, size_t *cursor, ErrorState *errors, List *arguments, const List *string_bytes, Ast *ast, size_t *argument)
+{
+    (*token) = token_at(tokens, *cursor);
+    if (!argument_looks_like_expression((*token))) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_ARGUMENT);
+        list_free(arguments);
+        return false;
+    }
+    if (!parse_expression(tokens, string_bytes, ast, cursor, argument,
+                          errors)) {
+        list_free(arguments);
+        return false;
+    }
+    if (!list_push(arguments, argument)) {
+        error_report_fatal(errors,
+                     MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        list_free(arguments);
+        return false;
+    }
+
+    (*token) = token_at(tokens, *cursor);
+    if ((*token) == NULL) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_COMMA_OR_RPAREN);
+        list_free(arguments);
+        return false;
+    }
+    return true;
+}
+
+static bool parse_postfix_step(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *index, ErrorState *errors, const Token **token, AstNode *node, SourcePos *index_pos, size_t *expression)
+{
+    (*cursor)++;
+    if (!parse_expression(tokens, string_bytes, ast, cursor, index,
+                          errors)) {
+        return false;
+    }
+    (*token) = token_at(tokens, *cursor);
+    if ((*token) == NULL || (*token)->type != TOKEN_RBRACKET) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_RBRACKET);
+        return false;
+    }
+    (*cursor)++;
+    (*node).kind = AST_INDEX;
+    (*node).pos = (*index_pos);
+    (*node).name_index = AST_NO_NODE;
+    (*node).left_child = (*expression);
+    (*node).right_child = (*index);
+    if (!push_node(ast, node, expression)) {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_postfix_pair(const Token *token, size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *second_type, ErrorState *errors, SourcePos *member_pos, size_t first_type, size_t *type_argument)
+{
+    if (token != NULL && token->type == TOKEN_COMMA) {
+        (*cursor)++;
+        if (!parse_type(tokens, string_bytes, ast, cursor,
+                        second_type, errors)) {
+            return false;
+        }
+        {
+            AstNode pair = {0};
+
+            pair.kind = AST_TYPE_TABLE;
+            pair.pos = (*member_pos);
+            pair.name_index = AST_NO_NODE;
+            pair.left_child = first_type;
+            pair.right_child = (*second_type);
+            pair.children_start = 0;
+            pair.children_count = 0;
+            if (!push_node(ast, &pair, type_argument)) {
+                return false;
+            }
+        }
+    } else {
+        (*type_argument) = first_type;
+    }
+    return true;
+}
+
+static bool parse_postfix_step6(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *first_type, ErrorState *errors, const Token **token, size_t *second_type, SourcePos *member_pos, size_t *type_argument)
+{
+    (*cursor)++;
+    if (!parse_type(tokens, string_bytes, ast, cursor, first_type,
+                    errors)) {
+        return false;
+    }
+    (*token) = token_at(tokens, *cursor);
+    if (!parse_postfix_pair((*token), cursor, tokens, string_bytes, ast, second_type, errors, member_pos, (*first_type), type_argument)) {
+        return false;
+    }
+    (*token) = token_at(tokens, *cursor);
+    if ((*token) == NULL || (*token)->type != TOKEN_GT) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT);
+        return false;
+    }
+    return true;
+}
+
+static void parse_postfix_after(const TokenList *tokens, size_t *cursor, bool *call)
+{
+    const Token *after = token_at(tokens, *cursor + 1);
+    (*call) = after != NULL &&
+                (after->type == TOKEN_LPAREN ||
+                 (after->type == TOKEN_LT &&
+                  member_type_arguments_ahead(tokens, *cursor + 1)));
+}
+
+static bool parse_postfix_step9(size_t *children_start, Ast *ast, size_t *i, List *arguments, ErrorState *errors, AstNode *node, SourcePos *member_pos, size_t name_index, size_t *expression, size_t type_argument)
+{
+    (*children_start) = ast->children.length;
+    for ((*i) = 0; (*i) < (*arguments).length; (*i)++) {
+        size_t argument = *(const size_t *)list_get(arguments, (*i));
+
+        if (!ast_push_child(ast, argument)) {
+            error_report_fatal(errors,
+                         MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            list_free(arguments);
+            return false;
+        }
+    }
+
+    (*node).kind = AST_MEMBER_CALL;
+    (*node).pos = (*member_pos);
+    (*node).name_index = name_index;
+    (*node).left_child = (*expression);
+    (*node).right_child = type_argument;
+    (*node).children_start = (*children_start);
+    (*node).children_count = (*arguments).length;
+    list_free(arguments);
+    if (!push_node(ast, node, expression)) {
+        return false;
+    }
+    return true;
+}
+
 bool parse_postfix(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
@@ -412,26 +635,9 @@ bool parse_postfix(
             SourcePos index_pos = token->pos;
             size_t index;
 
-            (*cursor)++;
-            if (!parse_expression(tokens, string_bytes, ast, cursor, &index,
-                                  errors)) {
-                return false;
-            }
-            token = token_at(tokens, *cursor);
-            if (token == NULL || token->type != TOKEN_RBRACKET) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_RBRACKET);
-                return false;
-            }
-            (*cursor)++;
-            node.kind = AST_INDEX;
-            node.pos = index_pos;
-            node.name_index = AST_NO_NODE;
-            node.left_child = expression;
-            node.right_child = index;
-            if (!push_node(ast, &node, &expression)) {
-                return false;
-            }
+            if (!parse_postfix_step(cursor, tokens, string_bytes, ast, &index, errors, &token, &node, &index_pos, &expression)) {
+        return false;
+    }
             continue;
         }
         if (token == NULL || token->type != TOKEN_DOT) {
@@ -447,11 +653,8 @@ bool parse_postfix(
         member_pos = token->pos;
 
         {
-            const Token *after = token_at(tokens, *cursor + 1);
-            bool call = after != NULL &&
-                        (after->type == TOKEN_LPAREN ||
-                         (after->type == TOKEN_LT &&
-                          member_type_arguments_ahead(tokens, *cursor + 1)));
+            bool call = {0};
+            parse_postfix_after(tokens, cursor, &call);
 
             if (!call) {
                 AstNode field = {0};
@@ -493,41 +696,9 @@ bool parse_postfix(
                 size_t first_type;
                 size_t second_type = AST_NO_NODE;
 
-                (*cursor)++;
-                if (!parse_type(tokens, string_bytes, ast, cursor, &first_type,
-                                errors)) {
-                    return false;
-                }
-                token = token_at(tokens, *cursor);
-                if (token != NULL && token->type == TOKEN_COMMA) {
-                    (*cursor)++;
-                    if (!parse_type(tokens, string_bytes, ast, cursor,
-                                    &second_type, errors)) {
-                        return false;
-                    }
-                    {
-                        AstNode pair = {0};
-
-                        pair.kind = AST_TYPE_TABLE;
-                        pair.pos = member_pos;
-                        pair.name_index = AST_NO_NODE;
-                        pair.left_child = first_type;
-                        pair.right_child = second_type;
-                        pair.children_start = 0;
-                        pair.children_count = 0;
-                        if (!push_node(ast, &pair, &type_argument)) {
-                            return false;
-                        }
-                    }
-                } else {
-                    type_argument = first_type;
-                }
-                token = token_at(tokens, *cursor);
-                if (token == NULL || token->type != TOKEN_GT) {
-                    error_report_at(errors, position_at(tokens, *cursor),
-                                    MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT);
-                    return false;
-                }
+                if (!parse_postfix_step6(cursor, tokens, string_bytes, ast, &first_type, errors, &token, &second_type, &member_pos, &type_argument)) {
+        return false;
+    }
                 (*cursor)++;
             }
 
@@ -550,32 +721,9 @@ bool parse_postfix(
                 for (;;) {
                     size_t argument;
 
-                    token = token_at(tokens, *cursor);
-                    if (!argument_looks_like_expression(token)) {
-                        error_report_at(errors, position_at(tokens, *cursor),
-                                        MESSAGE_PARSER_EXPECTED_ARGUMENT);
-                        list_free(&arguments);
-                        return false;
-                    }
-                    if (!parse_expression(tokens, string_bytes, ast, cursor, &argument,
-                                          errors)) {
-                        list_free(&arguments);
-                        return false;
-                    }
-                    if (!list_push(&arguments, &argument)) {
-                        error_report_fatal(errors,
-                                     MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                        list_free(&arguments);
-                        return false;
-                    }
-
-                    token = token_at(tokens, *cursor);
-                    if (token == NULL) {
-                        error_report_at(errors, position_at(tokens, *cursor),
-                                        MESSAGE_PARSER_EXPECTED_COMMA_OR_RPAREN);
-                        list_free(&arguments);
-                        return false;
-                    }
+                    if (!parse_postfix_token_at(&token, tokens, cursor, errors, &arguments, string_bytes, ast, &argument)) {
+        return false;
+    }
                     if (token->type == TOKEN_COMMA) {
                         (*cursor)++;
                         continue;
@@ -591,29 +739,9 @@ bool parse_postfix(
                 }
             }
 
-            children_start = ast->children.length;
-            for (i = 0; i < arguments.length; i++) {
-                size_t argument = *(const size_t *)list_get(&arguments, i);
-
-                if (!ast_push_child(ast, argument)) {
-                    error_report_fatal(errors,
-                                 MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                    list_free(&arguments);
-                    return false;
-                }
-            }
-
-            node.kind = AST_MEMBER_CALL;
-            node.pos = member_pos;
-            node.name_index = name_index;
-            node.left_child = expression;
-            node.right_child = type_argument;
-            node.children_start = children_start;
-            node.children_count = arguments.length;
-            list_free(&arguments);
-            if (!push_node(ast, &node, &expression)) {
-                return false;
-            }
+            if (!parse_postfix_step9(&children_start, ast, &i, &arguments, errors, &node, &member_pos, name_index, &expression, type_argument)) {
+        return false;
+    }
         }
     }
     *out_index = expression;

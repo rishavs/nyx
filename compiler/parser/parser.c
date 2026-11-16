@@ -129,12 +129,43 @@ bool push_root(Ast *ast, const AstNode *node, ErrorState *errors)
     return true;
 }
 
-bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
-                  ErrorState *errors)
+static bool parser_parse_step(ErrorState *errors, bool *had_errors, size_t start, const TokenList *tokens, size_t *cursor, const Token **token)
 {
-    const Token *token;
-    size_t cursor = 0;
-    bool had_errors = false;
+    if (errors->fatal ||
+        errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
+        return false;
+    }
+    (*had_errors) = true;
+    {
+        size_t scan = start;
+        size_t depth = 0;
+        SourcePos failure = position_at(tokens, (*cursor));
+
+        while (((*token) = token_at(tokens, scan)) != NULL &&
+               (*token)->type != TOKEN_EOF) {
+            if (scan >= (*cursor) && scan > start &&
+                (depth == 0 || (*token)->pos.line > failure.line) &&
+                (token_starts_declaration((*token)->type) ||
+                 token_starts_recovery_statement(tokens, scan))) {
+                break;
+            }
+            if (token_opens_nesting((*token)->type)) {
+                depth++;
+            } else if (token_closes_nesting((*token)->type) && depth > 0) {
+                depth--;
+            }
+            scan++;
+        }
+        (*cursor) = scan;
+        (*token) = token_at(tokens, (*cursor));
+    }
+    return true;
+}
+
+static bool parser_parse_token(Ast *ast, const TokenList *tokens, ErrorState *errors, const Token **token, size_t *cursor, bool *had_errors)
+{
+    (*cursor) = 0;
+    (*had_errors) = false;
 
     ast_init(ast);
 
@@ -142,10 +173,22 @@ bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
         return false;
     }
 
-    token = token_at(tokens, cursor);
-    if (token == NULL || token->type == TOKEN_EOF) {
-        error_report_at(errors, position_at(tokens, cursor),
+    (*token) = token_at(tokens, (*cursor));
+    if ((*token) == NULL || (*token)->type == TOKEN_EOF) {
+        error_report_at(errors, position_at(tokens, (*cursor)),
                         MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
+        return false;
+    }
+    return true;
+}
+
+bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                  ErrorState *errors)
+{
+    const Token *token = {0};
+    size_t cursor = {0};
+    bool had_errors = {0};
+    if (!parser_parse_token(ast, tokens, errors, &token, &cursor, &had_errors)) {
         return false;
     }
 
@@ -310,34 +353,9 @@ recover:
         if (errors->length == error_start) {
             error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         }
-        if (errors->fatal ||
-            errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
-            return false;
-        }
-        had_errors = true;
-        {
-            size_t scan = start;
-            size_t depth = 0;
-            SourcePos failure = position_at(tokens, cursor);
-
-            while ((token = token_at(tokens, scan)) != NULL &&
-                   token->type != TOKEN_EOF) {
-                if (scan >= cursor && scan > start &&
-                    (depth == 0 || token->pos.line > failure.line) &&
-                    (token_starts_declaration(token->type) ||
-                     token_starts_recovery_statement(tokens, scan))) {
-                    break;
-                }
-                if (token_opens_nesting(token->type)) {
-                    depth++;
-                } else if (token_closes_nesting(token->type) && depth > 0) {
-                    depth--;
-                }
-                scan++;
-            }
-            cursor = scan;
-            token = token_at(tokens, cursor);
-        }
+        if (!parser_parse_step(errors, &had_errors, start, tokens, &cursor, &token)) {
+        return false;
+    }
     }
 
     return !had_errors;

@@ -77,46 +77,81 @@ bool ast_type_has_unbound(CheckContext *ctx, size_t ast_index,
 }
 
 
-bool infer_ast_type(CheckContext *ctx, size_t ast_type,
-                           size_t concrete, InferEnv *infer,
-                           const char *owner)
-{
-    const AstNode *node = ast_get_node(ctx->ast, ast_type);
-    const TypedType *concrete_type = typed_program_type(ctx->program,
-                                                        concrete);
-    size_t i;
+bool infer_ast_type(CheckContext *ctx, size_t ast_type, size_t concrete, InferEnv *infer, const char *owner);
 
-    if (node == NULL || concrete_type == NULL) {
+static bool infer_ast_type_step_strcmp(const TypedType *concrete_type, const char *source_name, const TypeEntry *entry, const AstNode *node, bool *outcome, size_t *i, CheckContext *ctx, InferEnv *infer, const char *owner)
+{
+    if (concrete_type->kind != NIPPY_TYPE_STRUCT ||
+        source_name == NULL ||
+        strcmp(source_name, entry->name) != 0 ||
+        concrete_type->child_count != node->children_count) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    for ((*i) = 0; (*i) < node->children_count; (*i)++) {
+        size_t child = *(const size_t *)list_get(
+            &ctx->ast->children, node->children_start + (*i));
+        size_t argument = *(const size_t *)list_get(
+            &ctx->program->type_children,
+            concrete_type->first_child + (*i));
+
+        if (!infer_ast_type(ctx, child, argument, infer, owner)) {
+            do { *outcome = (false); return false; } while (0);
+        }
+    }
+    return true;
+}
+
+static bool infer_ast_type_step_step(const TypeEntry *entry, bool *outcome, const TypedType *concrete_type, CheckContext *ctx, const AstNode *node, size_t *i, InferEnv *infer, const char *owner, size_t ast_type)
+{
+    if (entry == NULL) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    if (entry->kind == TYPE_ENTRY_STRUCT) {
+        const char *source_name =
+            concrete_type->source_name_index == TYPED_NO_NODE
+                ? NULL
+                : typed_program_symbol_text(
+                      ctx->program, concrete_type->source_name_index);
+
+        if (!infer_ast_type_step_strcmp(concrete_type, source_name, entry, node, outcome, i, ctx, infer, owner)) {
         return false;
     }
-    if (node->kind == AST_TYPE_NAME) {
-        const char *name = ast_symbol_text(ctx->ast, node->name_index);
-        size_t index = name == NULL ? TYPED_NO_NODE : infer_find(infer, name);
-
-        if (index != TYPED_NO_NODE) {
-            if (infer->types[index] == TYPED_NO_NODE) {
-                infer->types[index] = concrete;
-                return true;
-            }
-            return same_type(ctx->program, infer->types[index], concrete);
-        }
-        {
-            TypeEnv env = {0};
-            size_t expected;
-
-            infer_type_env(infer, &env);
-            if (!resolve_type_in_env(ctx, ast_type, &env, owner, &expected)) {
-                return false;
-            }
-            return same_type(ctx->program, expected, concrete);
-        }
+        do { *outcome = (true); return false; } while (0);
     }
+    if (ast_type_has_unbound(ctx, ast_type, infer, NIPPY_TYPE_DEPTH)) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    return true;
+}
+
+static bool infer_ast_type_step(const TypeEntry *entry, const TypedType *concrete_type, CheckContext *ctx, const AstNode *node, size_t *i, InferEnv *infer, const char *owner, size_t ast_type, size_t concrete, bool *outcome)
+{
+    if (!infer_ast_type_step_step(entry, outcome, concrete_type, ctx, node, i, infer, owner, ast_type)) {
+        return true;
+    }
+    {
+        TypeEnv env = {0};
+        size_t expected;
+
+        infer_type_env(infer, &env);
+        if (!resolve_type_in_env(ctx, ast_type, &env, owner, &expected)) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        do { *outcome = (same_type(ctx->program, expected, concrete)); return true; } while (0);
+    }
+    return false;
+}
+
+bool infer_ast_type(CheckContext *ctx, size_t ast_type, size_t concrete, InferEnv *infer, const char *owner);
+
+static bool infer_ast_type_name(const AstNode *node, CheckContext *ctx, InferEnv *infer, const TypedType *concrete_type, const char *owner, size_t *i, size_t ast_type, size_t concrete, bool *outcome2)
+{
     if (node->kind == AST_TYPE_APPLICATION) {
         const char *name = ast_symbol_text(ctx->ast, node->name_index);
         const TypeEntry *entry;
 
         if (name == NULL || infer_find(infer, name) != TYPED_NO_NODE) {
-            return false;
+            do { *outcome2 = (false); return true; } while (0);
         }
         if (strcmp(name, "Handle") == 0 || strcmp(name, "Range") == 0) {
             size_t child;
@@ -126,56 +161,167 @@ bool infer_ast_type(CheckContext *ctx, size_t ast_type,
                                          ? NIPPY_TYPE_HANDLE : NIPPY_TYPE_RANGE) ||
                 concrete_type->child_count != 1 ||
                 node->children_count != 1) {
-                return false;
+                do { *outcome2 = (false); return true; } while (0);
             }
             child = *(const size_t *)list_get(&ctx->ast->children,
                                               node->children_start);
             element = *(const size_t *)list_get(&ctx->program->type_children,
                                                 concrete_type->first_child);
-            return infer_ast_type(ctx, child, element, infer, owner);
+            do { *outcome2 = (infer_ast_type(ctx, child, element, infer, owner)); return true; } while (0);
         }
         entry = find_type(ctx->types, name);
-        if (entry == NULL) {
-            return false;
-        }
-        if (entry->kind == TYPE_ENTRY_STRUCT) {
-            const char *source_name =
-                concrete_type->source_name_index == TYPED_NO_NODE
-                    ? NULL
-                    : typed_program_symbol_text(
-                          ctx->program, concrete_type->source_name_index);
-
-            if (concrete_type->kind != NIPPY_TYPE_STRUCT ||
-                source_name == NULL ||
-                strcmp(source_name, entry->name) != 0 ||
-                concrete_type->child_count != node->children_count) {
-                return false;
-            }
-            for (i = 0; i < node->children_count; i++) {
-                size_t child = *(const size_t *)list_get(
-                    &ctx->ast->children, node->children_start + i);
-                size_t argument = *(const size_t *)list_get(
-                    &ctx->program->type_children,
-                    concrete_type->first_child + i);
-
-                if (!infer_ast_type(ctx, child, argument, infer, owner)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (ast_type_has_unbound(ctx, ast_type, infer, NIPPY_TYPE_DEPTH)) {
-            return false;
-        }
         {
-            TypeEnv env = {0};
-            size_t expected;
+        bool outcome;
 
-            infer_type_env(infer, &env);
-            if (!resolve_type_in_env(ctx, ast_type, &env, owner, &expected)) {
-                return false;
+        if (infer_ast_type_step(entry, concrete_type, ctx, node, i, infer, owner, ast_type, concrete, &outcome)) {
+            do { *outcome2 = (outcome); return true; } while (0);
+        }
+    }
+    }
+    return false;
+}
+
+bool infer_ast_type(CheckContext *ctx, size_t ast_type, size_t concrete, InferEnv *infer, const char *owner);
+
+static bool infer_ast_type_signature(const AstNode *node, const TypedType *concrete_type, CheckContext *ctx, size_t *i, InferEnv *infer, const char *owner, bool *outcome)
+{
+    if (node->kind == AST_TYPE_FUNCTION) {
+        const TypedFunctionSignature *signature;
+        size_t first_parameter;
+        size_t return_type;
+
+        if (concrete_type->kind != NIPPY_TYPE_FUNCTION) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        signature = typed_program_signature(ctx->program,
+                                            concrete_type->signature_index);
+        if (signature == NULL ||
+            signature->parameter_count != node->children_count) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        first_parameter = signature->first_parameter;
+        return_type = signature->return_type;
+        for ((*i) = 0; (*i) < node->children_count; (*i)++) {
+            size_t child = *(const size_t *)list_get(
+                &ctx->ast->children, node->children_start + (*i));
+            size_t parameter = *(const size_t *)list_get(
+                &ctx->program->signature_parameters, first_parameter + (*i));
+
+            if (!infer_ast_type(ctx, child, parameter, infer, owner)) {
+                do { *outcome = (false); return true; } while (0);
             }
-            return same_type(ctx->program, expected, concrete);
+        }
+        if (node->right_child == AST_NO_NODE) {
+            const TypedType *resolved = typed_program_type(ctx->program,
+                                                           return_type);
+            do { *outcome = (resolved != NULL && resolved->kind == NIPPY_TYPE_NIL); return true; } while (0);
+        }
+        do { *outcome = (infer_ast_type(ctx, node->right_child, return_type, infer,
+                              owner)); return true; } while (0);
+    }
+    return false;
+}
+
+static bool infer_ast_type_step6_name(CheckContext *ctx, const AstNode *node, InferEnv *infer, size_t concrete, bool *outcome3, size_t ast_type, const char *owner)
+{
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    size_t index = name == NULL ? TYPED_NO_NODE : infer_find(infer, name);
+
+    if (index != TYPED_NO_NODE) {
+        if (infer->types[index] == TYPED_NO_NODE) {
+            infer->types[index] = concrete;
+            do { *outcome3 = (true); return false; } while (0);
+        }
+        do { *outcome3 = (same_type(ctx->program, infer->types[index], concrete)); return false; } while (0);
+    }
+    {
+        TypeEnv env = {0};
+        size_t expected;
+
+        infer_type_env(infer, &env);
+        if (!resolve_type_in_env(ctx, ast_type, &env, owner, &expected)) {
+            do { *outcome3 = (false); return false; } while (0);
+        }
+        do { *outcome3 = (same_type(ctx->program, expected, concrete)); return false; } while (0);
+    }
+    return true;
+}
+
+static bool infer_ast_type_step6(const AstNode *node, const TypedType *concrete_type, CheckContext *ctx, InferEnv *infer, size_t concrete, size_t ast_type, const char *owner, size_t *i, bool *outcome3)
+{
+    if (node == NULL || concrete_type == NULL) {
+        do { *outcome3 = (false); return true; } while (0);
+    }
+    if (node->kind == AST_TYPE_NAME) {
+        if (!infer_ast_type_step6_name(ctx, node, infer, concrete, outcome3, ast_type, owner)) {
+        return true;
+    }
+    }
+    {
+        bool outcome2;
+
+        if (infer_ast_type_name(node, ctx, infer, concrete_type, owner, i, ast_type, concrete, &outcome2)) {
+            do { *outcome3 = (outcome2); return true; } while (0);
+        }
+    }
+    return false;
+}
+
+static bool infer_ast_type_j(List *fixed, CheckContext *ctx, size_t *actual, List *residual, bool *out_of_memory)
+{
+    size_t j;
+    bool covered = false;
+    for (j = 0; j < (*fixed).length; j++) {
+        if (same_type(ctx->program, (*actual),
+                      *(const size_t *)list_get(fixed, j))) {
+            covered = true;
+            break;
+        }
+    }
+    if (!covered && !list_push(residual, actual)) {
+        (*out_of_memory) = true;
+        return true;
+    }
+    return false;
+}
+
+static void infer_ast_type_part(CheckContext *ctx, size_t child, InferEnv *infer, size_t *parameter)
+{
+    const AstNode *part = ast_get_node(ctx->ast, child);
+    const char *name = part != NULL && part->kind == AST_TYPE_NAME
+        ? ast_symbol_text(ctx->ast, part->name_index) : NULL;
+    (*parameter) = name == NULL ? TYPED_NO_NODE
+                                    : infer_find(infer, name);
+}
+
+static bool infer_ast_type_ast_type_has_unbound(CheckContext *ctx, size_t child, InferEnv *infer, TypeEnv *env, const char *owner, size_t *resolved, List *fixed, bool *out_of_memory)
+{
+    if (ast_type_has_unbound(ctx, child, infer, NIPPY_TYPE_DEPTH))
+        return true;
+    infer_type_env(infer, env);
+    if (!resolve_type_in_env(ctx, child, env, owner, resolved))
+        return true;
+    if (!list_push(fixed, resolved)) {
+        (*out_of_memory) = true;
+        return true;
+    }
+    return false;
+}
+
+bool infer_ast_type(CheckContext *ctx, size_t ast_type,
+                           size_t concrete, InferEnv *infer,
+                           const char *owner)
+{
+    const AstNode *node = ast_get_node(ctx->ast, ast_type);
+    const TypedType *concrete_type = typed_program_type(ctx->program,
+                                                        concrete);
+    size_t i;
+
+    {
+        bool outcome3;
+
+        if (infer_ast_type_step6(node, concrete_type, ctx, infer, concrete, ast_type, owner, &i, &outcome3)) {
+            return outcome3;
         }
     }
     if (node->kind == AST_TYPE_UNION) {
@@ -205,11 +351,8 @@ bool infer_ast_type(CheckContext *ctx, size_t ast_type,
             for (i = 0; i < node->children_count; i++) {
                 size_t child = *(const size_t *)list_get(
                     &ctx->ast->children, node->children_start + i);
-                const AstNode *part = ast_get_node(ctx->ast, child);
-                const char *name = part != NULL && part->kind == AST_TYPE_NAME
-                    ? ast_symbol_text(ctx->ast, part->name_index) : NULL;
-                size_t parameter = name == NULL ? TYPED_NO_NODE
-                                                : infer_find(infer, name);
+                size_t parameter = {0};
+                infer_ast_type_part(ctx, child, infer, &parameter);
                 if (parameter != TYPED_NO_NODE &&
                     infer->types[parameter] == TYPED_NO_NODE) {
                     if (unbound != TYPED_NO_NODE) goto union_infer_done;
@@ -217,33 +360,17 @@ bool infer_ast_type(CheckContext *ctx, size_t ast_type,
                 } else {
                     TypeEnv env = {0};
                     size_t resolved;
-                    if (ast_type_has_unbound(ctx, child, infer, NIPPY_TYPE_DEPTH))
-                        goto union_infer_done;
-                    infer_type_env(infer, &env);
-                    if (!resolve_type_in_env(ctx, child, &env, owner, &resolved))
-                        goto union_infer_done;
-                    if (!list_push(&fixed, &resolved)) {
-                        out_of_memory = true;
-                        goto union_infer_done;
-                    }
+                    if (infer_ast_type_ast_type_has_unbound(ctx, child, infer, &env, owner, &resolved, &fixed, &out_of_memory)) {
+        goto union_infer_done;
+    }
                 }
             }
             if (unbound == TYPED_NO_NODE) goto union_infer_done;
             for (i = 0; i < actuals.length; i++) {
                 size_t actual = *(const size_t *)list_get(&actuals, i);
-                size_t j;
-                bool covered = false;
-                for (j = 0; j < fixed.length; j++) {
-                    if (same_type(ctx->program, actual,
-                                  *(const size_t *)list_get(&fixed, j))) {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (!covered && !list_push(&residual, &actual)) {
-                    out_of_memory = true;
-                    goto union_infer_done;
-                }
+                if (infer_ast_type_j(&fixed, ctx, &actual, &residual, &out_of_memory)) {
+        goto union_infer_done;
+    }
             }
             if (residual.length == 1) {
                 infer->types[unbound] = *(const size_t *)list_get(&residual, 0);
@@ -274,39 +401,12 @@ bool infer_ast_type(CheckContext *ctx, size_t ast_type,
             return same_type(ctx->program, expected, concrete);
         }
     }
-    if (node->kind == AST_TYPE_FUNCTION) {
-        const TypedFunctionSignature *signature;
-        size_t first_parameter;
-        size_t return_type;
+    {
+        bool outcome;
 
-        if (concrete_type->kind != NIPPY_TYPE_FUNCTION) {
-            return false;
+        if (infer_ast_type_signature(node, concrete_type, ctx, &i, infer, owner, &outcome)) {
+            return outcome;
         }
-        signature = typed_program_signature(ctx->program,
-                                            concrete_type->signature_index);
-        if (signature == NULL ||
-            signature->parameter_count != node->children_count) {
-            return false;
-        }
-        first_parameter = signature->first_parameter;
-        return_type = signature->return_type;
-        for (i = 0; i < node->children_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start + i);
-            size_t parameter = *(const size_t *)list_get(
-                &ctx->program->signature_parameters, first_parameter + i);
-
-            if (!infer_ast_type(ctx, child, parameter, infer, owner)) {
-                return false;
-            }
-        }
-        if (node->right_child == AST_NO_NODE) {
-            const TypedType *resolved = typed_program_type(ctx->program,
-                                                           return_type);
-            return resolved != NULL && resolved->kind == NIPPY_TYPE_NIL;
-        }
-        return infer_ast_type(ctx, node->right_child, return_type, infer,
-                              owner);
     }
     return false;
 }

@@ -1,6 +1,7 @@
 #ifndef NIPPY_PARSER_INTERNAL_H
 #define NIPPY_PARSER_INTERNAL_H
 
+#include "macros.h"
 #include "parser.h"
 #include "operator.h"
 

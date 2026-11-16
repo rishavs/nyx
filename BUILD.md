@@ -28,6 +28,7 @@ make test-compiler  # run only the compiler suite
 make test-tool      # run only the tool suite
 make test-list      # list every test by group
 make golden-update  # regenerate the golden tests' expected output
+make crap           # coverage + complexity report; fails above CRAP_LIMIT (20)
 make clean          # remove the build outputs under bin/
 ```
 
@@ -348,6 +349,23 @@ removed when the run ends, so tests never collide, can run in parallel, and
 leave nothing behind. Files are never written into `bin/`, so a failed test
 cannot leave a stale binary that a later test picks up. The compiler suite
 rarely touches the disk: it passes source strings straight to `compiler_compile`.
+
+## CRAP scores
+
+`make crap` rates every function in `compiler/` by its CRAP score,
+`complexity^2 * (1 - coverage)^3 + complexity`, and fails if any function
+reaches `CRAP_LIMIT` (default 20, override with `make crap CRAP_LIMIT=15`).
+Complexity is cyclomatic: one plus each `if`, `for`, `while`, `do`, `case`,
+`?:`, `&&`, and `||`. Coverage is the fraction of the function's lines that the
+two suites executed. A function with full coverage therefore needs complexity
+below 20, and every uncovered line costs more the more complex the function is.
+
+The target builds a third copy of the tree with `--coverage` into `bin/obj-cov`
+(`-O0`, so the line counts are exact), runs both suites, runs `gcov -f` on each
+object, and passes the result to `bin/crap`, built from `tools/crap.c` against
+libclang. The test runner dumps coverage before a forked test exits. Counts
+accumulate across runs until `make clean`; a rebuilt object discards its stale
+counts. Functions that exceed the limit are printed worst first.
 
 ## Tooling
 

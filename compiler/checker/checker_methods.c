@@ -56,16 +56,78 @@ bool set_store_reference(CheckContext *ctx, TypedNode *node,
 
 
 
-bool check_member_call(CheckContext *ctx, const AstNode *node,
-                      size_t ast_index)
+static bool check_member_call_variable(const VariableEntry *variable, CheckContext *ctx, const char *receiver_name, size_t *receiver_type_index)
 {
-    const char *method = ast_symbol_text(ctx->ast, node->name_index);
-    bool handled = false;
+    if (variable == NULL && ctx->in_function &&
+        receiver_name != NULL &&
+        find_variable(ctx->globals, receiver_name) != NULL) {
+        return false;
+    }
+    if (variable != NULL) {
+        (*receiver_type_index) = variable->type_index;
+        if (typed_program_type(ctx->program, (*receiver_type_index)) !=
+            NULL &&
+            typed_program_type(ctx->program,
+                               (*receiver_type_index))->kind ==
+                NIPPY_TYPE_UNION) {
+            size_t i;
 
+            for (i = ctx->narrowings->length; i > 0; i--) {
+                const Narrowing *narrowing = list_get(
+                    ctx->narrowings, i - 1);
+
+                if (narrowing != NULL && narrowing->active &&
+                    narrowing->path_ast == AST_NO_NODE &&
+                    strcmp(narrowing->name, receiver_name) == 0) {
+                    (*receiver_type_index) = narrowing->type_index;
+                    break;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool check_member_call_receiver_name(const AstNode *receiver_ast, CheckContext *ctx, const AstNode *node, size_t *receiver_type_index, bool *outcome)
+{
+    if (receiver_ast != NULL &&
+        receiver_ast->kind == AST_IDENTIFIER) {
+        const char *receiver_name = ast_symbol_text(
+            ctx->ast, receiver_ast->name_index);
+        const VariableEntry *variable =
+            receiver_name == NULL
+                ? NULL
+                : find_variable(ctx->locals, receiver_name);
+
+        if (variable == NULL && !ctx->in_function &&
+            receiver_name != NULL) {
+            variable = find_variable(ctx->globals, receiver_name);
+        }
+        if (!check_member_call_variable(variable, ctx, receiver_name, receiver_type_index)) {
+    do { *outcome = (check_expression(ctx, node->left_child,
+                                    &(size_t){0})); return true; } while (0);
+}
+    } else {
+        size_t receiver;
+        const TypedNode *receiver_node;
+
+        if (!check_expression(ctx, node->left_child, &receiver)) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        receiver_node = typed_program_node(ctx->program, receiver);
+        if (receiver_node != NULL) {
+            (*receiver_type_index) = receiver_node->type_index;
+        }
+    }
+    return false;
+}
+
+static bool check_member_call_step_step(const char *method, CheckContext *ctx, const AstNode *node, bool *outcome2, size_t ast_index)
+{
     if (method == NULL) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
-        return false;
+        do { *outcome2 = (false); return false; } while (0);
     }
     {
         const AstNode *receiver_ast = ast_get_node(ctx->ast,
@@ -73,59 +135,13 @@ bool check_member_call(CheckContext *ctx, const AstNode *node,
         size_t receiver_type_index = TYPED_NO_NODE;
         const TypedType *receiver_type;
 
-        if (receiver_ast != NULL &&
-            receiver_ast->kind == AST_IDENTIFIER) {
-            const char *receiver_name = ast_symbol_text(
-                ctx->ast, receiver_ast->name_index);
-            const VariableEntry *variable =
-                receiver_name == NULL
-                    ? NULL
-                    : find_variable(ctx->locals, receiver_name);
+        {
+        bool outcome;
 
-            if (variable == NULL && !ctx->in_function &&
-                receiver_name != NULL) {
-                variable = find_variable(ctx->globals, receiver_name);
-            }
-            if (variable == NULL && ctx->in_function &&
-                receiver_name != NULL &&
-                find_variable(ctx->globals, receiver_name) != NULL) {
-                return check_expression(ctx, node->left_child,
-                                        &(size_t){0});
-            }
-            if (variable != NULL) {
-                receiver_type_index = variable->type_index;
-                if (typed_program_type(ctx->program, receiver_type_index) !=
-                    NULL &&
-                    typed_program_type(ctx->program,
-                                       receiver_type_index)->kind ==
-                        NIPPY_TYPE_UNION) {
-                    size_t i;
-
-                    for (i = ctx->narrowings->length; i > 0; i--) {
-                        const Narrowing *narrowing = list_get(
-                            ctx->narrowings, i - 1);
-
-                        if (narrowing != NULL && narrowing->active &&
-                            narrowing->path_ast == AST_NO_NODE &&
-                            strcmp(narrowing->name, receiver_name) == 0) {
-                            receiver_type_index = narrowing->type_index;
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            size_t receiver;
-            const TypedNode *receiver_node;
-
-            if (!check_expression(ctx, node->left_child, &receiver)) {
-                return false;
-            }
-            receiver_node = typed_program_node(ctx->program, receiver);
-            if (receiver_node != NULL) {
-                receiver_type_index = receiver_node->type_index;
-            }
+        if (check_member_call_receiver_name(receiver_ast, ctx, node, &receiver_type_index, &outcome)) {
+            do { *outcome2 = (outcome); return false; } while (0);
         }
+    }
         receiver_type = typed_program_type(ctx->program,
                                            receiver_type_index);
         if (receiver_type != NULL &&
@@ -139,37 +155,69 @@ bool check_member_call(CheckContext *ctx, const AstNode *node,
                 if (node->right_child != AST_NO_NODE) {
                     error_report_at(ctx->errors, node->pos,
                                     MESSAGE_CHECKER_MEMBER_TYPE_ARG, method);
-                    return false;
+                    do { *outcome2 = (false); return false; } while (0);
                 }
                 if (function->generic) {
                     size_t index = find_function_index(ctx,
                                                        function->name);
 
-                    return check_generic_call(ctx, node, index, ast_index);
+                    do { *outcome2 = (check_generic_call(ctx, node, index, ast_index)); return false; } while (0);
                 }
-                return check_associated_function_call(
-                    ctx, node, function, ast_index, true);
+                do { *outcome2 = (check_associated_function_call(
+                    ctx, node, function, ast_index, true)); return false; } while (0);
             }
         }
     }
+    return true;
+}
 
-    if (!check_collection_method(ctx, node, method, ast_index, &handled)) {
+static bool check_member_call_step_member_call_step_step(const char *method, CheckContext *ctx, const AstNode *node, bool *outcome2, size_t ast_index, bool *handled)
+{
+    if (!check_member_call_step_step(method, ctx, node, outcome2, ast_index)) {
         return false;
     }
-    if (handled) {
+
+    if (!check_collection_method(ctx, node, method, ast_index, handled)) {
+        do { *outcome2 = (false); return false; } while (0);
+    }
+    if ((*handled)) {
+        do { *outcome2 = (true); return false; } while (0);
+    }
+    if (!check_string_method(ctx, node, method, ast_index, handled)) {
+        do { *outcome2 = (false); return false; } while (0);
+    }
+    if ((*handled)) {
+        do { *outcome2 = (true); return false; } while (0);
+    }
+    if (!check_error_method(ctx, node, method, ast_index, handled)) {
+        do { *outcome2 = (false); return false; } while (0);
+    }
+    if ((*handled)) {
+        do { *outcome2 = (true); return false; } while (0);
+    }
+    return true;
+}
+
+static bool check_member_call_step(const char *method, CheckContext *ctx, const AstNode *node, size_t ast_index, bool *handled, bool *outcome2)
+{
+    if (!check_member_call_step_member_call_step_step(method, ctx, node, outcome2, ast_index, handled)) {
         return true;
     }
-    if (!check_string_method(ctx, node, method, ast_index, &handled)) {
-        return false;
-    }
-    if (handled) {
-        return true;
-    }
-    if (!check_error_method(ctx, node, method, ast_index, &handled)) {
-        return false;
-    }
-    if (handled) {
-        return true;
+    return false;
+}
+
+bool check_member_call(CheckContext *ctx, const AstNode *node,
+                      size_t ast_index)
+{
+    const char *method = ast_symbol_text(ctx->ast, node->name_index);
+    bool handled = false;
+
+    {
+        bool outcome2;
+
+        if (check_member_call_step(method, ctx, node, ast_index, &handled, &outcome2)) {
+            return outcome2;
+        }
     }
     if (!check_store_method(ctx, node, method, ast_index, &handled)) {
         return false;

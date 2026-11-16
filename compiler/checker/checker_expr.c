@@ -91,6 +91,131 @@ bool check_record_literal(CheckContext *ctx, const AstNode *node,
 }
 
 
+static bool check_list_literal_child_candidate(size_t *candidate, bool *has_strings, CheckContext *ctx, List *checked, bool *mixed)
+{
+    if ((*candidate) == TYPED_NO_NODE) {
+        if (!(*has_strings) ||
+            !builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, candidate)) {
+            if (!(*has_strings)) {
+                list_free(checked);
+                return false;
+            }
+            list_free(checked);
+            return false;
+        }
+    } else if ((*has_strings)) {
+        const TypedType *candidate_type = typed_program_type(
+            ctx->program, (*candidate));
+
+        if (candidate_type == NULL ||
+            (candidate_type->kind != NIPPY_TYPE_STRING &&
+             candidate_type->kind != NIPPY_TYPE_DYNAMIC_STRING)) {
+            (*mixed) = true;
+        }
+    }
+    return true;
+}
+
+static bool check_list_literal_child(size_t *i, List *checked, CheckContext *ctx, const AstNode *node, bool *has_strings, size_t *candidate, bool *mixed)
+{
+    for ((*i) = 0; (*i) < (*checked).length; (*i)++) {
+        size_t child = *(const size_t *)list_get(checked, (*i));
+        const TypedNode *child_node = typed_program_node(ctx->program, child);
+        const TypedType *child_type =
+            child_node == NULL
+                ? NULL
+                : typed_program_type(ctx->program, child_node->type_index);
+
+        if (child_type == NULL) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_LIST_INFER);
+            list_free(checked);
+            return false;
+        }
+        if (child_type->kind == NIPPY_TYPE_STRING_LITERAL) {
+            (*has_strings) = true;
+            continue;
+        }
+        if ((*candidate) == TYPED_NO_NODE) {
+            (*candidate) = child_node->type_index;
+        } else if (!same_type(ctx->program, (*candidate),
+                              child_node->type_index)) {
+            (*mixed) = true;
+        }
+    }
+    if (!check_list_literal_child_candidate(candidate, has_strings, ctx, checked, mixed)) {
+        return false;
+    }
+    return true;
+}
+
+static bool check_list_literal_list_free(List *checked, TypedNode *typed, const AstNode *node, CheckContext *ctx, size_t ast_index, size_t *i, bool *has_strings, size_t *candidate, bool *mixed, size_t *children_start, size_t *list_index, bool *outcome)
+{
+    if ((*checked).length == 0) {
+        (*typed).kind = TYPED_LIST_LITERAL;
+        (*typed).type_index = TYPED_NO_NODE;
+        (*typed).pos = node->pos;
+        (*typed).name_index = TYPED_NO_NODE;
+        (*typed).left_child = TYPED_NO_NODE;
+        (*typed).right_child = TYPED_NO_NODE;
+        (*typed).auxiliary_type = TYPED_NO_NODE;
+        (*typed).store_id = TYPED_NO_NODE;
+        (*typed).children_start = ctx->program->children.length;
+        (*typed).children_count = 0;
+        list_free(checked);
+        do { *outcome = (emit_node(ctx, typed, ast_index, &(size_t){0})); return true; } while (0);
+    }
+    if (!check_list_literal_child(i, checked, ctx, node, has_strings, candidate, mixed)) {
+        do { *outcome = (false); return true; } while (0);
+    }
+    if ((*mixed)) {
+        (*children_start) = ctx->program->children.length;
+        for ((*i) = 0; (*i) < (*checked).length; (*i)++) {
+            size_t child = *(const size_t *)list_get(checked, (*i));
+
+            if (!typed_program_push_child(ctx->program, child)) {
+                error_report_fatal(ctx->errors,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                list_free(checked);
+                do { *outcome = (false); return true; } while (0);
+            }
+        }
+        list_free(checked);
+        (*typed).kind = TYPED_LIST_LITERAL;
+        (*typed).type_index = TYPED_NO_NODE;
+        (*typed).pos = node->pos;
+        (*typed).name_index = TYPED_NO_NODE;
+        (*typed).left_child = TYPED_NO_NODE;
+        (*typed).right_child = TYPED_NO_NODE;
+        (*typed).auxiliary_type = TYPED_NO_NODE;
+        (*typed).store_id = TYPED_NO_NODE;
+        (*typed).children_start = (*children_start);
+        (*typed).children_count = node->children_count;
+        do { *outcome = (emit_node(ctx, typed, ast_index, &(size_t){0})); return true; } while (0);
+    }
+    if (!list_type(ctx, (*candidate), true, (*checked).length, list_index)) {
+        list_free(checked);
+        do { *outcome = (false); return true; } while (0);
+    }
+    return false;
+}
+
+static bool check_list_literal_expression_expected(CheckContext *ctx, size_t child_ast, size_t expected_element, size_t *child, List *checked)
+{
+    if (!check_expression_expected(ctx, child_ast, expected_element, child) ||
+        (expected_element == TYPED_NO_NODE &&
+         !check_default_numeric(ctx, (*child))) ||
+        !list_push(checked, child)) {
+        if (!ctx->errors->reported) {
+            error_report_fatal(ctx->errors,
+                         MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        }
+        list_free(checked);
+        return false;
+    }
+    return true;
+}
+
 bool check_list_literal(CheckContext *ctx, const AstNode *node,
                                 size_t ast_index)
 {
@@ -120,105 +245,16 @@ bool check_list_literal(CheckContext *ctx, const AstNode *node,
             &ctx->ast->children, node->children_start + i);
         size_t child;
 
-        if (!check_expression_expected(ctx, child_ast, expected_element, &child) ||
-            (expected_element == TYPED_NO_NODE &&
-             !check_default_numeric(ctx, child)) ||
-            !list_push(&checked, &child)) {
-            if (!ctx->errors->reported) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-            }
-            list_free(&checked);
-            return false;
-        }
-    }
-    if (checked.length == 0) {
-        typed.kind = TYPED_LIST_LITERAL;
-        typed.type_index = TYPED_NO_NODE;
-        typed.pos = node->pos;
-        typed.name_index = TYPED_NO_NODE;
-        typed.left_child = TYPED_NO_NODE;
-        typed.right_child = TYPED_NO_NODE;
-        typed.auxiliary_type = TYPED_NO_NODE;
-        typed.store_id = TYPED_NO_NODE;
-        typed.children_start = ctx->program->children.length;
-        typed.children_count = 0;
-        list_free(&checked);
-        return emit_node(ctx, &typed, ast_index, &(size_t){0});
-    }
-    for (i = 0; i < checked.length; i++) {
-        size_t child = *(const size_t *)list_get(&checked, i);
-        const TypedNode *child_node = typed_program_node(ctx->program, child);
-        const TypedType *child_type =
-            child_node == NULL
-                ? NULL
-                : typed_program_type(ctx->program, child_node->type_index);
-
-        if (child_type == NULL) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_LIST_INFER);
-            list_free(&checked);
-            return false;
-        }
-        if (child_type->kind == NIPPY_TYPE_STRING_LITERAL) {
-            has_strings = true;
-            continue;
-        }
-        if (candidate == TYPED_NO_NODE) {
-            candidate = child_node->type_index;
-        } else if (!same_type(ctx->program, candidate,
-                              child_node->type_index)) {
-            mixed = true;
-        }
-    }
-    if (candidate == TYPED_NO_NODE) {
-        if (!has_strings ||
-            !builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &candidate)) {
-            if (!has_strings) {
-                list_free(&checked);
-                return false;
-            }
-            list_free(&checked);
-            return false;
-        }
-    } else if (has_strings) {
-        const TypedType *candidate_type = typed_program_type(
-            ctx->program, candidate);
-
-        if (candidate_type == NULL ||
-            (candidate_type->kind != NIPPY_TYPE_STRING &&
-             candidate_type->kind != NIPPY_TYPE_DYNAMIC_STRING)) {
-            mixed = true;
-        }
-    }
-    if (mixed) {
-        children_start = ctx->program->children.length;
-        for (i = 0; i < checked.length; i++) {
-            size_t child = *(const size_t *)list_get(&checked, i);
-
-            if (!typed_program_push_child(ctx->program, child)) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                list_free(&checked);
-                return false;
-            }
-        }
-        list_free(&checked);
-        typed.kind = TYPED_LIST_LITERAL;
-        typed.type_index = TYPED_NO_NODE;
-        typed.pos = node->pos;
-        typed.name_index = TYPED_NO_NODE;
-        typed.left_child = TYPED_NO_NODE;
-        typed.right_child = TYPED_NO_NODE;
-        typed.auxiliary_type = TYPED_NO_NODE;
-        typed.store_id = TYPED_NO_NODE;
-        typed.children_start = children_start;
-        typed.children_count = node->children_count;
-        return emit_node(ctx, &typed, ast_index, &(size_t){0});
-    }
-    if (!list_type(ctx, candidate, true, checked.length, &list_index)) {
-        list_free(&checked);
+        if (!check_list_literal_expression_expected(ctx, child_ast, expected_element, &child, &checked)) {
         return false;
+    }
+    }
+    {
+        bool outcome;
+
+        if (check_list_literal_list_free(&checked, &typed, node, ctx, ast_index, &i, &has_strings, &candidate, &mixed, &children_start, &list_index, &outcome)) {
+            return outcome;
+        }
     }
     children_start = ctx->program->children.length;
     for (i = 0; i < checked.length; i++) {
@@ -402,19 +438,12 @@ bool check_literal(CheckContext *ctx, const AstNode *node,
 }
 
 
-bool check_identifier(CheckContext *ctx, const AstNode *node,
-                             size_t ast_index)
+static bool check_identifier_step(const char *name, CheckContext *ctx, const AstNode *node, size_t ast_index, TypedNode *typed, const VariableEntry **variable, bool *outcome)
 {
-    const char *name = ast_symbol_text(ctx->ast, node->name_index);
-    const VariableEntry *variable;
-    const FunctionEntry *function;
-    size_t type_index;
-    TypedNode typed = {0};
-
     if (name == NULL) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
-        return false;
+        do { *outcome = (false); return true; } while (0);
     }
     {
         const StoreEntry *store = find_store(ctx->stores, name);
@@ -430,26 +459,96 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
             if (expected == NULL || expected->kind != NIPPY_TYPE_STORE) {
                 error_report_at(ctx->errors, node->pos,
                                 MESSAGE_CHECKER_STORE_NOT_VALUE, name);
-                return false;
+                do { *outcome = (false); return true; } while (0);
             }
-            typed.kind = TYPED_IDENTIFIER;
-            typed.type_index = ctx->expected_type;
-            typed.pos = node->pos;
-            typed.name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
-            typed.store_id = store_id;
-            typed.left_child = TYPED_NO_NODE;
-            typed.right_child = TYPED_NO_NODE;
-            if (typed.name_index == TYPED_NO_NODE) {
+            (*typed).kind = TYPED_IDENTIFIER;
+            (*typed).type_index = ctx->expected_type;
+            (*typed).pos = node->pos;
+            (*typed).name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
+            (*typed).store_id = store_id;
+            (*typed).left_child = TYPED_NO_NODE;
+            (*typed).right_child = TYPED_NO_NODE;
+            if ((*typed).name_index == TYPED_NO_NODE) {
                 error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-                return false;
+                do { *outcome = (false); return true; } while (0);
             }
-            return emit_node(ctx, &typed, ast_index, &(size_t){0});
+            do { *outcome = (emit_node(ctx, typed, ast_index, &(size_t){0})); return true; } while (0);
         }
     }
 
-    variable = find_variable(ctx->locals, name);
-    if (variable == NULL && !ctx->in_function) {
-        variable = find_variable(ctx->globals, name);
+    (*variable) = find_variable(ctx->locals, name);
+    if ((*variable) == NULL && !ctx->in_function) {
+        (*variable) = find_variable(ctx->globals, name);
+    }
+    return false;
+}
+
+static bool check_identifier_i(const VariableEntry *variable, CheckContext *ctx, const char *name, const AstNode *node, size_t ast_index, bool *outcome2)
+{
+    if (variable != NULL) {
+        size_t i;
+
+        for (i = ctx->narrowings->length; i > 0; i--) {
+            const Narrowing *narrowing =
+                (const Narrowing *)list_get(ctx->narrowings, i - 1);
+            const TypedType *declared;
+
+            if (narrowing == NULL || !narrowing->active ||
+                narrowing->path_ast != AST_NO_NODE ||
+                strcmp(narrowing->name, name) != 0) {
+                continue;
+            }
+            declared = typed_program_type(ctx->program, variable->type_index);
+            if (declared == NULL || declared->kind != NIPPY_TYPE_UNION) {
+                continue;
+            }
+            {
+                TypedNode base = {0};
+                size_t base_index, narrowed;
+
+                base.kind = TYPED_IDENTIFIER;
+                base.type_index = variable->type_index;
+                base.pos = node->pos;
+                base.name_index = typed_program_copy_symbol(
+                    ctx->program, name, strlen(name));
+                if (base.name_index == TYPED_NO_NODE) {
+                    error_report_fatal(ctx->errors,
+                                 MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+                    do { *outcome2 = (false); return true; } while (0);
+                }
+                base.left_child = TYPED_NO_NODE;
+                base.right_child = TYPED_NO_NODE;
+                base.is_self = variable->is_self_pointer;
+                if (!typed_program_push(ctx->program, &base, &base_index)) {
+                    error_report_fatal(ctx->errors,
+                                 MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+                    do { *outcome2 = (false); return true; } while (0);
+                }
+                if (!emit_narrowed_value(ctx, base_index, narrowing, &narrowed))
+                    do { *outcome2 = (false); return true; } while (0);
+                *mapping_slot(ctx->mapping, ast_index) = narrowed;
+                do { *outcome2 = (true); return true; } while (0);
+            }
+        }
+    }
+    return false;
+}
+
+bool check_identifier(CheckContext *ctx, const AstNode *node,
+                             size_t ast_index)
+{
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    const VariableEntry *variable;
+    const FunctionEntry *function;
+    size_t type_index;
+    TypedNode typed = {0};
+
+    {
+        bool outcome;
+
+        if (check_identifier_step(name, ctx, node, ast_index, &typed, &variable, &outcome)) {
+            return outcome;
+        }
     }
     if (variable != NULL) {
         type_index = variable->type_index;
@@ -486,50 +585,11 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
         }
     }
 
-    if (variable != NULL) {
-        size_t i;
+    {
+        bool outcome2;
 
-        for (i = ctx->narrowings->length; i > 0; i--) {
-            const Narrowing *narrowing =
-                (const Narrowing *)list_get(ctx->narrowings, i - 1);
-            const TypedType *declared;
-
-            if (narrowing == NULL || !narrowing->active ||
-                narrowing->path_ast != AST_NO_NODE ||
-                strcmp(narrowing->name, name) != 0) {
-                continue;
-            }
-            declared = typed_program_type(ctx->program, variable->type_index);
-            if (declared == NULL || declared->kind != NIPPY_TYPE_UNION) {
-                continue;
-            }
-            {
-                TypedNode base = {0};
-                size_t base_index, narrowed;
-
-                base.kind = TYPED_IDENTIFIER;
-                base.type_index = variable->type_index;
-                base.pos = node->pos;
-                base.name_index = typed_program_copy_symbol(
-                    ctx->program, name, strlen(name));
-                if (base.name_index == TYPED_NO_NODE) {
-                    error_report_fatal(ctx->errors,
-                                 MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-                    return false;
-                }
-                base.left_child = TYPED_NO_NODE;
-                base.right_child = TYPED_NO_NODE;
-                base.is_self = variable->is_self_pointer;
-                if (!typed_program_push(ctx->program, &base, &base_index)) {
-                    error_report_fatal(ctx->errors,
-                                 MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                    return false;
-                }
-                if (!emit_narrowed_value(ctx, base_index, narrowing, &narrowed))
-                    return false;
-                *mapping_slot(ctx->mapping, ast_index) = narrowed;
-                return true;
-            }
+        if (check_identifier_i(variable, ctx, name, node, ast_index, &outcome2)) {
+            return outcome2;
         }
     }
 
@@ -552,56 +612,83 @@ bool check_identifier(CheckContext *ctx, const AstNode *node,
 }
 
 
+typedef struct {
+    NippyOperator op;
+    const char *text;
+} OperatorSpelling;
+
+static const char *spelling_of(const OperatorSpelling *table, size_t count,
+                               NippyOperator op, const char *fallback)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        if (table[i].op == op) {
+            return table[i].text;
+        }
+    }
+    return fallback;
+}
+
 const char *operator_text(NippyOperator op)
 {
-    switch (op) {
-    case NIPPY_OPERATOR_ADD:
-        return "+";
-    case NIPPY_OPERATOR_SUB:
-        return "-";
-    case NIPPY_OPERATOR_MUL:
-        return "*";
-    case NIPPY_OPERATOR_DIV:
-        return "/";
-    case NIPPY_OPERATOR_MOD:
-        return "%";
-    case NIPPY_OPERATOR_BIT_AND:
-        return "&";
-    case NIPPY_OPERATOR_BIT_OR:
-        return "|";
-    case NIPPY_OPERATOR_BIT_XOR:
-        return "^";
-    case NIPPY_OPERATOR_SHL:
-        return "<<";
-    case NIPPY_OPERATOR_SHR:
-        return ">>";
-    case NIPPY_OPERATOR_NEG:
-        return "-";
-    case NIPPY_OPERATOR_BIT_NOT:
-        return "~";
-    case NIPPY_OPERATOR_EQ:
-        return "==";
-    case NIPPY_OPERATOR_STRICT_EQ:
-        return "===";
-    case NIPPY_OPERATOR_NE:
-        return "!=";
-    case NIPPY_OPERATOR_LT:
-        return "<";
-    case NIPPY_OPERATOR_LE:
-        return "<=";
-    case NIPPY_OPERATOR_GT:
-        return ">";
-    case NIPPY_OPERATOR_GE:
-        return ">=";
-    case NIPPY_OPERATOR_AND:
-        return "&&";
-    case NIPPY_OPERATOR_OR:
-        return "||";
-    case NIPPY_OPERATOR_NOT:
-        return "!";
-    default:
-        return "?";
+    static const OperatorSpelling spellings[] = {
+        {NIPPY_OPERATOR_ADD, "+"}, {NIPPY_OPERATOR_SUB, "-"},
+        {NIPPY_OPERATOR_MUL, "*"}, {NIPPY_OPERATOR_DIV, "/"},
+        {NIPPY_OPERATOR_MOD, "%"}, {NIPPY_OPERATOR_BIT_AND, "&"},
+        {NIPPY_OPERATOR_BIT_OR, "|"}, {NIPPY_OPERATOR_BIT_XOR, "^"},
+        {NIPPY_OPERATOR_SHL, "<<"}, {NIPPY_OPERATOR_SHR, ">>"},
+        {NIPPY_OPERATOR_NEG, "-"}, {NIPPY_OPERATOR_BIT_NOT, "~"},
+        {NIPPY_OPERATOR_EQ, "=="}, {NIPPY_OPERATOR_STRICT_EQ, "==="},
+        {NIPPY_OPERATOR_NE, "!="}, {NIPPY_OPERATOR_LT, "<"},
+        {NIPPY_OPERATOR_LE, "<="}, {NIPPY_OPERATOR_GT, ">"},
+        {NIPPY_OPERATOR_GE, ">="}, {NIPPY_OPERATOR_AND, "&&"},
+        {NIPPY_OPERATOR_OR, "||"}, {NIPPY_OPERATOR_NOT, "!"},
+    };
+
+    return spelling_of(spellings, NIPPY_COUNT_OF(spellings), op, "?");
+}
+
+static void diagnostic_type_name_depth(const TypedProgram *program, size_t index, char *out, size_t size, unsigned depth);
+
+static void diagnostic_type_name_depth_step(char *out, const TypedType *type, const char **name, const TypedProgram *program, size_t size, size_t *used, size_t *i, char (*child_text)[128], unsigned int depth)
+{
+    out[0] = '\0';
+    switch (type->kind) {
+    case NIPPY_TYPE_HANDLE: (*name) = "Handle"; break;
+    case NIPPY_TYPE_FIXED_LIST: (*name) = "Array"; break;
+    case NIPPY_TYPE_LIST: (*name) = "List"; break;
+    case NIPPY_TYPE_SLICE: (*name) = "Slice"; break;
+    case NIPPY_TYPE_RANGE: (*name) = "Range"; break;
+    case NIPPY_TYPE_RECORD: (*name) = "Record"; break;
+    case NIPPY_TYPE_TABLE: (*name) = "Table"; break;
+    case NIPPY_TYPE_STRUCT:
+        (*name) = typed_program_symbol_text(program, type->source_name_index);
+        if ((*name) == NULL) (*name) = "struct";
+        break;
+    default: (*name) = ""; break;
     }
+    type_ast_append((*name), out, size, used);
+    if (type->kind != NIPPY_TYPE_UNION) type_ast_append("<", out, size, used);
+    for ((*i) = 0; (*i) < type->child_count; (*i)++) {
+        size_t child = *(const size_t *)list_get(&program->type_children,
+                                                  type->first_child + (*i));
+        if ((*i) != 0) type_ast_append(type->kind == NIPPY_TYPE_UNION
+                                       ? " | " : ", ", out, size, used);
+        diagnostic_type_name_depth(program, child, (*child_text),
+                                   sizeof((*child_text)), depth - 1);
+        type_ast_append((*child_text), out, size, used);
+    }
+}
+
+static void diagnostic_type_name_depth_number(const TypedType *type, char *out, size_t size, size_t *used)
+{
+    if (type->kind == NIPPY_TYPE_FIXED_LIST || type->kind == NIPPY_TYPE_RECORD) {
+        char number[32];
+        snprintf(number, sizeof(number), ", %zu", type->fixed_length);
+        type_ast_append(number, out, size, used);
+    }
+    if (type->kind != NIPPY_TYPE_UNION) type_ast_append(">", out, size, used);
 }
 
 static void diagnostic_type_name_depth(const TypedProgram *program, size_t index,
@@ -621,38 +708,8 @@ static void diagnostic_type_name_depth(const TypedProgram *program, size_t index
         size_t i;
         char child_text[128];
 
-        out[0] = '\0';
-        switch (type->kind) {
-        case NIPPY_TYPE_HANDLE: name = "Handle"; break;
-        case NIPPY_TYPE_FIXED_LIST: name = "Array"; break;
-        case NIPPY_TYPE_LIST: name = "List"; break;
-        case NIPPY_TYPE_SLICE: name = "Slice"; break;
-        case NIPPY_TYPE_RANGE: name = "Range"; break;
-        case NIPPY_TYPE_RECORD: name = "Record"; break;
-        case NIPPY_TYPE_TABLE: name = "Table"; break;
-        case NIPPY_TYPE_STRUCT:
-            name = typed_program_symbol_text(program, type->source_name_index);
-            if (name == NULL) name = "struct";
-            break;
-        default: name = ""; break;
-        }
-        type_ast_append(name, out, size, &used);
-        if (type->kind != NIPPY_TYPE_UNION) type_ast_append("<", out, size, &used);
-        for (i = 0; i < type->child_count; i++) {
-            size_t child = *(const size_t *)list_get(&program->type_children,
-                                                      type->first_child + i);
-            if (i != 0) type_ast_append(type->kind == NIPPY_TYPE_UNION
-                                           ? " | " : ", ", out, size, &used);
-            diagnostic_type_name_depth(program, child, child_text,
-                                       sizeof(child_text), depth - 1);
-            type_ast_append(child_text, out, size, &used);
-        }
-        if (type->kind == NIPPY_TYPE_FIXED_LIST || type->kind == NIPPY_TYPE_RECORD) {
-            char number[32];
-            snprintf(number, sizeof(number), ", %zu", type->fixed_length);
-            type_ast_append(number, out, size, &used);
-        }
-        if (type->kind != NIPPY_TYPE_UNION) type_ast_append(">", out, size, &used);
+        diagnostic_type_name_depth_step(out, type, &name, program, size, &used, &i, &child_text, depth);
+        diagnostic_type_name_depth_number(type, out, size, &used);
         return;
     }
     if (type != NULL) {
@@ -751,6 +808,54 @@ bool check_bool_literal(CheckContext *ctx, const AstNode *node,
     return emit_node(ctx, &typed, ast_index, &(size_t){0});
 }
 
+bool equality_type_supported(const TypedProgram *program, size_t type_index, unsigned depth);
+
+static bool equality_type_supported_declaration_expected(const TypedType *type, bool *outcome, size_t *i, const TypedProgram *program, unsigned int depth)
+{
+    if (type->kind == NIPPY_TYPE_FIXED_LIST || type->kind == NIPPY_TYPE_LIST ||
+        type->kind == NIPPY_TYPE_RECORD || type->kind == NIPPY_TYPE_TABLE) {
+        size_t expected = (type->kind == NIPPY_TYPE_RECORD ||
+                           type->kind == NIPPY_TYPE_TABLE) ? 2 : 1;
+        if (type->child_count != expected) {
+            do { *outcome = (false); return false; } while (0);
+        }
+        for ((*i) = 0; (*i) < expected; (*i)++) {
+            size_t child = *(const size_t *)list_get(
+                &program->type_children, type->first_child + (*i));
+            if (!equality_type_supported(program, child, depth - 1)) {
+                do { *outcome = (false); return false; } while (0);
+            }
+        }
+        do { *outcome = (true); return false; } while (0);
+    }
+    return true;
+}
+
+static bool equality_type_supported_declaration(const TypedType *type, const TypedProgram *program, size_t *i, unsigned int depth, bool *outcome)
+{
+    if (type->kind == NIPPY_TYPE_STRUCT) {
+        const TypedNode *declaration = typed_program_node(program,
+                                                           type->declaration_node);
+        if (declaration == NULL) {
+            do { *outcome = (false); return true; } while (0);
+        }
+        for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, declaration->children_start + (*i));
+            const TypedNode *field = typed_program_node(program, child);
+            if (field == NULL || !equality_type_supported(
+                    program, field->type_index, depth - 1)) {
+                do { *outcome = (false); return true; } while (0);
+            }
+        }
+        do { *outcome = (true); return true; } while (0);
+    }
+    if (!equality_type_supported_declaration_expected(type, outcome, i, program, depth)) {
+        return true;
+    }
+    return false;
+}
+
 bool equality_type_supported(const TypedProgram *program,
                              size_t type_index, unsigned depth)
 {
@@ -766,56 +871,69 @@ bool equality_type_supported(const TypedProgram *program,
         type->kind == NIPPY_TYPE_HANDLE) {
         return true;
     }
-    if (type->kind == NIPPY_TYPE_STRUCT) {
-        const TypedNode *declaration = typed_program_node(program,
-                                                           type->declaration_node);
-        if (declaration == NULL) {
-            return false;
+    {
+        bool outcome;
+
+        if (equality_type_supported_declaration(type, program, &i, depth, &outcome)) {
+            return outcome;
         }
-        for (i = 0; i < declaration->children_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &program->children, declaration->children_start + i);
-            const TypedNode *field = typed_program_node(program, child);
-            if (field == NULL || !equality_type_supported(
-                    program, field->type_index, depth - 1)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if (type->kind == NIPPY_TYPE_FIXED_LIST || type->kind == NIPPY_TYPE_LIST ||
-        type->kind == NIPPY_TYPE_RECORD || type->kind == NIPPY_TYPE_TABLE) {
-        size_t expected = (type->kind == NIPPY_TYPE_RECORD ||
-                           type->kind == NIPPY_TYPE_TABLE) ? 2 : 1;
-        if (type->child_count != expected) {
-            return false;
-        }
-        for (i = 0; i < expected; i++) {
-            size_t child = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-            if (!equality_type_supported(program, child, depth - 1)) {
-                return false;
-            }
-        }
-        return true;
     }
     return false;
 }
 
 
-bool check_binary(CheckContext *ctx, const AstNode *node,
-                         size_t ast_index)
+static bool check_binary_report_binary_operator(bool operands_ok, CheckContext *ctx, const AstNode *node, size_t left, size_t right, const TypedType *left_type, size_t result_type, size_t ast_index)
 {
-    size_t left;
-    size_t right;
-    size_t result_type;
-    const TypedNode *left_node;
-    const TypedNode *right_node;
-    const TypedType *left_type;
-    const TypedType *right_type;
-    bool operands_ok = false;
-    size_t operand_context = TYPED_NO_NODE;
-    TypedNode typed = {0};
+    if (!operands_ok) {
+        report_binary_operator_type(ctx, node, left, right);
+        return false;
+    }
+    {
+        bool right_constant = false;
+        int right_value = 0;
+
+        if (!const_int_eval(ctx, node->right_child, &right_value,
+                            &right_constant)) {
+            return false;
+        }
+        if (right_constant &&
+            (node->op == NIPPY_OPERATOR_SHL ||
+             node->op == NIPPY_OPERATOR_SHR) &&
+            nippy_type_is_integer(left_type->kind)) {
+            unsigned width = nippy_type_bit_width(left_type->kind);
+
+            if (right_value < 0 || (unsigned)right_value >= width) {
+                error_report_at(ctx->errors, node->pos,
+                                MESSAGE_CHECKER_SHIFT_RANGE);
+                return false;
+            }
+        }
+        if (right_constant &&
+            (node->op == NIPPY_OPERATOR_DIV ||
+             node->op == NIPPY_OPERATOR_MOD) &&
+            right_value == 0) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_ZERO_DIVISOR,
+                            operator_text(node->op));
+            return false;
+        }
+    }
+    if (result_type == NIPPY_TYPE_INT32) {
+        bool constant = false;
+        int value;
+
+        if (!const_int_eval(ctx, ast_index, &value, &constant)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool check_binary_right(CheckContext *ctx, size_t ast_index, const AstNode *node, size_t *left, size_t *operand_context, bool *operands_ok, TypedNode *typed)
+{
+    (*operands_ok) = false;
+    (*operand_context) = TYPED_NO_NODE;
+    (*typed) = (TypedNode){0};
 
     if (ctx->expected_ast == ast_index &&
         node->op != NIPPY_OPERATOR_EQ && node->op != NIPPY_OPERATOR_NE &&
@@ -826,35 +944,17 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
         const TypedType *expected = typed_program_type(ctx->program,
                                                        ctx->expected_type);
         if (expected != NULL && nippy_type_is_numeric(expected->kind)) {
-            operand_context = ctx->expected_type;
+            (*operand_context) = ctx->expected_type;
         }
     }
-    if (!check_expression_expected(ctx, node->left_child, operand_context, &left)) {
+    if (!check_expression_expected(ctx, node->left_child, (*operand_context), left)) {
         return false;
     }
-    if (node->op == NIPPY_OPERATOR_AND || node->op == NIPPY_OPERATOR_OR) {
-        size_t narrowing_start = ctx->narrowings->length;
-        bool ok = (node->op == NIPPY_OPERATOR_AND
-                       ? push_if_narrowing(ctx, node->left_child)
-                       : push_else_narrowing(ctx, node->left_child)) &&
-                  check_expression_expected(ctx, node->right_child,
-                                            operand_context, &right);
+    return true;
+}
 
-        ctx->narrowings->length = narrowing_start;
-        if (!ok) return false;
-    } else if (!check_expression_expected(ctx, node->right_child,
-                                           operand_context, &right)) {
-        return false;
-    }
-    left_node = typed_program_node(ctx->program, left);
-    right_node = typed_program_node(ctx->program, right);
-    if (left_node == NULL || right_node == NULL) {
-        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE,
-                     node->left_child);
-        return false;
-    }
-    left_type = typed_program_type(ctx->program, left_node->type_index);
-    right_type = typed_program_type(ctx->program, right_node->type_index);
+static bool check_binary_step(const TypedType *left_type, const TypedType *right_type, CheckContext *ctx, const AstNode *node, size_t left, size_t right)
+{
     if (left_type == NULL || right_type == NULL) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
@@ -880,17 +980,216 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
             return false;
         }
     }
+    return true;
+}
+
+static void check_binary_step6(const TypedType *left_type, const TypedType *right_type, NippyType *common, CheckContext *ctx, size_t ast_index, const AstNode *node)
+{
+    if (left_type->kind == NIPPY_TYPE_UINT64 ||
+        right_type->kind == NIPPY_TYPE_UINT64) {
+        (*common) = NIPPY_TYPE_UINT64;
+    } else if (left_type->kind == NIPPY_TYPE_INT64 ||
+               right_type->kind == NIPPY_TYPE_INT64) {
+        (*common) = NIPPY_TYPE_INT64;
+    }
+    if (ctx->expected_ast == ast_index) {
+        const TypedType *expected = typed_program_type(ctx->program,
+                                                       ctx->expected_type);
+        if (expected != NULL && nippy_type_is_integer(expected->kind) &&
+            node->op != NIPPY_OPERATOR_EQ &&
+            node->op != NIPPY_OPERATOR_NE &&
+            node->op != NIPPY_OPERATOR_LT &&
+            node->op != NIPPY_OPERATOR_LE &&
+            node->op != NIPPY_OPERATOR_GT &&
+            node->op != NIPPY_OPERATOR_GE) {
+            (*common) = expected->kind;
+        }
+    }
+}
+
+static bool check_binary_common(CheckContext *ctx, size_t ast_index, size_t *left, size_t *right, const TypedType *left_type, const TypedType *right_type, const AstNode *node)
+{
+    NippyType common = NIPPY_TYPE_INT32;
+    size_t common_type;
+    size_t coerced_left;
+    size_t coerced_right;
+
+    if ((ctx->expected_ast != ast_index ||
+         ctx->expected_type == TYPED_NO_NODE ||
+         typed_program_type(ctx->program, ctx->expected_type) == NULL ||
+         !nippy_type_is_integer(typed_program_type(
+             ctx->program, ctx->expected_type)->kind)) &&
+        (!check_default_numeric(ctx, (*left)) ||
+         !check_default_numeric(ctx, (*right)))) {
+        return false;
+    }
+
+    check_binary_step6(left_type, right_type, &common, ctx, ast_index, node);
+    if (!add_builtin_type(ctx, common, &common_type) ||
+        !inject_into(ctx, (*left), common_type, &coerced_left) ||
+        !inject_into(ctx, (*right), common_type, &coerced_right)) {
+        if (!ctx->errors->reported) {
+            report_binary_operator_type(ctx, node, (*left), (*right));
+        }
+        return false;
+    }
+    (*left) = coerced_left;
+    (*right) = coerced_right;
+    return true;
+}
+
+static bool check_binary_typed_program(const TypedNode **left_node, CheckContext *ctx, size_t left, const TypedNode **right_node, size_t right, const AstNode *node, const TypedType **left_type, const TypedType **right_type)
+{
+    (*left_node) = typed_program_node(ctx->program, left);
+    (*right_node) = typed_program_node(ctx->program, right);
+    if ((*left_node) == NULL || (*right_node) == NULL) {
+        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE,
+                     node->left_child);
+        return false;
+    }
+    (*left_type) = typed_program_type(ctx->program, (*left_node)->type_index);
+    (*right_type) = typed_program_type(ctx->program, (*right_node)->type_index);
+    if (!check_binary_step((*left_type), (*right_type), ctx, node, left, right)) {
+        return false;
+    }
     if (node->op == NIPPY_OPERATOR_STRICT_EQ) {
-        if (nippy_type_is_numeric(left_type->kind) &&
-            !nippy_type_is_numeric(right_type->kind) &&
+        if (nippy_type_is_numeric((*left_type)->kind) &&
+            !nippy_type_is_numeric((*right_type)->kind) &&
             !check_default_numeric(ctx, left)) {
             return false;
         }
-        if (nippy_type_is_numeric(right_type->kind) &&
-            !nippy_type_is_numeric(left_type->kind) &&
+        if (nippy_type_is_numeric((*right_type)->kind) &&
+            !nippy_type_is_numeric((*left_type)->kind) &&
             !check_default_numeric(ctx, right)) {
             return false;
         }
+    }
+    return true;
+}
+
+static bool check_binary_binary_right(CheckContext *ctx, size_t ast_index, const AstNode *node, size_t *left, size_t *operand_context, size_t *right, const TypedNode **left_node, const TypedNode **right_node, const TypedType **left_type, const TypedType **right_type, bool *operands_ok, TypedNode *typed)
+{
+    if (!check_binary_right(ctx, ast_index, node, left, operand_context, operands_ok, typed)) {
+        return false;
+    }
+    if (node->op == NIPPY_OPERATOR_AND || node->op == NIPPY_OPERATOR_OR) {
+        size_t narrowing_start = ctx->narrowings->length;
+        bool ok = (node->op == NIPPY_OPERATOR_AND
+                       ? push_if_narrowing(ctx, node->left_child)
+                       : push_else_narrowing(ctx, node->left_child)) &&
+                  check_expression_expected(ctx, node->right_child,
+                                            (*operand_context), right);
+
+        ctx->narrowings->length = narrowing_start;
+        if (!ok) return false;
+    } else if (!check_expression_expected(ctx, node->right_child,
+                                           (*operand_context), right)) {
+        return false;
+    }
+    if (!check_binary_typed_program(left_node, ctx, (*left), right_node, (*right), node, left_type, right_type)) {
+        return false;
+    }
+    return true;
+}
+
+static bool check_binary_target(const TypedType *right_type, const TypedNode *left_node, const TypedNode *right_node, CheckContext *ctx, size_t *left)
+{
+    size_t target = TYPED_NO_NODE;
+    size_t coerced;
+
+    if ((right_type->kind == NIPPY_TYPE_STRING &&
+         left_node->string_length <= right_type->fixed_length) ||
+        right_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+        target = right_node->type_index;
+    } else if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &target)) {
+        return false;
+    }
+    if (!inject_into(ctx, (*left), target, &coerced)) {
+        return false;
+    }
+    (*left) = coerced;
+    return true;
+}
+
+static bool check_binary_target12(const TypedType *left_type, const TypedNode *right_node, const TypedNode *left_node, CheckContext *ctx, size_t *right)
+{
+    size_t target = TYPED_NO_NODE;
+    size_t coerced;
+
+    if ((left_type->kind == NIPPY_TYPE_STRING &&
+         right_node->string_length <= left_type->fixed_length) ||
+        left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
+        target = left_node->type_index;
+    } else if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &target)) {
+        return false;
+    }
+    if (!inject_into(ctx, (*right), target, &coerced)) {
+        return false;
+    }
+    (*right) = coerced;
+    return true;
+}
+
+static bool check_binary_binary_target(const AstNode *node, const TypedType **left_type, const TypedNode **left_node, const TypedType **right_type, const TypedNode **right_node, CheckContext *ctx, size_t *left, size_t *right)
+{
+    if (node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE ||
+        node->op == NIPPY_OPERATOR_STRICT_EQ) {
+        if ((*left_type)->kind == NIPPY_TYPE_STRING_LITERAL && !(*left_node)->fixed_type) {
+            if (!check_binary_target((*right_type), (*left_node), (*right_node), ctx, left)) {
+        return false;
+    }
+            (*left_node) = typed_program_node(ctx->program, (*left));
+            (*right_node) = typed_program_node(ctx->program, (*right));
+            (*left_type) = typed_program_type(ctx->program, (*left_node)->type_index);
+            (*right_type) = typed_program_type(ctx->program, (*right_node)->type_index);
+        }
+        if ((*right_type)->kind == NIPPY_TYPE_STRING_LITERAL && !(*right_node)->fixed_type) {
+            if (!check_binary_target12((*left_type), (*right_node), (*left_node), ctx, right)) {
+        return false;
+    }
+            (*left_node) = typed_program_node(ctx->program, (*left));
+            (*right_node) = typed_program_node(ctx->program, (*right));
+            (*left_type) = typed_program_type(ctx->program, (*left_node)->type_index);
+            (*right_type) = typed_program_type(ctx->program, (*right_node)->type_index);
+        }
+    }
+    return true;
+}
+
+static bool check_binary_inject_into(size_t literal, CheckContext *ctx, size_t target, size_t *coerced, size_t *left, size_t *right, const TypedNode **left_node, const TypedNode **right_node, const TypedType **left_type, const TypedType **right_type)
+{
+    if (literal != TYPED_NO_NODE) {
+        if (!inject_into(ctx, literal, target, coerced)) {
+            return false;
+        }
+        if (literal == (*left)) {
+            (*left) = (*coerced);
+        } else {
+            (*right) = (*coerced);
+        }
+        (*left_node) = typed_program_node(ctx->program, (*left));
+        (*right_node) = typed_program_node(ctx->program, (*right));
+        (*left_type) = typed_program_type(ctx->program, (*left_node)->type_index);
+        (*right_type) = typed_program_type(ctx->program, (*right_node)->type_index);
+    }
+    return true;
+}
+
+bool check_binary(CheckContext *ctx, const AstNode *node,
+                         size_t ast_index)
+{
+    size_t left;
+    size_t operand_context = {0};
+    size_t right = {0};
+    const TypedNode *left_node = {0};
+    const TypedNode *right_node = {0};
+    const TypedType *left_type = {0};
+    const TypedType *right_type = {0};
+    bool operands_ok = {0};
+    size_t result_type = {0};
+    TypedNode typed = {0};
+    if (!check_binary_binary_right(ctx, ast_index, node, &left, &operand_context, &right, &left_node, &right_node, &left_type, &right_type, &operands_ok, &typed)) {
+        return false;
     }
 
     /* Numeric literals are typed by context: an untyped literal adopts the
@@ -910,51 +1209,9 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
 
         if (left_literal && right_literal && !left_constant.is_float &&
             !right_constant_value.is_float) {
-            NippyType common = NIPPY_TYPE_INT32;
-            size_t common_type;
-            size_t coerced_left;
-            size_t coerced_right;
-
-            if ((ctx->expected_ast != ast_index ||
-                 ctx->expected_type == TYPED_NO_NODE ||
-                 typed_program_type(ctx->program, ctx->expected_type) == NULL ||
-                 !nippy_type_is_integer(typed_program_type(
-                     ctx->program, ctx->expected_type)->kind)) &&
-                (!check_default_numeric(ctx, left) ||
-                 !check_default_numeric(ctx, right))) {
-                return false;
-            }
-
-            if (left_type->kind == NIPPY_TYPE_UINT64 ||
-                right_type->kind == NIPPY_TYPE_UINT64) {
-                common = NIPPY_TYPE_UINT64;
-            } else if (left_type->kind == NIPPY_TYPE_INT64 ||
-                       right_type->kind == NIPPY_TYPE_INT64) {
-                common = NIPPY_TYPE_INT64;
-            }
-            if (ctx->expected_ast == ast_index) {
-                const TypedType *expected = typed_program_type(ctx->program,
-                                                               ctx->expected_type);
-                if (expected != NULL && nippy_type_is_integer(expected->kind) &&
-                    node->op != NIPPY_OPERATOR_EQ &&
-                    node->op != NIPPY_OPERATOR_NE &&
-                    node->op != NIPPY_OPERATOR_LT &&
-                    node->op != NIPPY_OPERATOR_LE &&
-                    node->op != NIPPY_OPERATOR_GT &&
-                    node->op != NIPPY_OPERATOR_GE) {
-                    common = expected->kind;
-                }
-            }
-            if (!add_builtin_type(ctx, common, &common_type) ||
-                !inject_into(ctx, left, common_type, &coerced_left) ||
-                !inject_into(ctx, right, common_type, &coerced_right)) {
-                if (!ctx->errors->reported) {
-                    report_binary_operator_type(ctx, node, left, right);
-                }
-                return false;
-            }
-            left = coerced_left;
-            right = coerced_right;
+            if (!check_binary_common(ctx, ast_index, &left, &right, left_type, right_type, node)) {
+        return false;
+    }
         } else if (left_literal && right_literal && left_constant.is_float &&
                    right_constant_value.is_float &&
                    operand_context != TYPED_NO_NODE &&
@@ -1030,63 +1287,12 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
             literal = right;
             target = left_node->type_index;
         }
-        if (literal != TYPED_NO_NODE) {
-            if (!inject_into(ctx, literal, target, &coerced)) {
-                return false;
-            }
-            if (literal == left) {
-                left = coerced;
-            } else {
-                right = coerced;
-            }
-            left_node = typed_program_node(ctx->program, left);
-            right_node = typed_program_node(ctx->program, right);
-            left_type = typed_program_type(ctx->program, left_node->type_index);
-            right_type = typed_program_type(ctx->program, right_node->type_index);
-        }
+        if (!check_binary_inject_into(literal, ctx, target, &coerced, &left, &right, &left_node, &right_node, &left_type, &right_type)) {
+        return false;
     }
-    if (node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE ||
-        node->op == NIPPY_OPERATOR_STRICT_EQ) {
-        if (left_type->kind == NIPPY_TYPE_STRING_LITERAL && !left_node->fixed_type) {
-            size_t target = TYPED_NO_NODE;
-            size_t coerced;
-
-            if ((right_type->kind == NIPPY_TYPE_STRING &&
-                 left_node->string_length <= right_type->fixed_length) ||
-                right_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-                target = right_node->type_index;
-            } else if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &target)) {
-                return false;
-            }
-            if (!inject_into(ctx, left, target, &coerced)) {
-                return false;
-            }
-            left = coerced;
-            left_node = typed_program_node(ctx->program, left);
-            right_node = typed_program_node(ctx->program, right);
-            left_type = typed_program_type(ctx->program, left_node->type_index);
-            right_type = typed_program_type(ctx->program, right_node->type_index);
-        }
-        if (right_type->kind == NIPPY_TYPE_STRING_LITERAL && !right_node->fixed_type) {
-            size_t target = TYPED_NO_NODE;
-            size_t coerced;
-
-            if ((left_type->kind == NIPPY_TYPE_STRING &&
-                 right_node->string_length <= left_type->fixed_length) ||
-                left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-                target = left_node->type_index;
-            } else if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &target)) {
-                return false;
-            }
-            if (!inject_into(ctx, right, target, &coerced)) {
-                return false;
-            }
-            right = coerced;
-            left_node = typed_program_node(ctx->program, left);
-            right_node = typed_program_node(ctx->program, right);
-            left_type = typed_program_type(ctx->program, left_node->type_index);
-            right_type = typed_program_type(ctx->program, right_node->type_index);
-        }
+    }
+    if (!check_binary_binary_target(node, &left_type, &left_node, &right_type, &right_node, ctx, &left, &right)) {
+        return false;
     }
 
     switch (node->op) {
@@ -1151,47 +1357,8 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
         result_type = NIPPY_TYPE_UNKNOWN;
         break;
     }
-    if (!operands_ok) {
-        report_binary_operator_type(ctx, node, left, right);
+    if (!check_binary_report_binary_operator(operands_ok, ctx, node, left, right, left_type, result_type, ast_index)) {
         return false;
-    }
-    {
-        bool right_constant = false;
-        int right_value = 0;
-
-        if (!const_int_eval(ctx, node->right_child, &right_value,
-                            &right_constant)) {
-            return false;
-        }
-        if (right_constant &&
-            (node->op == NIPPY_OPERATOR_SHL ||
-             node->op == NIPPY_OPERATOR_SHR) &&
-            nippy_type_is_integer(left_type->kind)) {
-            unsigned width = nippy_type_bit_width(left_type->kind);
-
-            if (right_value < 0 || (unsigned)right_value >= width) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_SHIFT_RANGE);
-                return false;
-            }
-        }
-        if (right_constant &&
-            (node->op == NIPPY_OPERATOR_DIV ||
-             node->op == NIPPY_OPERATOR_MOD) &&
-            right_value == 0) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_ZERO_DIVISOR,
-                            operator_text(node->op));
-            return false;
-        }
-    }
-    if (result_type == NIPPY_TYPE_INT32) {
-        bool constant = false;
-        int value;
-
-        if (!const_int_eval(ctx, ast_index, &value, &constant)) {
-            return false;
-        }
     }
 
     {
@@ -1215,6 +1382,50 @@ bool check_binary(CheckContext *ctx, const AstNode *node,
 }
 
 
+static bool check_unary_typed_program(const TypedNode **operand_node, CheckContext *ctx, size_t operand, const TypedType **operand_type, const AstNode *node, NippyType *result_kind, size_t ast_index)
+{
+    (*operand_node) = typed_program_node(ctx->program, operand);
+    (*operand_type) = (*operand_node) == NULL
+                       ? NULL
+                       : typed_program_type(ctx->program,
+                                            (*operand_node)->type_index);
+    if ((*operand_type) == NULL) {
+        report_unary_operator_type(ctx, node, operand);
+        return false;
+    }
+    if (node->op == NIPPY_OPERATOR_NOT) {
+        if ((*operand_type)->kind != NIPPY_TYPE_BOOL) {
+            report_unary_operator_type(ctx, node, operand);
+            return false;
+        }
+        (*result_kind) = NIPPY_TYPE_BOOL;
+    } else if (node->op == NIPPY_OPERATOR_BIT_NOT) {
+        if (!nippy_type_is_integer((*operand_type)->kind)) {
+            report_unary_operator_type(ctx, node, operand);
+            return false;
+        }
+        if ((ctx->expected_ast != ast_index ||
+             ctx->expected_type == TYPED_NO_NODE) &&
+            !check_default_numeric(ctx, operand)) {
+            return false;
+        }
+        (*result_kind) = (*operand_type)->kind;
+    } else {
+        if (nippy_type_is_signed_integer((*operand_type)->kind) ||
+            nippy_type_is_float((*operand_type)->kind)) {
+            (*result_kind) = (*operand_type)->kind;
+        } else if ((*operand_node)->kind == TYPED_INTEGER_LITERAL &&
+                   (*operand_type)->kind == NIPPY_TYPE_UINT64 &&
+                   (*operand_node)->integer_value_u <= (1ULL << 63)) {
+            (*result_kind) = NIPPY_TYPE_INT64;
+        } else {
+            report_unary_operator_type(ctx, node, operand);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool check_unary(CheckContext *ctx, const AstNode *node,
                         size_t ast_index)
 {
@@ -1237,44 +1448,8 @@ bool check_unary(CheckContext *ctx, const AstNode *node,
             &operand)) {
         return false;
     }
-    operand_node = typed_program_node(ctx->program, operand);
-    operand_type = operand_node == NULL
-                       ? NULL
-                       : typed_program_type(ctx->program,
-                                            operand_node->type_index);
-    if (operand_type == NULL) {
-        report_unary_operator_type(ctx, node, operand);
+    if (!check_unary_typed_program(&operand_node, ctx, operand, &operand_type, node, &result_kind, ast_index)) {
         return false;
-    }
-    if (node->op == NIPPY_OPERATOR_NOT) {
-        if (operand_type->kind != NIPPY_TYPE_BOOL) {
-            report_unary_operator_type(ctx, node, operand);
-            return false;
-        }
-        result_kind = NIPPY_TYPE_BOOL;
-    } else if (node->op == NIPPY_OPERATOR_BIT_NOT) {
-        if (!nippy_type_is_integer(operand_type->kind)) {
-            report_unary_operator_type(ctx, node, operand);
-            return false;
-        }
-        if ((ctx->expected_ast != ast_index ||
-             ctx->expected_type == TYPED_NO_NODE) &&
-            !check_default_numeric(ctx, operand)) {
-            return false;
-        }
-        result_kind = operand_type->kind;
-    } else {
-        if (nippy_type_is_signed_integer(operand_type->kind) ||
-            nippy_type_is_float(operand_type->kind)) {
-            result_kind = operand_type->kind;
-        } else if (operand_node->kind == TYPED_INTEGER_LITERAL &&
-                   operand_type->kind == NIPPY_TYPE_UINT64 &&
-                   operand_node->integer_value_u <= (1ULL << 63)) {
-            result_kind = NIPPY_TYPE_INT64;
-        } else {
-            report_unary_operator_type(ctx, node, operand);
-            return false;
-        }
     }
     if (!add_builtin_type(ctx, result_kind, &result_type)) {
         return false;

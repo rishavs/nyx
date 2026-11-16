@@ -4,6 +4,10 @@
 
 #include "harness.h"
 
+#ifdef NIPPY_COVERAGE
+void __gcov_dump(void);
+#endif
+
 #include <ctype.h>
 #include <errno.h>
 #ifdef __GLIBC__
@@ -333,6 +337,10 @@ static void run_child(const Entry *entry, const char *root, size_t index,
                                      : entry->run();
     fflush(stdout);
     fflush(stderr);
+#ifdef NIPPY_COVERAGE
+    /* _exit skips the exit handlers that write coverage counts. */
+    __gcov_dump();
+#endif
     _exit((int)result);
 }
 

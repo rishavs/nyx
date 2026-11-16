@@ -273,23 +273,26 @@ static Region region_clone(Region region, List *to, bool *ok)
 /* Types that can never hold a pointer into Store memory carry no region. */
 static bool type_holds_pointers(const TypedProgram *program, size_t type_index)
 {
+    static const NippyType pointer_free[] = {
+        NIPPY_TYPE_UNKNOWN, NIPPY_TYPE_INT32, NIPPY_TYPE_BOOL,
+        NIPPY_TYPE_BYTE, NIPPY_TYPE_NIL, NIPPY_TYPE_FUNCTION,
+        NIPPY_TYPE_STRING, NIPPY_TYPE_RANGE, NIPPY_TYPE_STRING_LITERAL,
+        NIPPY_TYPE_ERROR, NIPPY_TYPE_INT8, NIPPY_TYPE_INT16,
+        NIPPY_TYPE_INT64, NIPPY_TYPE_UINT16, NIPPY_TYPE_UINT32,
+        NIPPY_TYPE_UINT64, NIPPY_TYPE_FLOAT32, NIPPY_TYPE_FLOAT64,
+    };
     const TypedType *type = typed_program_type(program, type_index);
+    size_t i;
 
     if (type == NULL) {
         return false;
     }
-    switch (type->kind) {
-    case NIPPY_TYPE_UNKNOWN: case NIPPY_TYPE_INT32: case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_BYTE: case NIPPY_TYPE_NIL: case NIPPY_TYPE_FUNCTION:
-    case NIPPY_TYPE_STRING: case NIPPY_TYPE_RANGE:
-    case NIPPY_TYPE_STRING_LITERAL: case NIPPY_TYPE_ERROR:
-    case NIPPY_TYPE_INT8: case NIPPY_TYPE_INT16: case NIPPY_TYPE_INT64:
-    case NIPPY_TYPE_UINT16: case NIPPY_TYPE_UINT32: case NIPPY_TYPE_UINT64:
-    case NIPPY_TYPE_FLOAT32: case NIPPY_TYPE_FLOAT64:
-        return false;
-    default:
-        return true;
+    for (i = 0; i < NIPPY_COUNT_OF(pointer_free); i++) {
+        if (pointer_free[i] == type->kind) {
+            return false;
+        }
     }
+    return true;
 }
 
 static size_t struct_field_count(const TypedProgram *program, size_t type_index)
@@ -786,6 +789,41 @@ static Region argument_part(Region argument, size_t field, size_t slots)
     return region_strip(argument);
 }
 
+static void check_call_contract_source(size_t *i, size_t count, const Summary *summary, Walker *walker, const Region *arguments, size_t *j, const TypedNode *node)
+{
+    for ((*i) = 0; (*i) < count && (*i) < summary->param_count && !walker->failed; (*i)++) {
+        size_t source_index = param_index((*i));
+        size_t source_slots = summary->param_slots[source_index];
+        size_t f;
+
+        for (f = 0; f < source_slots && !walker->failed; f++) {
+            size_t slot = summary->param_base[source_index] + f;
+            Region source = argument_part(arguments[(*i)], f, source_slots);
+            uint64_t flow = summary->flow[slot];
+
+            for ((*j) = 0; (*j) < count && (*j) < summary->param_count && !walker->failed;
+                 (*j)++) {
+                size_t sink_index = param_index((*j));
+                size_t sink_slots = summary->param_slots[sink_index];
+                size_t g;
+
+                for (g = 0; g < sink_slots && !walker->failed; g++) {
+                    size_t target = summary->param_base[sink_index] + g;
+
+                    if ((flow >> target) & 1) {
+                        check_flow(walker, node, source,
+                                   argument_part(arguments[(*j)], g, sink_slots),
+                                   summary, slot);
+                    }
+                }
+            }
+            if (!walker->failed && ((summary->to_global >> slot) & 1)) {
+                check_global_flow(walker, node, source, summary);
+            }
+        }
+    }
+}
+
 /* A call through a function value assumes the callee may write any argument
    into any other, but never into global memory: a function that could is
    rejected where it becomes a value. A callee with no summary is assumed to
@@ -811,37 +849,7 @@ static void check_call_contract(Walker *walker, const TypedNode *node,
         }
         return;
     }
-    for (i = 0; i < count && i < summary->param_count && !walker->failed; i++) {
-        size_t source_index = param_index(i);
-        size_t source_slots = summary->param_slots[source_index];
-        size_t f;
-
-        for (f = 0; f < source_slots && !walker->failed; f++) {
-            size_t slot = summary->param_base[source_index] + f;
-            Region source = argument_part(arguments[i], f, source_slots);
-            uint64_t flow = summary->flow[slot];
-
-            for (j = 0; j < count && j < summary->param_count && !walker->failed;
-                 j++) {
-                size_t sink_index = param_index(j);
-                size_t sink_slots = summary->param_slots[sink_index];
-                size_t g;
-
-                for (g = 0; g < sink_slots && !walker->failed; g++) {
-                    size_t target = summary->param_base[sink_index] + g;
-
-                    if ((flow >> target) & 1) {
-                        check_flow(walker, node, source,
-                                   argument_part(arguments[j], g, sink_slots),
-                                   summary, slot);
-                    }
-                }
-            }
-            if (!walker->failed && ((summary->to_global >> slot) & 1)) {
-                check_global_flow(walker, node, source, summary);
-            }
-        }
-    }
+    check_call_contract_source(&i, count, summary, walker, arguments, &j, node);
 }
 
 static Region visit_call(Walker *walker, size_t index)
@@ -914,6 +922,280 @@ static Region visit_declaration(Walker *walker, size_t index, size_t key,
     return region_none();
 }
 
+static bool visit_inner_type(const TypedProgram *program, const TypedNode *node, Walker *walker, const Binding **binding, Region *outcome)
+{
+    const TypedType *type = typed_program_type(program, node->type_index);
+    
+
+    if (type != NULL && type->kind == NIPPY_TYPE_STORE) {
+        do { *outcome = (store_region(walker, node)); return true; } while (0);
+    }
+    if (type != NULL && type->kind == NIPPY_TYPE_FUNCTION &&
+        lookup(walker, node->name_index, false) == NULL) {
+        const Summary *callee = find_summary(walker, node->name_index);
+
+        if (callee != NULL && callee->to_global != 0) {
+            error_report_at(walker->errors, node->pos,
+                            MESSAGE_ANALYSER_ESCAPE_FUNCTION_VALUE,
+                            callee_name(program, node->name_index));
+            walker->failed = true;
+        }
+        do { *outcome = (region_none()); return true; } while (0);
+    }
+    if (node->is_self) {
+        do { *outcome = (walker->receiver); return true; } while (0);
+    }
+    (*binding) = lookup(walker, node->name_index, false);
+    if ((*binding) == NULL) {
+        do { *outcome = (region_at(0)); return true; } while (0);
+    }
+    return false;
+}
+
+static bool visit_inner_region_none(Region *first, const TypedNode *node, Walker *walker, const TypedType *type, size_t *i, Region (*kids)[32])
+{
+    (*first) = node->left_child == TYPED_NO_NODE
+                ? region_none()
+                : visit(walker, node->left_child);
+    if (type == NULL || type->kind != NIPPY_TYPE_UNION ||
+        node->integer_value < 0 ||
+        (size_t)node->integer_value >= type->child_count ||
+        type->child_count > MAX_SHAPE || (*first).lo == REGION_NONE) {
+        return false;
+    }
+    for ((*i) = 0; (*i) < type->child_count; (*i)++) {
+        (*kids)[(*i)] = region_none();
+    }
+    return true;
+}
+
+static void visit_inner_add_mask(Walker *walker, Region *first, const TypedProgram *program, const TypedNode *node)
+{
+    if (!walker->failed && walker->self != NULL) {
+        add_mask(walker, &walker->self->returned, (*first).params);
+        if ((*first).lo == 0 && !walker->self->returns_global) {
+            walker->self->returns_global = true;
+            walker->flags_changed = true;
+        }
+    }
+    if (!walker->failed && (*first).lo != REGION_NONE &&
+        (*first).hi > walker->base) {
+        char origin[NIPPY_IDENTIFIER_MAX + 16];
+
+        describe_origin(program, (*first).origin, origin, sizeof(origin));
+        error_report_at(walker->errors, node->pos,
+                        MESSAGE_ANALYSER_ESCAPE_RETURN, origin);
+        note_origin(walker, (*first));
+        walker->failed = true;
+    }
+}
+
+static void visit_inner_length(const TypedProgram *program, const TypedNode *node, size_t (*reversed)[32], size_t *i, size_t (*path)[32], size_t *length)
+{
+    (*length) = 0;
+    bool known = true;
+    const TypedNode *step = typed_program_node(program, node->left_child);
+
+    while (step != NULL && step->kind == TYPED_MEMBER_ACCESS) {
+        const TypedNode *receiver = typed_program_node(
+            program, step->left_child);
+        size_t field = receiver == NULL
+                           ? TYPED_NO_NODE
+                           : struct_field_index(program,
+                                                receiver->type_index,
+                                                step->name_index);
+
+        if (field == TYPED_NO_NODE || (*length) == MAX_SHAPE) {
+            known = false;
+            break;
+        }
+        (*reversed)[(*length)++] = field;
+        step = receiver;
+    }
+    if (!known) {
+        (*length) = 0;
+    }
+    for ((*i) = 0; (*i) < (*length); (*i)++) {
+        (*path)[(*i)] = (*reversed)[(*length) - 1 - (*i)];
+    }
+}
+
+static bool visit_inner_visit(Region *first, Walker *walker, const TypedNode *node, size_t *i, const TypedProgram *program)
+{
+    (*first) = visit(walker, node->left_child);
+    if (node->right_child != TYPED_NO_NODE) {
+        visit(walker, node->right_child);
+    }
+    for ((*i) = 0; (*i) < node->children_count && !walker->failed; (*i)++) {
+        visit(walker, *(const size_t *)list_get(&program->children,
+                                                node->children_start + (*i)));
+    }
+    {
+        /* An inline Array or Record holds its elements itself, so what is
+           read from it is among what was written into the variable. */
+        const TypedNode *container = typed_program_node(program,
+                                                        node->left_child);
+        const TypedType *container_type =
+            container == NULL ? NULL
+                              : typed_program_type(program,
+                                                   container->type_index);
+
+        if (container_type != NULL &&
+            (container_type->kind == NIPPY_TYPE_FIXED_LIST ||
+             container_type->kind == NIPPY_TYPE_RECORD)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool visit_inner_kids(const TypedNode *node, const TypedProgram *program, Walker *walker, size_t *i, Region *outcome2)
+{
+    Region kids[MAX_SHAPE];
+
+    if (node->children_count == 0 || node->children_count > MAX_SHAPE ||
+        struct_field_count(program, node->type_index) !=
+            node->children_count) {
+        do { *outcome2 = (region_strip(visit_children(walker, node))); return true; } while (0);
+    }
+    for ((*i) = 0; (*i) < node->children_count && !walker->failed; (*i)++) {
+        kids[(*i)] = visit(walker, *(const size_t *)list_get(
+                                    &program->children,
+                                    node->children_start + (*i)));
+    }
+    if (walker->failed) {
+        do { *outcome2 = (region_none()); return true; } while (0);
+    }
+    do { *outcome2 = (make_shape(kids, node->children_count)); return true; } while (0);
+    return false;
+}
+
+static bool visit_inner_source(const TypedProgram *program, const TypedNode *node, Region *first, Walker *walker)
+{
+    const TypedNode *source = typed_program_node(program, node->left_child);
+    const TypedType *type = source == NULL ? NULL
+                            : typed_program_type(program, source->type_index);
+
+    (*first) = visit(walker, node->left_child);
+    if (type == NULL || type->kind != NIPPY_TYPE_UNION ||
+        node->integer_value < 0 ||
+        (*first).shape_count != type->child_count ||
+        (size_t)node->integer_value >= (*first).shape_count) {
+        return false;
+    }
+    return true;
+}
+
+static bool visit_inner_iterable(Walker *walker, const TypedNode *node, size_t *mark, size_t index, const TypedProgram *program)
+{
+    Region iterable = visit(walker, node->left_child);
+    Region element = contents_of(iterable);
+    size_t slot;
+
+    (*mark) = walker->bindings.length;
+    if (walker->failed) {
+        return false;
+    }
+    slot = find_var(walker, index * 2, walker->depth);
+    if (slot == TYPED_NO_NODE) {
+        return false;
+    }
+    assign_var(walker, slot, element, node,
+               symbol_name(program, node->name_index));
+    bind(walker, node->name_index, false, slot, 0);
+    if (node->second_name_index != TYPED_NO_NODE && !walker->failed) {
+        slot = find_var(walker, index * 2 + 1, walker->depth);
+        if (slot == TYPED_NO_NODE) {
+            return false;
+        }
+        assign_var(walker, slot, element, node,
+               symbol_name(program, node->name_index));
+        bind(walker, node->second_name_index, false, slot, 0);
+    }
+    if (!walker->failed) {
+        visit(walker, node->right_child);
+    }
+    return true;
+}
+
+static bool visit_inner_receiver(const TypedProgram *program, const TypedNode *node, Region *first, Walker *walker, size_t *field)
+{
+    const TypedNode *receiver = typed_program_node(program, node->left_child);
+    (*field) = receiver == NULL
+                       ? TYPED_NO_NODE
+                       : struct_field_index(program, receiver->type_index,
+                                            node->name_index);
+
+    (*first) = visit(walker, node->left_child);
+    if ((*field) == TYPED_NO_NODE || (*first).shape_count == 0 ||
+        (*first).shape_count != struct_field_count(program,
+                                                receiver->type_index)) {
+        return false;
+    }
+    return true;
+}
+
+static void visit_inner_owner(Walker *walker, const TypedNode *node, Region *first, size_t *i, const TypedProgram *program, Region *second)
+{
+    const Binding *owner = by_value_receiver(walker, node->left_child);
+
+    (*first) = visit(walker, node->left_child);
+    for ((*i) = 0; (*i) < node->children_count && !walker->failed; (*i)++) {
+        size_t child = *(const size_t *)list_get(&program->children,
+                                                 node->children_start + (*i));
+
+        (*second) = visit(walker, child);
+        if (walker->failed) {
+            break;
+        }
+        if (owner != NULL) {
+            assign_var(walker, owner->index, (*second), node,
+                       symbol_name(program, owner->name));
+        } else {
+            check_write(walker, (*first), (*second), node,
+                        destination_name(program, node->left_child));
+        }
+    }
+}
+
+static bool visit_inner_region_none13(Walker *walker, const TypedNode **target, const TypedProgram *program)
+{
+    if (walker->failed) {
+        return false;
+    }
+    while ((*target) != NULL && (*target)->kind == TYPED_MEMBER_ACCESS) {
+        (*target) = typed_program_node(program, (*target)->left_child);
+    }
+    return true;
+}
+
+static void visit_inner_joined(Walker *walker, size_t *temp, Region *first)
+{
+    {
+        Region joined = region_join(walker->temps[(*temp)], (*first));
+
+        if (!region_equal(joined, walker->temps[(*temp)])) {
+            if (walker->temps[(*temp)].lo == REGION_NONE &&
+                !list_push(&walker->used_temps, temp)) {
+                fail_oom(walker);
+            }
+            walker->temps[(*temp)] = joined;
+            walker->changed = true;
+        }
+    }
+}
+
+static void visit_inner_visit16(Region *first, Walker *walker, const TypedNode *node, Region *second, const TypedProgram *program)
+{
+    (*first) = visit(walker, node->left_child);
+    (*second) = visit(walker, node->right_child);
+    if (!walker->failed && node->kind != TYPED_BUILDER_APPEND &&
+        node->kind != TYPED_BUILDER_APPEND_BYTE) {
+        check_write(walker, (*first), (*second), node,
+                    destination_name(program, node->left_child));
+    }
+}
+
 static Region visit_inner(Walker *walker, size_t index)
 {
     const TypedNode *node = typed_program_node(walker->program, index);
@@ -944,31 +1226,14 @@ static Region visit_inner(Walker *walker, size_t index)
         return region_none();
     }
     case TYPED_IDENTIFIER: {
-        const TypedType *type = typed_program_type(program, node->type_index);
-        const Binding *binding;
+        const Binding *binding = {0};
+        {
+        Region outcome;
 
-        if (type != NULL && type->kind == NIPPY_TYPE_STORE) {
-            return store_region(walker, node);
+        if (visit_inner_type(program, node, walker, &binding, &outcome)) {
+            return outcome;
         }
-        if (type != NULL && type->kind == NIPPY_TYPE_FUNCTION &&
-            lookup(walker, node->name_index, false) == NULL) {
-            const Summary *callee = find_summary(walker, node->name_index);
-
-            if (callee != NULL && callee->to_global != 0) {
-                error_report_at(walker->errors, node->pos,
-                                MESSAGE_ANALYSER_ESCAPE_FUNCTION_VALUE,
-                                callee_name(program, node->name_index));
-                walker->failed = true;
-            }
-            return region_none();
-        }
-        if (node->is_self) {
-            return walker->receiver;
-        }
-        binding = lookup(walker, node->name_index, false);
-        if (binding == NULL) {
-            return region_at(0);
-        }
+    }
         return ((const Var *)list_get(&walker->vars, binding->index))->value;
     }
     case TYPED_LOCAL_DECLARATION:
@@ -996,12 +1261,9 @@ static Region visit_inner(Walker *walker, size_t index)
         const TypedNode *target = typed_program_node(program, node->left_child);
 
         second = visit(walker, node->right_child);
-        if (walker->failed) {
-            return region_none();
-        }
-        while (target != NULL && target->kind == TYPED_MEMBER_ACCESS) {
-            target = typed_program_node(program, target->left_child);
-        }
+        if (!visit_inner_region_none13(walker, &target, program)) {
+        return region_none();
+    }
         if (target != NULL && target->kind == TYPED_IDENTIFIER &&
             !target->is_self &&
             lookup(walker, target->name_index, false) != NULL) {
@@ -1009,32 +1271,8 @@ static Region visit_inner(Walker *walker, size_t index)
                member path when every step of it is a known field. */
             size_t reversed[MAX_SHAPE];
             size_t path[MAX_SHAPE];
-            size_t length = 0;
-            bool known = true;
-            const TypedNode *step = typed_program_node(program, node->left_child);
-
-            while (step != NULL && step->kind == TYPED_MEMBER_ACCESS) {
-                const TypedNode *receiver = typed_program_node(
-                    program, step->left_child);
-                size_t field = receiver == NULL
-                                   ? TYPED_NO_NODE
-                                   : struct_field_index(program,
-                                                        receiver->type_index,
-                                                        step->name_index);
-
-                if (field == TYPED_NO_NODE || length == MAX_SHAPE) {
-                    known = false;
-                    break;
-                }
-                reversed[length++] = field;
-                step = receiver;
-            }
-            if (!known) {
-                length = 0;
-            }
-            for (i = 0; i < length; i++) {
-                path[i] = reversed[length - 1 - i];
-            }
+            size_t length = {0};
+            visit_inner_length(program, node, &reversed, &i, &path, &length);
             assign_var_at(walker,
                           lookup(walker, target->name_index, false)->index,
                           second, node,
@@ -1057,37 +1295,13 @@ static Region visit_inner(Walker *walker, size_t index)
     case TYPED_LIST_PUSH:
     case TYPED_BUILDER_APPEND:
     case TYPED_BUILDER_APPEND_BYTE: {
-        first = visit(walker, node->left_child);
-        second = visit(walker, node->right_child);
-        if (!walker->failed && node->kind != TYPED_BUILDER_APPEND &&
-            node->kind != TYPED_BUILDER_APPEND_BYTE) {
-            check_write(walker, first, second, node,
-                        destination_name(program, node->left_child));
-        }
+        visit_inner_visit16(&first, walker, node, &second, program);
         return region_none();
     }
     case TYPED_LIST_SET:
     case TYPED_RECORD_SET:
     case TYPED_TABLE_SET: {
-        const Binding *owner = by_value_receiver(walker, node->left_child);
-
-        first = visit(walker, node->left_child);
-        for (i = 0; i < node->children_count && !walker->failed; i++) {
-            size_t child = *(const size_t *)list_get(&program->children,
-                                                     node->children_start + i);
-
-            second = visit(walker, child);
-            if (walker->failed) {
-                break;
-            }
-            if (owner != NULL) {
-                assign_var(walker, owner->index, second, node,
-                           symbol_name(program, owner->name));
-            } else {
-                check_write(walker, first, second, node,
-                            destination_name(program, node->left_child));
-            }
-        }
+        visit_inner_owner(walker, node, &first, &i, program, &second);
         return region_none();
     }
     case TYPED_STORE_ALLOC: {
@@ -1109,83 +1323,22 @@ static Region visit_inner(Walker *walker, size_t index)
     case TYPED_HANDLE_READ: case TYPED_LIST_GET: case TYPED_LIST_GET_OPTIONAL:
     case TYPED_LIST_POP: case TYPED_TABLE_GET: case TYPED_TABLE_GET_OPTIONAL:
     case TYPED_RECORD_GET: case TYPED_SLICE_GET: {
-        first = visit(walker, node->left_child);
-        if (node->right_child != TYPED_NO_NODE) {
-            visit(walker, node->right_child);
-        }
-        for (i = 0; i < node->children_count && !walker->failed; i++) {
-            visit(walker, *(const size_t *)list_get(&program->children,
-                                                    node->children_start + i));
-        }
-        {
-            /* An inline Array or Record holds its elements itself, so what is
-               read from it is among what was written into the variable. */
-            const TypedNode *container = typed_program_node(program,
-                                                            node->left_child);
-            const TypedType *container_type =
-                container == NULL ? NULL
-                                  : typed_program_type(program,
-                                                       container->type_index);
-
-            if (container_type != NULL &&
-                (container_type->kind == NIPPY_TYPE_FIXED_LIST ||
-                 container_type->kind == NIPPY_TYPE_RECORD)) {
-                return region_strip(first);
-            }
-        }
+        if (!visit_inner_visit(&first, walker, node, &i, program)) {
+        return region_strip(first);
+    }
         return contents_of(first);
     }
     case TYPED_RETURN: {
         if (node->left_child != TYPED_NO_NODE) {
             first = visit(walker, node->left_child);
-            if (!walker->failed && walker->self != NULL) {
-                add_mask(walker, &walker->self->returned, first.params);
-                if (first.lo == 0 && !walker->self->returns_global) {
-                    walker->self->returns_global = true;
-                    walker->flags_changed = true;
-                }
-            }
-            if (!walker->failed && first.lo != REGION_NONE &&
-                first.hi > walker->base) {
-                char origin[NIPPY_IDENTIFIER_MAX + 16];
-
-                describe_origin(program, first.origin, origin, sizeof(origin));
-                error_report_at(walker->errors, node->pos,
-                                MESSAGE_ANALYSER_ESCAPE_RETURN, origin);
-                note_origin(walker, first);
-                walker->failed = true;
-            }
+            visit_inner_add_mask(walker, &first, program, node);
         }
         return region_none();
     }
     case TYPED_FOR: {
-        Region iterable = visit(walker, node->left_child);
-        Region element = contents_of(iterable);
-        size_t slot;
-
-        mark = walker->bindings.length;
-        if (walker->failed) {
-            return region_none();
-        }
-        slot = find_var(walker, index * 2, walker->depth);
-        if (slot == TYPED_NO_NODE) {
-            return region_none();
-        }
-        assign_var(walker, slot, element, node,
-                   symbol_name(program, node->name_index));
-        bind(walker, node->name_index, false, slot, 0);
-        if (node->second_name_index != TYPED_NO_NODE && !walker->failed) {
-            slot = find_var(walker, index * 2 + 1, walker->depth);
-            if (slot == TYPED_NO_NODE) {
-                return region_none();
-            }
-            assign_var(walker, slot, element, node,
-                   symbol_name(program, node->name_index));
-            bind(walker, node->second_name_index, false, slot, 0);
-        }
-        if (!walker->failed) {
-            visit(walker, node->right_child);
-        }
+        if (!visit_inner_iterable(walker, node, &mark, index, program)) {
+        return region_none();
+    }
         walker->bindings.length = mark;
         return region_none();
     }
@@ -1196,84 +1349,40 @@ static Region visit_inner(Walker *walker, size_t index)
         size_t temp = (size_t)node->integer_value_u;
 
         first = visit(walker, node->left_child);
-        {
-            Region joined = region_join(walker->temps[temp], first);
-
-            if (!region_equal(joined, walker->temps[temp])) {
-                if (walker->temps[temp].lo == REGION_NONE &&
-                    !list_push(&walker->used_temps, &temp)) {
-                    fail_oom(walker);
-                }
-                walker->temps[temp] = joined;
-                walker->changed = true;
-            }
-        }
+        visit_inner_joined(walker, &temp, &first);
         return visit(walker, node->right_child);
     }
     case TYPED_STRUCT_CONSTRUCTOR: {
-        Region kids[MAX_SHAPE];
+        {
+        Region outcome2;
 
-        if (node->children_count == 0 || node->children_count > MAX_SHAPE ||
-            struct_field_count(program, node->type_index) !=
-                node->children_count) {
-            return region_strip(visit_children(walker, node));
+        if (visit_inner_kids(node, program, walker, &i, &outcome2)) {
+            return outcome2;
         }
-        for (i = 0; i < node->children_count && !walker->failed; i++) {
-            kids[i] = visit(walker, *(const size_t *)list_get(
-                                        &program->children,
-                                        node->children_start + i));
-        }
-        if (walker->failed) {
-            return region_none();
-        }
-        return make_shape(kids, node->children_count);
     }
+    }
+        return region_none();
     case TYPED_MEMBER_ACCESS: {
-        const TypedNode *receiver = typed_program_node(program, node->left_child);
-        size_t field = receiver == NULL
-                           ? TYPED_NO_NODE
-                           : struct_field_index(program, receiver->type_index,
-                                                node->name_index);
-
-        first = visit(walker, node->left_child);
-        if (field == TYPED_NO_NODE || first.shape_count == 0 ||
-            first.shape_count != struct_field_count(program,
-                                                    receiver->type_index)) {
-            return region_strip(first);
-        }
+        size_t field = {0};
+        if (!visit_inner_receiver(program, node, &first, walker, &field)) {
+        return region_strip(first);
+    }
         return shape_kid(first, field);
     }
     case TYPED_SUM_INJECT: {
         const TypedType *type = typed_program_type(program, node->type_index);
         Region kids[MAX_SHAPE];
 
-        first = node->left_child == TYPED_NO_NODE
-                    ? region_none()
-                    : visit(walker, node->left_child);
-        if (type == NULL || type->kind != NIPPY_TYPE_UNION ||
-            node->integer_value < 0 ||
-            (size_t)node->integer_value >= type->child_count ||
-            type->child_count > MAX_SHAPE || first.lo == REGION_NONE) {
-            return region_strip(first);
-        }
-        for (i = 0; i < type->child_count; i++) {
-            kids[i] = region_none();
-        }
+        if (!visit_inner_region_none(&first, node, walker, type, &i, &kids)) {
+        return region_strip(first);
+    }
         kids[node->integer_value] = first;
         return make_shape(kids, type->child_count);
     }
     case TYPED_SUM_PAYLOAD: {
-        const TypedNode *source = typed_program_node(program, node->left_child);
-        const TypedType *type = source == NULL ? NULL
-                                : typed_program_type(program, source->type_index);
-
-        first = visit(walker, node->left_child);
-        if (type == NULL || type->kind != NIPPY_TYPE_UNION ||
-            node->integer_value < 0 ||
-            first.shape_count != type->child_count ||
-            (size_t)node->integer_value >= first.shape_count) {
-            return region_strip(first);
-        }
+        if (!visit_inner_source(program, node, &first, walker)) {
+        return region_strip(first);
+    }
         return shape_kid(first, (size_t)node->integer_value);
     }
     case TYPED_FUNCTION_CALL:
@@ -1340,6 +1449,58 @@ static bool compact_shapes(Walker *walker)
     return true;
 }
 
+static bool analyse_frame_step(Walker *walker, const TypedNode *function, size_t *i, const TypedProgram *program)
+{
+    walker->changed = false;
+    walker->bindings.length = 0;
+    walker->depth = walker->base;
+    walker->receiver = region_none();
+    if (function != NULL) {
+        for ((*i) = 0; (*i) < function->children_count && !walker->failed; (*i)++) {
+            size_t child = *(const size_t *)list_get(
+                &program->children, function->children_start + (*i));
+            const TypedNode *parameter = typed_program_node(program, child);
+            const TypedType *type = typed_program_type(
+                program, parameter->type_index);
+            size_t slot = find_var(walker, child * 2, 1);
+
+            if (slot == TYPED_NO_NODE) {
+                return false;
+            }
+            if (type != NULL && type->kind == NIPPY_TYPE_STORE) {
+                bind(walker, parameter->name_index, true, 1,
+                     slot_mask(walker->self, (*i)));
+            } else {
+                if (type_holds_pointers(program, parameter->type_index)) {
+                    Var *var = (Var *)list_get(&walker->vars, slot);
+
+                    var->value = param_region(walker->self, (*i));
+                    if ((*i) == 0) {
+                        walker->receiver = var->value;
+                    }
+                }
+                bind(walker, parameter->name_index, false, slot, 0);
+            }
+        }
+        if (!walker->failed) {
+            visit(walker, function->left_child);
+        }
+    } else {
+        for ((*i) = 0; (*i) < program->roots.length && !walker->failed; (*i)++) {
+            size_t root = *(const size_t *)list_get(&program->roots, (*i));
+            const TypedNode *node = typed_program_node(program, root);
+
+            if (node->kind == TYPED_FUNCTION_DECLARATION ||
+                node->kind == TYPED_TYPE_DECLARATION ||
+                node->kind == TYPED_STORE_DECLARATION) {
+                continue;
+            }
+            visit(walker, root);
+        }
+    }
+    return true;
+}
+
 /* Walks one frame until its variables stop changing. */
 static bool analyse_frame(Walker *walker, size_t function_root)
 {
@@ -1356,53 +1517,9 @@ static bool analyse_frame(Walker *walker, size_t function_root)
     }
     walker->used_temps.length = 0;
     do {
-        walker->changed = false;
-        walker->bindings.length = 0;
-        walker->depth = walker->base;
-        walker->receiver = region_none();
-        if (function != NULL) {
-            for (i = 0; i < function->children_count && !walker->failed; i++) {
-                size_t child = *(const size_t *)list_get(
-                    &program->children, function->children_start + i);
-                const TypedNode *parameter = typed_program_node(program, child);
-                const TypedType *type = typed_program_type(
-                    program, parameter->type_index);
-                size_t slot = find_var(walker, child * 2, 1);
-
-                if (slot == TYPED_NO_NODE) {
-                    return false;
-                }
-                if (type != NULL && type->kind == NIPPY_TYPE_STORE) {
-                    bind(walker, parameter->name_index, true, 1,
-                         slot_mask(walker->self, i));
-                } else {
-                    if (type_holds_pointers(program, parameter->type_index)) {
-                        Var *var = (Var *)list_get(&walker->vars, slot);
-
-                        var->value = param_region(walker->self, i);
-                        if (i == 0) {
-                            walker->receiver = var->value;
-                        }
-                    }
-                    bind(walker, parameter->name_index, false, slot, 0);
-                }
-            }
-            if (!walker->failed) {
-                visit(walker, function->left_child);
-            }
-        } else {
-            for (i = 0; i < program->roots.length && !walker->failed; i++) {
-                size_t root = *(const size_t *)list_get(&program->roots, i);
-                const TypedNode *node = typed_program_node(program, root);
-
-                if (node->kind == TYPED_FUNCTION_DECLARATION ||
-                    node->kind == TYPED_TYPE_DECLARATION ||
-                    node->kind == TYPED_STORE_DECLARATION) {
-                    continue;
-                }
-                visit(walker, root);
-            }
-        }
+        if (!analyse_frame_step(walker, function, &i, program)) {
+        return false;
+    }
         if (!compact_shapes(walker)) {
             return false;
         }

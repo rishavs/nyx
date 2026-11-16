@@ -1,6 +1,7 @@
 #ifndef NIPPY_GENERATOR_INTERNAL_H
 #define NIPPY_GENERATOR_INTERNAL_H
 
+#include "macros.h"
 #include "generator.h"
 
 #include "alloc.h"

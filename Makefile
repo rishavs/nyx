@@ -80,7 +80,14 @@ OBJ_DIR = bin/obj
 SUFFIX =
 POISON_FLAGS =
 endif
-CPPFLAGS = -Iinclude -Itests/harness -Itests/support $(POISON_FLAGS)
+# `make crap` builds a third copy in bin/obj-cov with gcov instrumentation.
+ifdef COVERAGE
+OBJ_DIR = bin/obj-cov
+SUFFIX = -cov
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O0 --coverage
+COVERAGE_FLAGS = -DNIPPY_COVERAGE
+endif
+CPPFLAGS = -Iinclude -Itests/harness -Itests/support $(POISON_FLAGS) $(COVERAGE_FLAGS)
 objects = $(addprefix $(OBJ_DIR)/,$(1:.c=.o))
 COMPILER_OBJECTS = $(call objects,$(COMPILER_SOURCES))
 COMPILER_LIB_OBJECTS = $(call objects,$(COMPILER_LIB_SOURCES))
@@ -93,7 +100,7 @@ COMPILER_TESTER = bin/compiler-tester$(SUFFIX)
 TOOL_TESTER = bin/tool-tester$(SUFFIX)
 
 .PHONY: all test test-compiler test-tool test-list test-poison golden-update \
-	clean
+	crap clean
 
 all: $(NIPPY)
 
@@ -145,7 +152,23 @@ golden-update: $(COMPILER_TESTER)
 test-list: $(COMPILER_TESTER) $(TOOL_TESTER)
 	@./$(COMPILER_TESTER) --list $(T); ./$(TOOL_TESTER) --list $(T); true
 
+# CRAP = complexity^2 * (1 - coverage)^3 + complexity, per function. Runs both
+# suites with coverage, then reports every function at or above CRAP_LIMIT and
+# fails if there is one. See tools/crap.c.
+CRAP_LIMIT ?= 20
+CRAP_SOURCES = $(COMPILER_SOURCES) $(filter-out compiler/main.c,$(wildcard compiler/*/*.c))
+
+bin/crap:
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -O2 -o $@ $< -lclang
+
+crap: bin/crap
+	@$(MAKE) COVERAGE=1 test > /dev/null
+	@for data in $$(find bin/obj-cov -name '*.gcda'); do \
+		gcov -f -n $$data 2>/dev/null; done > bin/crap.gcov
+	@./bin/crap $(CRAP_LIMIT) bin/crap.gcov $(sort $(CRAP_SOURCES))
+
 clean:
-	rm -rf bin/obj bin/obj-poison bin/nippy bin/compiler-tester \
+	rm -rf bin/obj bin/obj-poison bin/obj-cov bin/nippy bin/compiler-tester \
 		bin/tool-tester bin/nippy-poison bin/compiler-tester-poison \
-		bin/tool-tester-poison
+		bin/tool-tester-poison bin/nippy-cov bin/compiler-tester-cov \
+		bin/tool-tester-cov bin/crap bin/crap.gcov

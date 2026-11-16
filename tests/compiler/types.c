@@ -238,3 +238,47 @@ TEST("builtin type arguments")
                          "type arguments on a builtin",
                          MESSAGE_CHECKER_TYPE_NOT_GENERIC, "Int32");
 }
+
+/* A union's alternatives are put in a canonical order by comparing their types,
+   so unions that mix every kind of type walk the whole comparison. */
+TEST("unions of every kind of type are canonical in either order")
+{
+    const char *prelude =
+        "type P a: Int32 end\n"
+        "type Q<T> v: T end\n"
+        "fun f(x: Int32): Int32 return x end\n"
+        "fun g(x: Text): Text return x end\n";
+    const char *first =
+        "var a: Int32 | Bool | Byte | Int64 | Float64 | Text | String<4> | "
+        "String<8> | Handle<Int32> | Handle<Text> | P | Q<Int32> | Q<Bool> | "
+        "Array<Int32, 2> | Array<Int32, 3> | List<Int32> | List<Text> | "
+        "Slice<Int32> | Record<String<4>, Int32, 2> | Table<String<4>, Int32> | "
+        "Fun<(Int32):Int32> | Fun<(Text):Text> | Nil = 1\n";
+    const char *second =
+        "var a: Nil | Fun<(Text):Text> | Fun<(Int32):Int32> | "
+        "Table<String<4>, Int32> | Record<String<4>, Int32, 2> | Slice<Int32> | "
+        "List<Text> | List<Int32> | Array<Int32, 3> | Array<Int32, 2> | Q<Bool> | "
+        "Q<Int32> | P | Handle<Text> | Handle<Int32> | String<8> | String<4> | "
+        "Text | Float64 | Int64 | Byte | Bool | Int32 = 1\n";
+    char source[2048];
+    TestResult result;
+
+    snprintf(source, sizeof(source), "%s%s", prelude, first);
+    result = compile_accepts(source, "union in one order");
+    if (result != TEST_PASS) {
+        return result;
+    }
+    snprintf(source, sizeof(source), "%s%s", prelude, second);
+    return compile_accepts(source, "union in the reverse order");
+}
+
+TEST("two unions with the same alternatives in different orders are one type")
+{
+    return compile_accepts(
+        "type P a: Int32 end\n"
+        "fun take(x: P | Text | Handle<Int32> | List<Int32>) end\n"
+        "global s: Store = Store(16)\n"
+        "var xs: List<Int32> = s.list<Int32>(1)\n"
+        "var v: Text | P | List<Int32> | Handle<Int32> = xs\n"
+        "take(v)\n", "equal unions in any order");
+}

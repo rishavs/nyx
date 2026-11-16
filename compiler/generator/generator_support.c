@@ -174,109 +174,130 @@ bool buffer_appendf(TextBuffer *buffer, const char *format, ...)
     return true;
 }
 
-bool format_c_type(const TypedProgram *program, size_t type_index,
-                          char *out, size_t out_size, ErrorState *errors)
+static bool format_c_type_snprintf(const TypedType *type, char *out, size_t out_size)
 {
-    const TypedType *type = typed_program_type(program, type_index);
-
-    if (type == NULL) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        return false;
-    }
     if (type->kind == NIPPY_TYPE_INT8) {
         snprintf(out, out_size, "int8_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_INT16) {
         snprintf(out, out_size, "int16_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_INT32) {
         snprintf(out, out_size, "int32_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_INT64) {
         snprintf(out, out_size, "int64_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_UINT16) {
         snprintf(out, out_size, "uint16_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_UINT32) {
         snprintf(out, out_size, "uint32_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_UINT64) {
         snprintf(out, out_size, "uint64_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_FLOAT32) {
         snprintf(out, out_size, "float");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_FLOAT64) {
         snprintf(out, out_size, "double");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_BOOL) {
         snprintf(out, out_size, "bool");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_NIL) {
         snprintf(out, out_size, "nyx_nil");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_BYTE) {
         snprintf(out, out_size, "uint8_t");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_STORE) {
         snprintf(out, out_size, "nyx_store *");
-        return true;
+        return false;
     }
     if (type->kind == NIPPY_TYPE_HANDLE) {
         snprintf(out, out_size, "nyx_handle");
-        return true;
+        return false;
+    }
+    return true;
+}
+
+static bool format_c_type_step_step(const TypedType *type, ErrorState *errors, bool *outcome, char *out, size_t out_size)
+{
+    if (type == NULL) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        do { *outcome = (false); return false; } while (0);
+    }
+    if (!format_c_type_snprintf(type, out, out_size)) {
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_STRING) {
         snprintf(out, out_size, "nyx_string_%zu", type->fixed_length);
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
         snprintf(out, out_size, "nyx_string");
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
         snprintf(out, out_size, "nyx_builder");
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_LIST) {
         snprintf(out, out_size, "nyx_list");
-        return true;
+        do { *outcome = (true); return false; } while (0);
+    }
+    return true;
+}
+
+static bool format_c_type_step_format_c_type_step_step(const TypedType *type, ErrorState *errors, bool *outcome, char *out, size_t out_size, size_t type_index)
+{
+    if (!format_c_type_step_step(type, errors, outcome, out, out_size)) {
+        return false;
     }
     if (type->kind == NIPPY_TYPE_FIXED_LIST) {
         snprintf(out, out_size, "nyx_list_%zu", type_index);
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_SLICE) {
         snprintf(out, out_size, "nyx_slice");
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_RANGE) {
         snprintf(out, out_size, "nyx_range_%zu", type_index);
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_RECORD) {
         snprintf(out, out_size, "nyx_record_%zu", type_index);
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_TABLE) {
         snprintf(out, out_size, "nyx_table");
-        return true;
+        do { *outcome = (true); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_ERROR) {
         snprintf(out, out_size, "nyx_error");
+        do { *outcome = (true); return false; } while (0);
+    }
+    return true;
+}
+
+static bool format_c_type_step(const TypedType *type, ErrorState *errors, char *out, size_t out_size, size_t type_index, const TypedProgram *program, bool *outcome)
+{
+    if (!format_c_type_step_format_c_type_step_step(type, errors, outcome, out, out_size, type_index)) {
         return true;
     }
     if (type->kind == NIPPY_TYPE_STRUCT) {
@@ -286,10 +307,25 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
 
         if (!valid_identifier(name)) {
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-            return false;
+            do { *outcome = (false); return true; } while (0);
         }
         snprintf(out, out_size, "%s", name);
-        return true;
+        do { *outcome = (true); return true; } while (0);
+    }
+    return false;
+}
+
+bool format_c_type(const TypedProgram *program, size_t type_index,
+                          char *out, size_t out_size, ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+
+    {
+        bool outcome;
+
+        if (format_c_type_step(type, errors, out, out_size, type_index, program, &outcome)) {
+            return outcome;
+        }
     }
     if (type->kind == NIPPY_TYPE_FUNCTION) {
         snprintf(out, out_size, "nyx_fun_%zu", type->signature_index);
@@ -301,6 +337,68 @@ bool format_c_type(const TypedProgram *program, size_t type_index,
     }
     error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
     return false;
+}
+
+static bool format_function_pointer_step(char (*params)[512], const TypedFunctionSignature *signature, size_t *i, const TypedProgram *program, ErrorState *errors, size_t *used)
+{
+    (*params)[0] = '\0';
+    if (signature->parameter_count == 0) {
+        snprintf((*params), sizeof((*params)), "void");
+    } else {
+        for ((*i) = 0; (*i) < signature->parameter_count; (*i)++) {
+            size_t parameter = *(const size_t *)list_get(
+                &program->signature_parameters,
+                signature->first_parameter + (*i));
+            const TypedType *parameter_type = typed_program_type(program,
+                                                                 parameter);
+            char parameter_name[NIPPY_IDENTIFIER_MAX + 32];
+            int written;
+
+            if (parameter_type == NULL ||
+                parameter_type->kind == NIPPY_TYPE_FUNCTION ||
+                !format_c_type(program, parameter, parameter_name,
+                               sizeof(parameter_name), errors)) {
+                return false;
+            }
+            written = snprintf((*params) + (*used), sizeof((*params)) - (*used), "%s%s",
+                               (*i) == 0 ? "" : ", ", parameter_name);
+            if (written < 0 ||
+                (size_t)written >= sizeof((*params)) - (*used)) {
+                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+                return false;
+            }
+            (*used) += (size_t)written;
+        }
+    }
+    return true;
+}
+
+static bool format_function_pointer_step4(const TypedType *type, ErrorState *errors, const TypedFunctionSignature **signature, const TypedProgram *program, char (*return_name)[64], char (*params)[512], size_t *i, size_t *used)
+{
+    if (type == NULL || type->kind != NIPPY_TYPE_FUNCTION ||
+        type->signature_index == TYPED_NO_NODE) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    (*signature) = typed_program_signature(program, type->signature_index);
+    if ((*signature) == NULL ||
+        !format_c_type(program, (*signature)->return_type, (*return_name),
+                       sizeof((*return_name)), errors)) {
+        return false;
+    }
+    {
+        const TypedType *return_type = typed_program_type(
+            program, (*signature)->return_type);
+
+        if (return_type != NULL && return_type->kind == NIPPY_TYPE_FUNCTION) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+            return false;
+        }
+    }
+    if (!format_function_pointer_step(params, (*signature), i, program, errors, used)) {
+        return false;
+    }
+    return true;
 }
 
 bool format_function_pointer(const TypedProgram *program,
@@ -315,54 +413,8 @@ bool format_function_pointer(const TypedProgram *program,
     size_t used = 0;
     size_t i;
 
-    if (type == NULL || type->kind != NIPPY_TYPE_FUNCTION ||
-        type->signature_index == TYPED_NO_NODE) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+    if (!format_function_pointer_step4(type, errors, &signature, program, &return_name, &params, &i, &used)) {
         return false;
-    }
-    signature = typed_program_signature(program, type->signature_index);
-    if (signature == NULL ||
-        !format_c_type(program, signature->return_type, return_name,
-                       sizeof(return_name), errors)) {
-        return false;
-    }
-    {
-        const TypedType *return_type = typed_program_type(
-            program, signature->return_type);
-
-        if (return_type != NULL && return_type->kind == NIPPY_TYPE_FUNCTION) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-            return false;
-        }
-    }
-    params[0] = '\0';
-    if (signature->parameter_count == 0) {
-        snprintf(params, sizeof(params), "void");
-    } else {
-        for (i = 0; i < signature->parameter_count; i++) {
-            size_t parameter = *(const size_t *)list_get(
-                &program->signature_parameters,
-                signature->first_parameter + i);
-            const TypedType *parameter_type = typed_program_type(program,
-                                                                 parameter);
-            char parameter_name[NIPPY_IDENTIFIER_MAX + 32];
-            int written;
-
-            if (parameter_type == NULL ||
-                parameter_type->kind == NIPPY_TYPE_FUNCTION ||
-                !format_c_type(program, parameter, parameter_name,
-                               sizeof(parameter_name), errors)) {
-                return false;
-            }
-            written = snprintf(params + used, sizeof(params) - used, "%s%s",
-                               i == 0 ? "" : ", ", parameter_name);
-            if (written < 0 ||
-                (size_t)written >= sizeof(params) - used) {
-                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-                return false;
-            }
-            used += (size_t)written;
-        }
     }
     if (snprintf(out, out_size, "%s (*%s)(%s)", return_name, name, params) <
             0 ||
@@ -411,47 +463,56 @@ bool handle_element_type(const TypedProgram *program,
     return true;
 }
 
-bool types_equivalent(const TypedProgram *program, size_t first,
-                             size_t second, unsigned depth)
-{
-    const TypedType *left;
-    const TypedType *right;
-    size_t i;
+bool types_equivalent(const TypedProgram *program, size_t first, size_t second, unsigned depth);
 
-    if (first == second) {
-        return true;
+static bool types_equivalent_step_nippy_type_is_numeric(const TypedType **left, bool *outcome, const TypedType **right, unsigned int depth, const TypedProgram *program)
+{
+    if (nippy_type_is_numeric((*left)->kind) ||
+        (*left)->kind == NIPPY_TYPE_BOOL || (*left)->kind == NIPPY_TYPE_NIL ||
+        (*left)->kind == NIPPY_TYPE_STORE) {
+        do { *outcome = (true); return false; } while (0);
     }
-    if (first == TYPED_NO_NODE || second == TYPED_NO_NODE) {
-        return false;
+    if ((*left)->kind == NIPPY_TYPE_STRUCT) {
+        do { *outcome = ((*left)->name_index == (*right)->name_index); return false; } while (0);
     }
-    left = typed_program_type(program, first);
-    right = typed_program_type(program, second);
-    if (left == NULL || right == NULL || left->kind != right->kind) {
-        return false;
-    }
-    if (nippy_type_is_numeric(left->kind) ||
-        left->kind == NIPPY_TYPE_BOOL || left->kind == NIPPY_TYPE_NIL ||
-        left->kind == NIPPY_TYPE_STORE) {
-        return true;
-    }
-    if (left->kind == NIPPY_TYPE_STRUCT) {
-        return left->name_index == right->name_index;
-    }
-    if (left->kind == NIPPY_TYPE_HANDLE) {
+    if ((*left)->kind == NIPPY_TYPE_HANDLE) {
         size_t left_element;
         size_t right_element;
 
-        if (depth == 0 || left->child_count != 1 ||
-            right->child_count != 1) {
-            return false;
+        if (depth == 0 || (*left)->child_count != 1 ||
+            (*right)->child_count != 1) {
+            do { *outcome = (false); return false; } while (0);
         }
         left_element = *(const size_t *)list_get(&program->type_children,
-                                                 left->first_child);
+                                                 (*left)->first_child);
         right_element = *(const size_t *)list_get(&program->type_children,
-                                                  right->first_child);
-        return types_equivalent(program, left_element, right_element,
-                                depth - 1);
+                                                  (*right)->first_child);
+        do { *outcome = (types_equivalent(program, left_element, right_element,
+                                depth - 1)); return false; } while (0);
     }
+    return true;
+}
+
+static bool types_equivalent_step(size_t first, size_t second, const TypedType **left, const TypedProgram *program, const TypedType **right, unsigned int depth, bool *outcome)
+{
+    if (first == TYPED_NO_NODE || second == TYPED_NO_NODE) {
+        do { *outcome = (false); return true; } while (0);
+    }
+    (*left) = typed_program_type(program, first);
+    (*right) = typed_program_type(program, second);
+    if ((*left) == NULL || (*right) == NULL || (*left)->kind != (*right)->kind) {
+        do { *outcome = (false); return true; } while (0);
+    }
+    if (!types_equivalent_step_nippy_type_is_numeric(left, outcome, right, depth, program)) {
+        return true;
+    }
+    return false;
+}
+
+bool types_equivalent(const TypedProgram *program, size_t first, size_t second, unsigned depth);
+
+static bool types_equivalent_left_signature_left_signature(const TypedType *left, const TypedProgram *program, const TypedType *right, unsigned int depth, bool *outcome2, size_t *i)
+{
     if (left->kind == NIPPY_TYPE_FUNCTION) {
         const TypedFunctionSignature *left_signature =
             typed_program_signature(program, left->signature_index);
@@ -464,39 +525,82 @@ bool types_equivalent(const TypedProgram *program, size_t first,
                 right_signature->parameter_count ||
             !types_equivalent(program, left_signature->return_type,
                               right_signature->return_type, depth - 1)) {
-            return false;
+            do { *outcome2 = (false); return false; } while (0);
         }
-        for (i = 0; i < left_signature->parameter_count; i++) {
+        for ((*i) = 0; (*i) < left_signature->parameter_count; (*i)++) {
             size_t left_parameter = *(const size_t *)list_get(
                 &program->signature_parameters,
-                left_signature->first_parameter + i);
+                left_signature->first_parameter + (*i));
             size_t right_parameter = *(const size_t *)list_get(
                 &program->signature_parameters,
-                right_signature->first_parameter + i);
+                right_signature->first_parameter + (*i));
 
             if (!types_equivalent(program, left_parameter, right_parameter,
                                   depth - 1)) {
-                return false;
+                do { *outcome2 = (false); return false; } while (0);
             }
         }
-        return true;
+        do { *outcome2 = (true); return false; } while (0);
     }
+    return true;
+}
+
+static bool types_equivalent_left_signature_left_alternative(const TypedType *left, unsigned int depth, const TypedType *right, bool *outcome2, size_t *i, const TypedProgram *program)
+{
     if (left->kind == NIPPY_TYPE_UNION) {
         if (depth == 0 || left->child_count != right->child_count) {
-            return false;
+            do { *outcome2 = (false); return false; } while (0);
         }
-        for (i = 0; i < left->child_count; i++) {
+        for ((*i) = 0; (*i) < left->child_count; (*i)++) {
             size_t left_alternative = *(const size_t *)list_get(
-                &program->type_children, left->first_child + i);
+                &program->type_children, left->first_child + (*i));
             size_t right_alternative = *(const size_t *)list_get(
-                &program->type_children, right->first_child + i);
+                &program->type_children, right->first_child + (*i));
 
             if (!types_equivalent(program, left_alternative,
                                   right_alternative, depth - 1)) {
-                return false;
+                do { *outcome2 = (false); return false; } while (0);
             }
         }
+        do { *outcome2 = (true); return false; } while (0);
+    }
+    return true;
+}
+
+static bool types_equivalent_left_signature(const TypedType *left, const TypedProgram *program, const TypedType *right, unsigned int depth, size_t *i, bool *outcome2)
+{
+    if (!types_equivalent_left_signature_left_signature(left, program, right, depth, outcome2, i)) {
         return true;
+    }
+    if (!types_equivalent_left_signature_left_alternative(left, depth, right, outcome2, i, program)) {
+        return true;
+    }
+    return false;
+}
+
+bool types_equivalent(const TypedProgram *program, size_t first,
+                             size_t second, unsigned depth)
+{
+    const TypedType *left;
+    const TypedType *right;
+    size_t i;
+
+    if (first == second) {
+        return true;
+    }
+    {
+        bool outcome;
+
+        if (types_equivalent_step(first, second, &left, program, &right, depth, &outcome)) {
+            return outcome;
+        }
+    }
+    {
+        bool outcome2;
+
+        if (types_equivalent_left_signature(left, program, right, depth, &i, &outcome2)) {
+            return outcome2;
+        }
     }
     return false;
 }
@@ -623,6 +727,70 @@ bool map_key_names(const TypedProgram *program, size_t key_type,
            format_c_type(program, value_type, value_name, value_size, errors);
 }
 
+static bool append_optional_union_union_alternative_buffer_append_alternative(size_t *i, const TypedType *element_type, const TypedProgram *program, const TypedType *union_type, bool *outcome, TextBuffer *body, const char *result_name, const char *union_name, const char *value_name)
+{
+    for ((*i) = 0; (*i) < element_type->child_count; (*i)++) {
+        const TypedType *alternative = union_alternative_type(
+            program, element_type, (*i));
+        size_t result_tag;
+
+        if (alternative == NULL ||
+            alternative->kind == NIPPY_TYPE_NIL ||
+            !find_union_alternative(
+                program, union_type,
+                *(const size_t *)list_get(&program->type_children,
+                                          element_type->first_child + (*i)),
+                &result_tag)) {
+            do { *outcome = (false); return false; } while (0);
+        }
+        if (!buffer_appendf(
+                body,
+                "    case %zu:\n"
+                "        %s = (%s){ .tag = %zu, .value.v%zu = "
+                "%s.value.v%zu };\n"
+                "        break;\n",
+                (*i), result_name, union_name, result_tag, result_tag,
+                value_name, (*i))) {
+            do { *outcome = (false); return false; } while (0);
+        }
+    }
+    do { *outcome = (buffer_append(body, "    }\n")); return false; } while (0);
+    return true;
+}
+
+static bool append_optional_union_union_alternative_buffer_append(TextBuffer *body, bool *outcome, const char *value_name, size_t *i, const TypedType *element_type, const TypedProgram *program, const TypedType *union_type, const char *result_name, const char *union_name)
+{
+    if (!buffer_append(body, "    switch (")) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    if (!buffer_appendf(body, "%s.tag) {\n", value_name)) {
+        do { *outcome = (false); return false; } while (0);
+    }
+    if (!append_optional_union_union_alternative_buffer_append_alternative(i, element_type, program, union_type, outcome, body, result_name, union_name, value_name)) {
+        return false;
+    }
+    return true;
+}
+
+static bool append_optional_union_union_alternative(bool element_is_union, const TypedProgram *program, const TypedType *union_type, size_t element_index, size_t *element_tag, size_t nil_tag, bool same_result, TextBuffer *body, const char *value_name, size_t *i, const TypedType *element_type, const char *result_name, const char *union_name, bool *outcome)
+{
+    if (!element_is_union &&
+        !find_union_alternative(program, union_type, element_index,
+                                element_tag)) {
+        do { *outcome = (false); return true; } while (0);
+    }
+    (void)nil_tag;
+    if (element_is_union && !same_result) {
+        if (!append_optional_union_union_alternative_buffer_append(body, outcome, value_name, i, element_type, program, union_type, result_name, union_name)) {
+        return true;
+    }
+    }
+    if (element_is_union) {
+        do { *outcome = (buffer_appendf(body, "    %s = %s;\n", result_name, value_name)); return true; } while (0);
+    }
+    return false;
+}
+
 bool append_optional_union(TextBuffer *body, const TypedProgram *program,
                            size_t union_index, size_t element_index,
                            const char *union_name, const char *value_name,
@@ -655,48 +823,12 @@ bool append_optional_union(TextBuffer *body, const TypedProgram *program,
     }
     element_is_union = element_type->kind == NIPPY_TYPE_UNION;
     same_result = types_equivalent(program, element_index, union_index, 16);
-    if (!element_is_union &&
-        !find_union_alternative(program, union_type, element_index,
-                                &element_tag)) {
-        return false;
-    }
-    (void)nil_tag;
-    if (element_is_union && !same_result) {
-        if (!buffer_append(body, "    switch (")) {
-            return false;
-        }
-        if (!buffer_appendf(body, "%s.tag) {\n", value_name)) {
-            return false;
-        }
-        for (i = 0; i < element_type->child_count; i++) {
-            const TypedType *alternative = union_alternative_type(
-                program, element_type, i);
-            size_t result_tag;
+    {
+        bool outcome;
 
-            if (alternative == NULL ||
-                alternative->kind == NIPPY_TYPE_NIL ||
-                !find_union_alternative(
-                    program, union_type,
-                    *(const size_t *)list_get(&program->type_children,
-                                              element_type->first_child + i),
-                    &result_tag)) {
-                return false;
-            }
-            if (!buffer_appendf(
-                    body,
-                    "    case %zu:\n"
-                    "        %s = (%s){ .tag = %zu, .value.v%zu = "
-                    "%s.value.v%zu };\n"
-                    "        break;\n",
-                    i, result_name, union_name, result_tag, result_tag,
-                    value_name, i)) {
-                return false;
-            }
+        if (append_optional_union_union_alternative(element_is_union, program, union_type, element_index, &element_tag, nil_tag, same_result, body, value_name, &i, element_type, result_name, union_name, &outcome)) {
+            return outcome;
         }
-        return buffer_append(body, "    }\n");
-    }
-    if (element_is_union) {
-        return buffer_appendf(body, "    %s = %s;\n", result_name, value_name);
     }
     return buffer_appendf(body,
                           "    %s = (%s){ .tag = %zu, .value.v%zu = %s };\n",

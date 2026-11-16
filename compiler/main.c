@@ -193,6 +193,79 @@ fail:
     return false;
 }
 
+static bool publish_staged_output_publish_rename(size_t *i, const char * (*sources)[3], const char * (*targets)[3], size_t *failed, size_t *published, bool (*backed_up)[3], char * (*saved)[3])
+{
+    for ((*i) = 0; (*i) < 3; (*i)++) {
+        if (publish_rename((*sources)[(*i)], (*targets)[(*i)]) != 0) { (*failed) = (*i); return true; }
+        (*published)++;
+    }
+    for ((*i) = 0; (*i) < 3; (*i)++) if ((*backed_up)[(*i)]) unlink((*saved)[(*i)]);
+    return false;
+}
+
+static void publish_staged_output_publish_rename4(size_t *i, bool (*backed_up)[3], char * (*saved)[3], const char * (*targets)[3], bool *rollback_ok, StagedOutput *stage, ErrorState *errors)
+{
+    for ((*i) = 0; (*i) < 3; (*i)++) {
+        if ((*backed_up)[(*i)] && publish_rename((*saved)[(*i)], (*targets)[(*i)]) != 0) (*rollback_ok) = false;
+    }
+    if (!(*rollback_ok)) {
+        stage->preserve = true;
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, stage->backups);
+    }
+}
+
+static bool publish_staged_output_step(char * (*saved)[3], size_t i, ErrorState *errors, const char * (*targets)[3], struct stat *status, size_t *failed, bool (*backed_up)[3])
+{
+    if ((*saved)[i] == NULL) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS);
+        return true;
+    }
+    if (lstat((*targets)[i], status) == 0) {
+        if (publish_rename((*targets)[i], (*saved)[i]) != 0) { (*failed) = i; return true; }
+        (*backed_up)[i] = true;
+    } else if (errno != ENOENT) { (*failed) = i; return true; }
+    return false;
+}
+
+static bool publish_staged_output_ok(size_t *i, const char * (*targets)[3], size_t *failed, StagedOutput *stage, char * (*saved)[3], ErrorState *errors, bool (*backed_up)[3], const char * (*sources)[3], size_t *published, const char *h_path, const char *c_path)
+{
+    bool ok = false, rollback_ok = true;
+    struct stat status;
+
+    for ((*i) = 0; (*i) < 3; (*i)++) {
+        if (lstat((*targets)[(*i)], &status) == 0) {
+            if (S_ISDIR(status.st_mode)) { (*failed) = (*i); goto report; }
+        } else if (errno != ENOENT) { (*failed) = (*i); goto report; }
+    }
+    if (mkdir(stage->backups, 0700) != 0) goto report;
+    stage->backups_created = true;
+    for ((*i) = 0; (*i) < 3; (*i)++) {
+        char suffix[8];
+        snprintf(suffix, sizeof(suffix), "/%zu", (*i));
+        (*saved)[(*i)] = append_suffix(stage->backups, suffix);
+        if (publish_staged_output_step(saved, (*i), errors, targets, &status, failed, backed_up)) {
+        goto rollback;
+    }
+    }
+    if (publish_staged_output_publish_rename(i, sources, targets, failed, published, backed_up, saved)) {
+        goto rollback;
+    }
+    ok = true;
+    goto done;
+rollback:
+    for ((*i) = 0; (*i) < (*published); (*i)++) if (unlink((*targets)[(*i)]) != 0) rollback_ok = false;
+    publish_staged_output_publish_rename4(i, backed_up, saved, targets, &rollback_ok, stage, errors);
+report:
+    if (!errors->reported) {
+        if ((*failed) == 0) error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, h_path);
+        else if ((*failed) == 1) error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
+        else error_report(errors, MESSAGE_DRIVER_CC_FAILED);
+    }
+done:
+    for ((*i) = 0; (*i) < 3; (*i)++) free((*saved)[(*i)]);
+    return ok;
+}
+
 static bool publish_staged_output(StagedOutput *stage, const char *output,
                                   const char *c_path, const char *h_path,
                                   ErrorState *errors)
@@ -202,54 +275,7 @@ static bool publish_staged_output(StagedOutput *stage, const char *output,
     char *saved[3] = {NULL, NULL, NULL};
     bool backed_up[3] = {false, false, false};
     size_t i, published = 0, failed = 0;
-    bool ok = false, rollback_ok = true;
-    struct stat status;
-
-    for (i = 0; i < 3; i++) {
-        if (lstat(targets[i], &status) == 0) {
-            if (S_ISDIR(status.st_mode)) { failed = i; goto report; }
-        } else if (errno != ENOENT) { failed = i; goto report; }
-    }
-    if (mkdir(stage->backups, 0700) != 0) goto report;
-    stage->backups_created = true;
-    for (i = 0; i < 3; i++) {
-        char suffix[8];
-        snprintf(suffix, sizeof(suffix), "/%zu", i);
-        saved[i] = append_suffix(stage->backups, suffix);
-        if (saved[i] == NULL) {
-            error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_PATHS);
-            goto rollback;
-        }
-        if (lstat(targets[i], &status) == 0) {
-            if (publish_rename(targets[i], saved[i]) != 0) { failed = i; goto rollback; }
-            backed_up[i] = true;
-        } else if (errno != ENOENT) { failed = i; goto rollback; }
-    }
-    for (i = 0; i < 3; i++) {
-        if (publish_rename(sources[i], targets[i]) != 0) { failed = i; goto rollback; }
-        published++;
-    }
-    for (i = 0; i < 3; i++) if (backed_up[i]) unlink(saved[i]);
-    ok = true;
-    goto done;
-rollback:
-    for (i = 0; i < published; i++) if (unlink(targets[i]) != 0) rollback_ok = false;
-    for (i = 0; i < 3; i++) {
-        if (backed_up[i] && publish_rename(saved[i], targets[i]) != 0) rollback_ok = false;
-    }
-    if (!rollback_ok) {
-        stage->preserve = true;
-        error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, stage->backups);
-    }
-report:
-    if (!errors->reported) {
-        if (failed == 0) error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, h_path);
-        else if (failed == 1) error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
-        else error_report(errors, MESSAGE_DRIVER_CC_FAILED);
-    }
-done:
-    for (i = 0; i < 3; i++) free(saved[i]);
-    return ok;
+    return publish_staged_output_ok(&i, &targets, &failed, stage, &saved, errors, &backed_up, &sources, &published, h_path, c_path);
 }
 
 static int write_file(const char *path, const char *contents)
@@ -370,6 +396,47 @@ static int parse_source_limit(const char *text, int *out_limit)
     return 1;
 }
 
+static int main_fputs(CompilerResult *compiled, const char *output_path, char *h_path, StagedOutput *stage, ErrorState *errors, char *c_path, int *succeeded)
+{
+    if (!(*compiled).succeeded) {
+        if ((*compiled).error_message != NULL) {
+            fputs((*compiled).error_message, stderr);
+        } else {
+            fprintf(stderr, "%s\n", MESSAGE_UNKNOWN_ERROR);
+        }
+        goto done;
+    }
+
+    if (!create_staged_output(output_path, h_path, stage, errors)) {
+        goto report_driver_error;
+    }
+    if (!write_file((*stage).header, (*compiled).h_source)) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, h_path);
+        goto report_driver_error;
+    }
+    if (!write_file((*stage).source, (*compiled).c_source)) {
+        error_report(errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
+        goto report_driver_error;
+    }
+    if (!build_binary((*stage).source, (*stage).binary, errors)) {
+        goto report_driver_error;
+    }
+    if (!publish_staged_output(stage, output_path, c_path, h_path, errors)) {
+        goto report_driver_error;
+    }
+    (*succeeded) = 1;
+    goto done;
+
+report_driver_error:
+    print_errors(errors);
+done:
+    compiler_result_free(compiled);
+    free_staged_output(stage);
+    free(c_path);
+    free(h_path);
+    return (*succeeded) ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     ErrorState errors;
@@ -457,41 +524,5 @@ int main(int argc, char **argv)
     compiled = compiler_compile(source, &config);
     free(source);
 
-    if (!compiled.succeeded) {
-        if (compiled.error_message != NULL) {
-            fputs(compiled.error_message, stderr);
-        } else {
-            fprintf(stderr, "%s\n", MESSAGE_UNKNOWN_ERROR);
-        }
-        goto done;
-    }
-
-    if (!create_staged_output(output_path, h_path, &stage, &errors)) {
-        goto report_driver_error;
-    }
-    if (!write_file(stage.header, compiled.h_source)) {
-        error_report(&errors, MESSAGE_DRIVER_COULD_NOT_WRITE_HEADER, h_path);
-        goto report_driver_error;
-    }
-    if (!write_file(stage.source, compiled.c_source)) {
-        error_report(&errors, MESSAGE_DRIVER_COULD_NOT_WRITE_SOURCE, c_path);
-        goto report_driver_error;
-    }
-    if (!build_binary(stage.source, stage.binary, &errors)) {
-        goto report_driver_error;
-    }
-    if (!publish_staged_output(&stage, output_path, c_path, h_path, &errors)) {
-        goto report_driver_error;
-    }
-    succeeded = 1;
-    goto done;
-
-report_driver_error:
-    print_errors(&errors);
-done:
-    compiler_result_free(&compiled);
-    free_staged_output(&stage);
-    free(c_path);
-    free(h_path);
-    return succeeded ? 0 : 1;
+    return main_fputs(&compiled, output_path, h_path, &stage, &errors, c_path, &succeeded);
 }

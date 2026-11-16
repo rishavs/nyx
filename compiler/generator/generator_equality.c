@@ -18,42 +18,26 @@ static bool composite_kind(NippyType kind)
            kind == NIPPY_TYPE_TABLE || kind == NIPPY_TYPE_HANDLE;
 }
 
-static bool emit_one_equality(const TypedProgram *p, size_t index, TextBuffer *out,
-                              ErrorState *errors)
+static bool emit_one_equality_name_buffer_append(const TypedType *type, bool *outcome, TextBuffer *out, const TypedProgram *p, size_t *i)
 {
-    const TypedType *type = typed_program_type(p, index);
-    char name[NIPPY_IDENTIFIER_MAX + 32];
-    size_t i;
-    if (type == NULL || !format_c_type(p, index, name, sizeof(name), errors) ||
-        !buffer_appendf(out, "static inline bool nyx_equal_%zu(%s a, %s b, const char *file, size_t line, size_t column, size_t pos)\n{\n    (void)file; (void)line; (void)column; (void)pos;\n", index,
-                        name, name)) {
-        return false;
-    }
-    if (nippy_type_is_numeric(type->kind) || type->kind == NIPPY_TYPE_BOOL) {
-        return buffer_append(out, "    return a == b;\n}\n\n");
-    }
-    if (type->kind == NIPPY_TYPE_STRING) {
-        return buffer_appendf(out, "    return nyx_string_%zu_equal(a, b);\n}\n\n",
-                              type->fixed_length);
-    }
     if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        return buffer_append(out, "    return nyx_string_equal_at(a, b, file, line, column, pos);\n}\n\n");
+        do { *outcome = (buffer_append(out, "    return nyx_string_equal_at(a, b, file, line, column, pos);\n}\n\n")); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_HANDLE) {
-        return buffer_append(out,
+        do { *outcome = (buffer_append(out,
                              "    nyx_equal_validate_handle(a, file, line, column, pos);\n"
                              "    nyx_equal_validate_handle(b, file, line, column, pos);\n"
                              "    return a.store == b.store && a.offset == b.offset &&\n"
-                             "           a.generation == b.generation;\n}\n\n");
+                             "           a.generation == b.generation;\n}\n\n")); return false; } while (0);
     }
     if (type->kind == NIPPY_TYPE_STRUCT) {
         const TypedNode *decl = typed_program_node(p, type->declaration_node);
         if (decl == NULL) {
-            return false;
+            do { *outcome = (false); return false; } while (0);
         }
-        for (i = 0; i < decl->children_count; i++) {
+        for ((*i) = 0; (*i) < decl->children_count; (*i)++) {
             size_t child =
-                *(const size_t *)list_get(&p->children, decl->children_start + i);
+                *(const size_t *)list_get(&p->children, decl->children_start + (*i));
             const TypedNode *field = typed_program_node(p, child);
             char storage[USER_NAME_CAPACITY];
             const char *member = field == NULL ? NULL
@@ -63,10 +47,46 @@ static bool emit_one_equality(const TypedProgram *p, size_t index, TextBuffer *o
                 !buffer_appendf(out,
                                 "    if (!nyx_equal_%zu(a.%s, b.%s, file, line, column, pos)) return false;\n",
                                 field->type_index, member, member)) {
-                return false;
+                do { *outcome = (false); return false; } while (0);
             }
         }
-        return buffer_append(out, "    return true;\n}\n\n");
+        do { *outcome = (buffer_append(out, "    return true;\n}\n\n")); return false; } while (0);
+    }
+    return true;
+}
+
+static bool emit_one_equality_name(const TypedType *type, const TypedProgram *p, size_t index, ErrorState *errors, TextBuffer *out, bool *outcome)
+{
+    char name[NIPPY_IDENTIFIER_MAX + 32];
+    size_t i;
+    if (type == NULL || !format_c_type(p, index, name, sizeof(name), errors) ||
+        !buffer_appendf(out, "static inline bool nyx_equal_%zu(%s a, %s b, const char *file, size_t line, size_t column, size_t pos)\n{\n    (void)file; (void)line; (void)column; (void)pos;\n", index,
+                        name, name)) {
+        do { *outcome = (false); return true; } while (0);
+    }
+    if (nippy_type_is_numeric(type->kind) || type->kind == NIPPY_TYPE_BOOL) {
+        do { *outcome = (buffer_append(out, "    return a == b;\n}\n\n")); return true; } while (0);
+    }
+    if (type->kind == NIPPY_TYPE_STRING) {
+        do { *outcome = (buffer_appendf(out, "    return nyx_string_%zu_equal(a, b);\n}\n\n",
+                              type->fixed_length)); return true; } while (0);
+    }
+    if (!emit_one_equality_name_buffer_append(type, outcome, out, p, &i)) {
+        return true;
+    }
+    return false;
+}
+
+static bool emit_one_equality(const TypedProgram *p, size_t index, TextBuffer *out,
+                              ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(p, index);
+    {
+        bool outcome;
+
+        if (emit_one_equality_name(type, p, index, errors, out, &outcome)) {
+            return outcome;
+        }
     }
     if (type->kind == NIPPY_TYPE_FIXED_LIST) {
         size_t element =
@@ -141,6 +161,60 @@ static bool emit_one_equality(const TypedProgram *p, size_t index, TextBuffer *o
     return false;
 }
 
+static void emit_equality_helpers_index(size_t *i, List *types, const TypedProgram *p, bool *validate_handle, bool *ok, TextBuffer *out)
+{
+    for ((*i) = 0; (*i) < (*types).length; (*i)++) {
+        size_t index = *(const size_t *)list_get(types, (*i));
+        const TypedType *type = typed_program_type(p, index);
+        if (type != NULL && type->kind == NIPPY_TYPE_HANDLE) {
+            (*validate_handle) = true;
+        }
+    }
+    if ((*ok) && (*validate_handle)) {
+        (*ok) = buffer_append(out,
+            "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
+            "{ (void)nyx_handle_pointer_at(h, 0, file, line, column, pos); }\n\n");
+    }
+}
+
+static void emit_equality_helpers_format_c(const TypedProgram *p, const TypedNode *a, char (*an)[64], ErrorState *errors, const TypedNode *b, char (*bn)[64], TextBuffer *out, const TypedType *at, const TypedType *bt, bool *ok)
+{
+    if (!format_c_type(p, a->type_index, (*an), sizeof((*an)), errors) ||
+        !format_c_type(p, b->type_index, (*bn), sizeof((*bn)), errors) ||
+        !buffer_appendf(
+            out,
+            "static inline bool nyx_equal_pair_%zu_%zu(%s a, %s b, const char *file, size_t line, size_t column, size_t pos)\n"
+            "{ (void)file; (void)line; (void)column; (void)pos; const uint8_t *ap = %s, *bp = %s; return a.length == b.length && memcmp(ap, bp, a.length) == 0; }\n\n",
+            a->type_index, b->type_index, (*an), (*bn),
+            at->kind == NIPPY_TYPE_STRING ? "a.data" : "nyx_string_data_at(a, file, line, column, pos)",
+            bt->kind == NIPPY_TYPE_STRING ? "b.data" : "nyx_string_data_at(b, file, line, column, pos)")) {
+        (*ok) = false;
+    }
+}
+
+static void emit_equality_helpers_one_equality(size_t *i, bool *ok, List *types, const TypedProgram *p, TextBuffer *out, ErrorState *errors, List *pairs)
+{
+    for ((*i) = 0; (*ok) && (*i) < (*types).length; (*i)++) {
+        (*ok) = emit_one_equality(p, *(const size_t *)list_get(types, (*i)), out, errors);
+    }
+    list_free(types);
+    list_free(pairs);
+    if (!(*ok) && !errors->reported) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    }
+}
+
+static void emit_equality_helpers_step(const TypedType *at, const TypedType *bt, bool *validate_handle, const TypedProgram *p, const TypedNode *a, const TypedNode *b, bool *ok, List *types, ErrorState *errors)
+{
+    if (at->kind == NIPPY_TYPE_HANDLE || bt->kind == NIPPY_TYPE_HANDLE) {
+        (*validate_handle) = true;
+    }
+    if (composite_kind(at->kind) &&
+        types_equivalent(p, a->type_index, b->type_index, 64)) {
+        (*ok) = collect_print_type(p, a->type_index, types, 64, errors);
+    }
+}
+
 bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *errors)
 {
     typedef struct {
@@ -172,13 +246,7 @@ bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *e
         if (at == NULL || bt == NULL) {
             continue;
         }
-        if (at->kind == NIPPY_TYPE_HANDLE || bt->kind == NIPPY_TYPE_HANDLE) {
-            validate_handle = true;
-        }
-        if (composite_kind(at->kind) &&
-            types_equivalent(p, a->type_index, b->type_index, 64)) {
-            ok = collect_print_type(p, a->type_index, &types, 64, errors);
-        }
+        emit_equality_helpers_step(at, bt, &validate_handle, p, a, b, &ok, &types, errors);
         if (!string_kind(at->kind) || !string_kind(bt->kind) ||
             types_equivalent(p, a->type_index, b->type_index, 64) ||
             n->op == NIPPY_OPERATOR_STRICT_EQ) {
@@ -201,30 +269,9 @@ bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *e
                 break;
             }
         }
-        if (!format_c_type(p, a->type_index, an, sizeof(an), errors) ||
-            !format_c_type(p, b->type_index, bn, sizeof(bn), errors) ||
-            !buffer_appendf(
-                out,
-                "static inline bool nyx_equal_pair_%zu_%zu(%s a, %s b, const char *file, size_t line, size_t column, size_t pos)\n"
-                "{ (void)file; (void)line; (void)column; (void)pos; const uint8_t *ap = %s, *bp = %s; return a.length == b.length && memcmp(ap, bp, a.length) == 0; }\n\n",
-                a->type_index, b->type_index, an, bn,
-                at->kind == NIPPY_TYPE_STRING ? "a.data" : "nyx_string_data_at(a, file, line, column, pos)",
-                bt->kind == NIPPY_TYPE_STRING ? "b.data" : "nyx_string_data_at(b, file, line, column, pos)")) {
-            ok = false;
-        }
+        emit_equality_helpers_format_c(p, a, &an, errors, b, &bn, out, at, bt, &ok);
     }
-    for (i = 0; i < types.length; i++) {
-        size_t index = *(const size_t *)list_get(&types, i);
-        const TypedType *type = typed_program_type(p, index);
-        if (type != NULL && type->kind == NIPPY_TYPE_HANDLE) {
-            validate_handle = true;
-        }
-    }
-    if (ok && validate_handle) {
-        ok = buffer_append(out,
-            "static inline void nyx_equal_validate_handle(nyx_handle h, const char *file, size_t line, size_t column, size_t pos)\n"
-            "{ (void)nyx_handle_pointer_at(h, 0, file, line, column, pos); }\n\n");
-    }
+    emit_equality_helpers_index(&i, &types, p, &validate_handle, &ok, out);
     for (i = 0; ok && i < types.length; i++) {
         size_t type = *(const size_t *)list_get(&types, i);
         char name[NIPPY_IDENTIFIER_MAX + 32];
@@ -234,13 +281,6 @@ bool emit_equality_helpers(const TypedProgram *p, TextBuffer *out, ErrorState *e
             ok = false;
         }
     }
-    for (i = 0; ok && i < types.length; i++) {
-        ok = emit_one_equality(p, *(const size_t *)list_get(&types, i), out, errors);
-    }
-    list_free(&types);
-    list_free(&pairs);
-    if (!ok && !errors->reported) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-    }
+    emit_equality_helpers_one_equality(&i, &ok, &types, p, out, errors, &pairs);
     return ok;
 }

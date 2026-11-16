@@ -1,6 +1,7 @@
 #ifndef NIPPY_ANALYSER_INTERNAL_H
 #define NIPPY_ANALYSER_INTERNAL_H
 
+#include "macros.h"
 #include "error.h"
 #include "typed_program.h"
 

@@ -257,6 +257,83 @@ bool check_fixed_index_bounds(CheckContext *ctx, size_t index_ast,
 }
 
 
+static bool check_index_expression_step(const TypedType **receiver_type, CheckContext *ctx, const AstNode *node, size_t receiver_type_index, size_t *index, size_t *element, TypedNode *typed)
+{
+    if ((*receiver_type) == NULL ||
+        ((*receiver_type)->kind != NIPPY_TYPE_LIST &&
+         (*receiver_type)->kind != NIPPY_TYPE_FIXED_LIST &&
+         (*receiver_type)->kind != NIPPY_TYPE_SLICE) ||
+        (*receiver_type)->child_count != 1) {
+        if ((*receiver_type) != NULL &&
+            ((*receiver_type)->kind == NIPPY_TYPE_STRING ||
+             (*receiver_type)->kind == NIPPY_TYPE_DYNAMIC_STRING)) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_TEXT_INDEX);
+            return false;
+        }
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
+        return false;
+    }
+    if (!check_fixed_index_bounds(ctx, node->right_child,
+                                  receiver_type_index)) {
+        return false;
+    }
+    if (!check_int32_expression(ctx, node->right_child, index)) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_LIST_INDEX);
+        return false;
+    }
+    /* Checking the index can append types, growing the list and moving its
+       storage, so a type pointer taken before this call is stale. */
+    (*receiver_type) = typed_program_type(ctx->program, receiver_type_index);
+    if ((*receiver_type) == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
+        return false;
+    }
+    (*element) = *(const size_t *)list_get(&ctx->program->type_children,
+                                        (*receiver_type)->first_child);
+    (*typed).kind = (*receiver_type)->kind == NIPPY_TYPE_SLICE
+                     ? TYPED_SLICE_GET
+                     : TYPED_LIST_GET;
+    return true;
+}
+
+static bool check_index_expression_key(const TypedType *receiver_type, CheckContext *ctx, const AstNode *node, size_t *key_type, size_t *value_type, size_t *key, size_t *coerced, TypedNode *typed)
+{
+    const TypedNode *key_node;
+    const TypedType *key_node_type;
+
+    if (receiver_type->child_count != 2) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
+        return false;
+    }
+    (*key_type) = *(const size_t *)list_get(&ctx->program->type_children,
+                                         receiver_type->first_child);
+    (*value_type) = *(const size_t *)list_get(
+        &ctx->program->type_children, receiver_type->first_child + 1);
+    if (!check_expression(ctx, node->right_child, key)) {
+        return false;
+    }
+    key_node = typed_program_node(ctx->program, (*key));
+    key_node_type = key_node == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             key_node->type_index);
+    if (key_node_type == NULL ||
+        !inject_into(ctx, (*key), (*key_type), coerced)) {
+        if (!ctx->errors->reported) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MAP_KEY);
+        }
+        return false;
+    }
+    (*typed).kind = receiver_type->kind == NIPPY_TYPE_RECORD
+                     ? TYPED_RECORD_GET
+                     : TYPED_TABLE_GET;
+    return true;
+}
+
 bool check_index_expression(CheckContext *ctx, const AstNode *node,
                                    size_t ast_index)
 {
@@ -286,37 +363,9 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
         size_t value_type;
         size_t key;
         size_t coerced;
-        const TypedNode *key_node;
-        const TypedType *key_node_type;
-
-        if (receiver_type->child_count != 2) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
-            return false;
-        }
-        key_type = *(const size_t *)list_get(&ctx->program->type_children,
-                                             receiver_type->first_child);
-        value_type = *(const size_t *)list_get(
-            &ctx->program->type_children, receiver_type->first_child + 1);
-        if (!check_expression(ctx, node->right_child, &key)) {
-            return false;
-        }
-        key_node = typed_program_node(ctx->program, key);
-        key_node_type = key_node == NULL
-                            ? NULL
-                            : typed_program_type(ctx->program,
-                                                 key_node->type_index);
-        if (key_node_type == NULL ||
-            !inject_into(ctx, key, key_type, &coerced)) {
-            if (!ctx->errors->reported) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MAP_KEY);
-            }
-            return false;
-        }
-        typed.kind = receiver_type->kind == NIPPY_TYPE_RECORD
-                         ? TYPED_RECORD_GET
-                         : TYPED_TABLE_GET;
+        if (!check_index_expression_key(receiver_type, ctx, node, &key_type, &value_type, &key, &coerced, &typed)) {
+        return false;
+    }
         typed.type_index = value_type;
         typed.pos = node->pos;
         typed.name_index = TYPED_NO_NODE;
@@ -328,42 +377,9 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
         typed.children_count = 0;
         return emit_node(ctx, &typed, ast_index, &(size_t){0});
     }
-    if (receiver_type == NULL ||
-        (receiver_type->kind != NIPPY_TYPE_LIST &&
-         receiver_type->kind != NIPPY_TYPE_FIXED_LIST &&
-         receiver_type->kind != NIPPY_TYPE_SLICE) ||
-        receiver_type->child_count != 1) {
-        if (receiver_type != NULL &&
-            (receiver_type->kind == NIPPY_TYPE_STRING ||
-             receiver_type->kind == NIPPY_TYPE_DYNAMIC_STRING)) {
-            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_TEXT_INDEX);
-            return false;
-        }
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
+    if (!check_index_expression_step(&receiver_type, ctx, node, receiver_type_index, &index, &element, &typed)) {
         return false;
     }
-    if (!check_fixed_index_bounds(ctx, node->right_child,
-                                  receiver_type_index)) {
-        return false;
-    }
-    if (!check_int32_expression(ctx, node->right_child, &index)) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_LIST_INDEX);
-        return false;
-    }
-    /* Checking the index can append types, growing the list and moving its
-       storage, so a type pointer taken before this call is stale. */
-    receiver_type = typed_program_type(ctx->program, receiver_type_index);
-    if (receiver_type == NULL) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MEMBER_RECEIVER, "index");
-        return false;
-    }
-    element = *(const size_t *)list_get(&ctx->program->type_children,
-                                        receiver_type->first_child);
-    typed.kind = receiver_type->kind == NIPPY_TYPE_SLICE
-                     ? TYPED_SLICE_GET
-                     : TYPED_LIST_GET;
     typed.type_index = element;
     typed.pos = node->pos;
     typed.name_index = TYPED_NO_NODE;
@@ -376,6 +392,122 @@ bool check_index_expression(CheckContext *ctx, const AstNode *node,
     return emit_node(ctx, &typed, ast_index, &(size_t){0});
 }
 
+
+static bool check_index_assignment_step(const AstNode *target, CheckContext *ctx, const AstNode *node, const AstNode **receiver_ast, size_t *target_typed, size_t previous_target, const TypedNode **target_node, size_t *target_left_child, size_t *target_right_child, const TypedNode **receiver, const TypedType **receiver_type, size_t *receiver_name_index)
+{
+    if (target == NULL || target->kind != AST_INDEX) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    (*receiver_ast) = ast_get_node(ctx->ast, target->left_child);
+    if ((*receiver_ast) == NULL || (*receiver_ast)->kind != AST_IDENTIFIER) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    if (!check_inline_const_mutation(ctx, node->left_child)) {
+        return false;
+    }
+    ctx->assignment_target_ast = node->left_child;
+    if (!check_expression(ctx, node->left_child, target_typed)) {
+        ctx->assignment_target_ast = previous_target;
+        return false;
+    }
+    ctx->assignment_target_ast = previous_target;
+    (*target_node) = typed_program_node(ctx->program, (*target_typed));
+    if ((*target_node) == NULL ||
+        ((*target_node)->kind != TYPED_LIST_GET &&
+         (*target_node)->kind != TYPED_SLICE_GET &&
+         (*target_node)->kind != TYPED_RECORD_GET &&
+         (*target_node)->kind != TYPED_TABLE_GET)) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    (*target_left_child) = (*target_node)->left_child;
+    (*target_right_child) = (*target_node)->right_child;
+    (*receiver) = typed_program_node(ctx->program, (*target_left_child));
+    (*receiver_type) = (*receiver) == NULL
+                        ? NULL
+                        : typed_program_type(ctx->program,
+                                             (*receiver)->type_index);
+    (*receiver_name_index) = (*receiver) == NULL ? TYPED_NO_NODE
+                                           : (*receiver)->name_index;
+    return true;
+}
+
+static bool check_index_assignment_step4(const TypedType *receiver_type, size_t receiver_name_index, CheckContext *ctx, const AstNode *node, const AstNode *target, const TypedNode *receiver, size_t *element, size_t *value, size_t *coerced, size_t *nil_type, size_t *children_start, size_t target_right_child)
+{
+    if (receiver_type == NULL || receiver_type->child_count != 1 ||
+        receiver_name_index == TYPED_NO_NODE) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    if (receiver_type->kind == NIPPY_TYPE_SLICE) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_SLICE_READONLY);
+        return false;
+    }
+    /* The bounds check reads the index as a syntax node, so it needs the
+       target's AST child; `target_right_child` is a typed-node index and numbers
+       a different array. */
+    if (!check_fixed_index_bounds(ctx, target->right_child,
+                                  receiver->type_index)) {
+        return false;
+    }
+    (*element) = *(const size_t *)list_get(&ctx->program->type_children,
+                                        receiver_type->first_child);
+    if (!check_expression_expected(ctx, node->right_child, (*element), value) ||
+        !inject_into(ctx, (*value), (*element), coerced) ||
+        !builtin_type(ctx, NIPPY_TYPE_NIL, nil_type)) {
+        if (!ctx->errors->reported) {
+            error_report(ctx->errors, MESSAGE_CHECKER_LIST_VALUE);
+        }
+        return false;
+    }
+    (*children_start) = ctx->program->children.length;
+    if (!typed_program_push_child(ctx->program, target_right_child) ||
+        !typed_program_push_child(ctx->program, (*coerced))) {
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        return false;
+    }
+    return true;
+}
+
+static bool check_index_assignment_step6(const TypedType *receiver_type, size_t receiver_name_index, CheckContext *ctx, const AstNode *node, size_t *key_type, size_t *value_type, size_t target_right_child, size_t *coerced_key, size_t *value, size_t *coerced_value, size_t *nil_type, size_t *children_start, TypedNode *typed, bool is_record)
+{
+    if (receiver_type->child_count != 2 ||
+        receiver_name_index == TYPED_NO_NODE) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_LIST_LVALUE);
+        return false;
+    }
+    (*key_type) = *(const size_t *)list_get(&ctx->program->type_children,
+                                         receiver_type->first_child);
+    (*value_type) = *(const size_t *)list_get(
+        &ctx->program->type_children, receiver_type->first_child + 1);
+    if (!inject_into(ctx, target_right_child, (*key_type), coerced_key) ||
+        !check_expression_expected(ctx, node->right_child, (*value_type),
+                                   value) ||
+        !inject_into(ctx, (*value), (*value_type), coerced_value) ||
+        !builtin_type(ctx, NIPPY_TYPE_NIL, nil_type)) {
+        if (!ctx->errors->reported) {
+            error_report_at(ctx->errors, node->pos,
+                            MESSAGE_CHECKER_MAP_VALUE);
+        }
+        return false;
+    }
+    (*children_start) = ctx->program->children.length;
+    if (!typed_program_push_child(ctx->program, (*coerced_key)) ||
+        !typed_program_push_child(ctx->program, (*coerced_value))) {
+        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+        return false;
+    }
+    (*typed).kind = is_record ? TYPED_RECORD_SET : TYPED_TABLE_SET;
+    return true;
+}
 
 bool check_index_assignment(CheckContext *ctx, const AstNode *node,
                                     size_t ast_index, size_t *out_typed)
@@ -398,45 +530,9 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
     size_t previous_target = ctx->assignment_target_ast;
     TypedNode typed = {0};
 
-    if (target == NULL || target->kind != AST_INDEX) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_LIST_LVALUE);
+    if (!check_index_assignment_step(target, ctx, node, &receiver_ast, &target_typed, previous_target, &target_node, &target_left_child, &target_right_child, &receiver, &receiver_type, &receiver_name_index)) {
         return false;
     }
-    receiver_ast = ast_get_node(ctx->ast, target->left_child);
-    if (receiver_ast == NULL || receiver_ast->kind != AST_IDENTIFIER) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_LIST_LVALUE);
-        return false;
-    }
-    if (!check_inline_const_mutation(ctx, node->left_child)) {
-        return false;
-    }
-    ctx->assignment_target_ast = node->left_child;
-    if (!check_expression(ctx, node->left_child, &target_typed)) {
-        ctx->assignment_target_ast = previous_target;
-        return false;
-    }
-    ctx->assignment_target_ast = previous_target;
-    target_node = typed_program_node(ctx->program, target_typed);
-    if (target_node == NULL ||
-        (target_node->kind != TYPED_LIST_GET &&
-         target_node->kind != TYPED_SLICE_GET &&
-         target_node->kind != TYPED_RECORD_GET &&
-         target_node->kind != TYPED_TABLE_GET)) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_LIST_LVALUE);
-        return false;
-    }
-    target_left_child = target_node->left_child;
-    target_right_child = target_node->right_child;
-    receiver = typed_program_node(ctx->program, target_left_child);
-    receiver_type = receiver == NULL
-                        ? NULL
-                        : typed_program_type(ctx->program,
-                                             receiver->type_index);
-    receiver_name_index = receiver == NULL ? TYPED_NO_NODE
-                                           : receiver->name_index;
     is_record = receiver_type != NULL &&
                 receiver_type->kind == NIPPY_TYPE_RECORD;
     if (receiver_type != NULL &&
@@ -447,34 +543,9 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
         size_t coerced_key;
         size_t coerced_value;
 
-        if (receiver_type->child_count != 2 ||
-            receiver_name_index == TYPED_NO_NODE) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_LIST_LVALUE);
-            return false;
-        }
-        key_type = *(const size_t *)list_get(&ctx->program->type_children,
-                                             receiver_type->first_child);
-        value_type = *(const size_t *)list_get(
-            &ctx->program->type_children, receiver_type->first_child + 1);
-        if (!inject_into(ctx, target_right_child, key_type, &coerced_key) ||
-            !check_expression_expected(ctx, node->right_child, value_type,
-                                       &value) ||
-            !inject_into(ctx, value, value_type, &coerced_value) ||
-            !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
-            if (!ctx->errors->reported) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MAP_VALUE);
-            }
-            return false;
-        }
-        children_start = ctx->program->children.length;
-        if (!typed_program_push_child(ctx->program, coerced_key) ||
-            !typed_program_push_child(ctx->program, coerced_value)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-            return false;
-        }
-        typed.kind = is_record ? TYPED_RECORD_SET : TYPED_TABLE_SET;
+        if (!check_index_assignment_step6(receiver_type, receiver_name_index, ctx, node, &key_type, &value_type, target_right_child, &coerced_key, &value, &coerced_value, &nil_type, &children_start, &typed, is_record)) {
+        return false;
+    }
         typed.type_index = nil_type;
         typed.pos = node->pos;
         typed.name_index = receiver_name_index;
@@ -486,38 +557,7 @@ bool check_index_assignment(CheckContext *ctx, const AstNode *node,
         typed.children_count = 2;
         return emit_node(ctx, &typed, ast_index, out_typed);
     }
-    if (receiver_type == NULL || receiver_type->child_count != 1 ||
-        receiver_name_index == TYPED_NO_NODE) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_LIST_LVALUE);
-        return false;
-    }
-    if (receiver_type->kind == NIPPY_TYPE_SLICE) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_SLICE_READONLY);
-        return false;
-    }
-    /* The bounds check reads the index as a syntax node, so it needs the
-       target's AST child; `target_right_child` is a typed-node index and numbers
-       a different array. */
-    if (!check_fixed_index_bounds(ctx, target->right_child,
-                                  receiver->type_index)) {
-        return false;
-    }
-    element = *(const size_t *)list_get(&ctx->program->type_children,
-                                        receiver_type->first_child);
-    if (!check_expression_expected(ctx, node->right_child, element, &value) ||
-        !inject_into(ctx, value, element, &coerced) ||
-        !builtin_type(ctx, NIPPY_TYPE_NIL, &nil_type)) {
-        if (!ctx->errors->reported) {
-            error_report(ctx->errors, MESSAGE_CHECKER_LIST_VALUE);
-        }
-        return false;
-    }
-    children_start = ctx->program->children.length;
-    if (!typed_program_push_child(ctx->program, target_right_child) ||
-        !typed_program_push_child(ctx->program, coerced)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    if (!check_index_assignment_step4(receiver_type, receiver_name_index, ctx, node, target, receiver, &element, &value, &coerced, &nil_type, &children_start, target_right_child)) {
         return false;
     }
     typed.kind = TYPED_LIST_SET;

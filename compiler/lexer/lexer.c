@@ -174,6 +174,53 @@ static bool is_identifier_character(unsigned char character)
 }
 
 
+static bool lex_number_token(List *digits, const char *code, size_t *scan, unsigned int *base, bool *radix, LexerResult *result, SourcePos *start, size_t *count, bool *bad_separator, bool *ok, Token *token)
+{
+    (*token) = (Token){0};
+    (*ok) = false;
+
+    list_init(digits, sizeof(unsigned char));
+    if (code[(*scan)] == '0') {
+        unsigned char marker = (unsigned char)code[(*scan) + 1];
+
+        if (marker == 'x' || marker == 'b' || marker == 'o') {
+            (*base) = marker == 'x' ? 16 : marker == 'b' ? 2 : 8;
+            (*radix) = true;
+            (*scan) += 2;
+        } else if (marker == 'X' || marker == 'B' || marker == 'O') {
+            /* One spelling: the prefix is lowercase. */
+            while (is_identifier_character((unsigned char)code[(*scan)])) {
+                (*scan)++;
+            }
+            (*ok) = push_lexer_error(result, LEXER_UPPERCASE_PREFIX, (*start),
+                                  marker, 0);
+            return true;
+        }
+    }
+
+    if (!scan_digits(code, scan, (*base), digits, count, bad_separator)) {
+        result->out_of_memory = true;
+        return true;
+    }
+    return false;
+}
+
+static bool lex_number_step(List *digits, unsigned char *marker, unsigned char *sign, LexerResult *result, size_t *scan, size_t exponent, const char *code, size_t *count, bool *bad_separator)
+{
+    if (!list_push(digits, marker) ||
+        ((*sign) != 0 && !list_push(digits, sign))) {
+        result->out_of_memory = true;
+        return true;
+    }
+    (*scan) = exponent;
+    if (!scan_digits(code, scan, 10, digits, count,
+                     bad_separator)) {
+        result->out_of_memory = true;
+        return true;
+    }
+    return false;
+}
+
 /* Lexes one numeric literal starting at code[*cursor], which is a digit.
 
      integer = digits | "0x" hex | "0b" binary | "0o" octal
@@ -193,30 +240,9 @@ static bool lex_number(const char *code, LexerResult *result, size_t *cursor,
     bool bad_separator = false;
     size_t count = 0;
     List digits;
+    bool ok = {0};
     Token token = {0};
-    bool ok = false;
-
-    list_init(&digits, sizeof(unsigned char));
-    if (code[scan] == '0') {
-        unsigned char marker = (unsigned char)code[scan + 1];
-
-        if (marker == 'x' || marker == 'b' || marker == 'o') {
-            base = marker == 'x' ? 16 : marker == 'b' ? 2 : 8;
-            radix = true;
-            scan += 2;
-        } else if (marker == 'X' || marker == 'B' || marker == 'O') {
-            /* One spelling: the prefix is lowercase. */
-            while (is_identifier_character((unsigned char)code[scan])) {
-                scan++;
-            }
-            ok = push_lexer_error(result, LEXER_UPPERCASE_PREFIX, start,
-                                  marker, 0);
-            goto finished;
-        }
-    }
-
-    if (!scan_digits(code, &scan, base, &digits, &count, &bad_separator)) {
-        result->out_of_memory = true;
+    if (lex_number_token(&digits, code, &scan, &base, &radix, result, &start, &count, &bad_separator, &ok, &token)) {
         goto finished;
     }
     if (radix) {
@@ -265,17 +291,9 @@ static bool lex_number(const char *code, LexerResult *result, size_t *cursor,
                 unsigned char marker = 'e';
 
                 is_float = true;
-                if (!list_push(&digits, &marker) ||
-                    (sign != 0 && !list_push(&digits, &sign))) {
-                    result->out_of_memory = true;
-                    goto finished;
-                }
-                scan = exponent;
-                if (!scan_digits(code, &scan, 10, &digits, &count,
-                                 &bad_separator)) {
-                    result->out_of_memory = true;
-                    goto finished;
-                }
+                if (lex_number_step(&digits, &marker, &sign, result, &scan, exponent, code, &count, &bad_separator)) {
+        goto finished;
+    }
             }
         }
     }
@@ -337,22 +355,157 @@ void lexer_result_free(LexerResult *result)
     list_free(&result->string_bytes);
 }
 
-LexerResult lexer_tokenize(const char *code)
+static bool lexer_tokenize_start(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
 {
-    LexerResult result = {0};
-    size_t cursor = 0;
-    size_t line = 1;
-    size_t column = 1;
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool doubled = code[(*cursor) + 1] == '=';
+    bool tripled = doubled && code[(*cursor) + 2] == '=';
 
-    list_init(&result.tokens, sizeof(Token));
-    list_init(&result.errors, sizeof(LexerError));
-    list_init(&result.string_bytes, sizeof(unsigned char));
+    if (!push_token(&(*result).tokens,
+                    tripled ? TOKEN_EQEQEQ :
+                    doubled ? TOKEN_EQEQ : TOKEN_EQUALS, start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (doubled) {
+        advance(code, cursor, line, column);
+    }
+    if (tripled) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+static void lexer_tokenize_terminated(const char *code, size_t *cursor, size_t *line, size_t *column, bool *terminated)
+{
+    (*terminated) = false;
+
+    advance(code, cursor, line, column);
+    while (code[(*cursor)] != '\0') {
+        if (code[(*cursor)] == ']' && code[(*cursor) + 1] == '-' &&
+            code[(*cursor) + 2] == '-') {
+            advance(code, cursor, line, column);
+            advance(code, cursor, line, column);
+            advance(code, cursor, line, column);
+            (*terminated) = true;
+            break;
+        }
+        advance(code, cursor, line, column);
+    }
+}
+
+static void lexer_tokenize_result(const char *code, size_t *cursor, size_t *line, size_t *column, LexerResult *result)
+{
+    (*result) = (LexerResult){0};
+    (*cursor) = 0;
+    (*line) = 1;
+    (*column) = 1;
+
+    list_init(&(*result).tokens, sizeof(Token));
+    list_init(&(*result).errors, sizeof(LexerError));
+    list_init(&(*result).string_bytes, sizeof(unsigned char));
 
     if ((unsigned char)code[0] == 0xef &&
         (unsigned char)code[1] == 0xbb &&
         (unsigned char)code[2] == 0xbf) {
-        cursor = 3;
+        (*cursor) = 3;
     }
+}
+
+static bool lexer_tokenize_start6(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+{
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool doubled = code[(*cursor) + 1] == ':';
+
+    if (!push_token(&(*result).tokens,
+                    doubled ? TOKEN_DOUBLE_COLON : TOKEN_COLON,
+                    start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (doubled) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+static bool lexer_tokenize_start8(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+{
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool with_equals = code[(*cursor) + 1] == '=';
+
+    if (!push_token(&(*result).tokens,
+                    with_equals ? TOKEN_LE : TOKEN_LT, start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (with_equals) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+static bool lexer_tokenize_start10(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+{
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool with_equals = code[(*cursor) + 1] == '=';
+
+    if (!push_token(&(*result).tokens,
+                    with_equals ? TOKEN_GE : TOKEN_GT, start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (with_equals) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+static bool lexer_tokenize_start12(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+{
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool with_equals = code[(*cursor) + 1] == '=';
+
+    if (!push_token(&(*result).tokens,
+                    with_equals ? TOKEN_NE : TOKEN_BANG, start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (with_equals) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+static bool lexer_tokenize_start14(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+{
+    SourcePos start = {(*cursor), (*line), (*column)};
+    bool doubled = code[(*cursor) + 1] == '|';
+
+    if (!push_token(&(*result).tokens, doubled ? TOKEN_OROR : TOKEN_PIPE,
+                    start)) {
+        (*result).out_of_memory = true;
+        return true;
+    }
+    advance(code, cursor, line, column);
+    if (doubled) {
+        advance(code, cursor, line, column);
+    }
+    return false;
+}
+
+LexerResult lexer_tokenize(const char *code)
+{
+    size_t cursor = {0};
+    size_t line = {0};
+    size_t column = {0};
+    LexerResult result = {0};
+    lexer_tokenize_result(code, &cursor, &line, &column, &result);
 
     while (code[cursor] != '\0') {
         unsigned char current = (unsigned char)code[cursor];
@@ -363,20 +516,8 @@ LexerResult lexer_tokenize(const char *code)
             advance(code, &cursor, &line, &column);
             advance(code, &cursor, &line, &column);
             if (code[cursor] == '[') {
-                bool terminated = false;
-
-                advance(code, &cursor, &line, &column);
-                while (code[cursor] != '\0') {
-                    if (code[cursor] == ']' && code[cursor + 1] == '-' &&
-                        code[cursor + 2] == '-') {
-                        advance(code, &cursor, &line, &column);
-                        advance(code, &cursor, &line, &column);
-                        advance(code, &cursor, &line, &column);
-                        terminated = true;
-                        break;
-                    }
-                    advance(code, &cursor, &line, &column);
-                }
+                bool terminated = {0};
+                lexer_tokenize_terminated(code, &cursor, &line, &column, &terminated);
                 if (!terminated) {
                     LexerError error = {LEXER_UNTERMINATED_COMMENT, start, 0,
                                         0};
@@ -535,40 +676,16 @@ LexerResult lexer_tokenize(const char *code)
         }
 
         if (current == ':') {
-            SourcePos start = {cursor, line, column};
-            bool doubled = code[cursor + 1] == ':';
-
-            if (!push_token(&result.tokens,
-                            doubled ? TOKEN_DOUBLE_COLON : TOKEN_COLON,
-                            start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (doubled) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start6(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
         if (current == '=') {
-            SourcePos start = {cursor, line, column};
-            bool doubled = code[cursor + 1] == '=';
-            bool tripled = doubled && code[cursor + 2] == '=';
-
-            if (!push_token(&result.tokens,
-                            tripled ? TOKEN_EQEQEQ :
-                            doubled ? TOKEN_EQEQ : TOKEN_EQUALS, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (doubled) {
-                advance(code, &cursor, &line, &column);
-            }
-            if (tripled) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
@@ -738,50 +855,23 @@ LexerResult lexer_tokenize(const char *code)
         }
 
         if (current == '<') {
-            SourcePos start = {cursor, line, column};
-            bool with_equals = code[cursor + 1] == '=';
-
-            if (!push_token(&result.tokens,
-                            with_equals ? TOKEN_LE : TOKEN_LT, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (with_equals) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start8(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
         if (current == '>') {
-            SourcePos start = {cursor, line, column};
-            bool with_equals = code[cursor + 1] == '=';
-
-            if (!push_token(&result.tokens,
-                            with_equals ? TOKEN_GE : TOKEN_GT, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (with_equals) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start10(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
         if (current == '!') {
-            SourcePos start = {cursor, line, column};
-            bool with_equals = code[cursor + 1] == '=';
-
-            if (!push_token(&result.tokens,
-                            with_equals ? TOKEN_NE : TOKEN_BANG, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (with_equals) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start12(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
@@ -809,18 +899,9 @@ LexerResult lexer_tokenize(const char *code)
         }
 
         if (current == '|') {
-            SourcePos start = {cursor, line, column};
-            bool doubled = code[cursor + 1] == '|';
-
-            if (!push_token(&result.tokens, doubled ? TOKEN_OROR : TOKEN_PIPE,
-                            start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            if (doubled) {
-                advance(code, &cursor, &line, &column);
-            }
+            if (lexer_tokenize_start14(&cursor, &line, &column, code, &result)) {
+        goto failed;
+    }
             continue;
         }
 
