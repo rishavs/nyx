@@ -117,7 +117,7 @@ TEST("store OOM trap includes its location")
         "    store.capacity = 1;\n"
         "    nyx_store_reserve_at(&store, (size_t)-1, \"source.nip\", 2, 3, 4);\n"
         "    return 0;\n",
-        "nippy: source.nip:2:3 (byte 4):", "positioned store OOM trap");
+        "nyx: source.nip:2:3 (byte 4):", "positioned store OOM trap");
 }
 
 TEST("handle parameter can be printed without a global store")

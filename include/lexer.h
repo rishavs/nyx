@@ -1,5 +1,5 @@
-#ifndef NIPPY_LEXER_H
-#define NIPPY_LEXER_H
+#ifndef NYX_LEXER_H
+#define NYX_LEXER_H
 
 #include "identifier.h"
 #include "list.h"
@@ -38,6 +38,9 @@ typedef enum {
     TOKEN_KEYWORD_NIL,
     TOKEN_KEYWORD_END,
     TOKEN_KEYWORD_SCOPE,
+    TOKEN_KEYWORD_DEFER,
+    TOKEN_KEYWORD_PARALLEL,
+    TOKEN_KEYWORD_WHEN,
     TOKEN_IDENTIFIER,
     TOKEN_INTEGER,
     TOKEN_FLOAT,
@@ -87,7 +90,7 @@ typedef struct {
     double float_value;
     SourcePos pos;
     size_t length;
-    char text[NIPPY_IDENTIFIER_MAX];
+    char text[NYX_IDENTIFIER_MAX];
     /* TOKEN_STRING points into LexerResult.string_bytes. */
     size_t string_offset;
     size_t string_length;

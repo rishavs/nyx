@@ -42,6 +42,9 @@ static const Keyword keywords[] = {
     KEYWORD("nil", TOKEN_KEYWORD_NIL),
     KEYWORD("end", TOKEN_KEYWORD_END),
     KEYWORD("scope", TOKEN_KEYWORD_SCOPE),
+    KEYWORD("defer", TOKEN_KEYWORD_DEFER),
+    KEYWORD("parallel", TOKEN_KEYWORD_PARALLEL),
+    KEYWORD("when", TOKEN_KEYWORD_WHEN),
 };
 
 #undef KEYWORD
@@ -174,54 +177,262 @@ static bool is_identifier_character(unsigned char character)
 }
 
 
-static bool lex_number_token(List *digits, const char *code, size_t *scan, unsigned int *base, bool *radix, LexerResult *result, SourcePos *start, size_t *count, bool *bad_separator, bool *ok, Token *token)
+/* Everything the scanners share: the text, where the cursor is, and the
+   result being built. Line and column move with the cursor so a position can
+   be recorded for any token or error. */
+typedef struct {
+    const char *code;
+    size_t cursor;
+    size_t line;
+    size_t column;
+    LexerResult *result;
+    bool stopped; /* an unterminated comment ends the scan */
+} Lexer;
+
+static unsigned char peek(const Lexer *lexer, size_t ahead)
 {
-    (*token) = (Token){0};
-    (*ok) = false;
+    return (unsigned char)lexer->code[lexer->cursor + ahead];
+}
 
-    list_init(digits, sizeof(unsigned char));
-    if (code[(*scan)] == '0') {
-        unsigned char marker = (unsigned char)code[(*scan) + 1];
+static SourcePos here(const Lexer *lexer)
+{
+    return (SourcePos){lexer->cursor, lexer->line, lexer->column};
+}
 
-        if (marker == 'x' || marker == 'b' || marker == 'o') {
-            (*base) = marker == 'x' ? 16 : marker == 'b' ? 2 : 8;
-            (*radix) = true;
-            (*scan) += 2;
-        } else if (marker == 'X' || marker == 'B' || marker == 'O') {
-            /* One spelling: the prefix is lowercase. */
-            while (is_identifier_character((unsigned char)code[(*scan)])) {
-                (*scan)++;
-            }
-            (*ok) = push_lexer_error(result, LEXER_UPPERCASE_PREFIX, (*start),
-                                  marker, 0);
-            return true;
-        }
+static void step(Lexer *lexer)
+{
+    advance(lexer->code, &lexer->cursor, &lexer->line, &lexer->column);
+}
+
+static bool starts_with(const Lexer *lexer, const char *text, size_t length)
+{
+    return strncmp(lexer->code + lexer->cursor, text, length) == 0;
+}
+
+/* The emitters return false only when out of memory, after recording it. */
+static bool emit_token(Lexer *lexer, const Token *token)
+{
+    if (!list_push(&lexer->result->tokens, token)) {
+        lexer->result->out_of_memory = true;
+        return false;
     }
+    return true;
+}
 
-    if (!scan_digits(code, scan, (*base), digits, count, bad_separator)) {
-        result->out_of_memory = true;
+static bool emit_error(Lexer *lexer, LexerErrorKind kind, SourcePos pos,
+                       unsigned char character, unsigned base)
+{
+    return push_lexer_error(lexer->result, kind, pos, character, base);
+}
+
+/* A number being scanned. `scan` runs ahead of the lexer's cursor, which moves
+   once the whole literal has been consumed. */
+typedef struct {
+    SourcePos start;
+    size_t scan;
+    unsigned base;
+    bool radix;
+    bool is_float;
+    bool bad_separator;
+    size_t count;
+    List digits;
+} Number;
+
+typedef enum {
+    NUMBER_CONTINUE, /* the literal may be valid so far */
+    NUMBER_SKIPPED,  /* an error was reported; the literal is skipped whole */
+    NUMBER_OOM
+} NumberStatus;
+
+static NumberStatus number_error(Lexer *lexer, const Number *number,
+                                 LexerErrorKind kind, unsigned char character,
+                                 unsigned base)
+{
+    return emit_error(lexer, kind, number->start, character, base)
+               ? NUMBER_SKIPPED
+               : NUMBER_OOM;
+}
+
+static unsigned char number_at(const Lexer *lexer, const Number *number,
+                               size_t ahead)
+{
+    return (unsigned char)lexer->code[number->scan + ahead];
+}
+
+static void skip_word(const Lexer *lexer, Number *number)
+{
+    while (is_identifier_character(number_at(lexer, number, 0))) {
+        number->scan++;
+    }
+}
+
+static bool number_digits(Lexer *lexer, Number *number, unsigned base)
+{
+    if (scan_digits(lexer->code, &number->scan, base, &number->digits,
+                    &number->count, &number->bad_separator)) {
         return true;
     }
+    lexer->result->out_of_memory = true;
     return false;
 }
 
-static bool lex_number_step(List *digits, unsigned char *marker, unsigned char *sign, LexerResult *result, size_t *scan, size_t exponent, const char *code, size_t *count, bool *bad_separator)
+/* The optional 0x, 0b or 0o prefix, then the leading digits. */
+static NumberStatus number_prefix(Lexer *lexer, Number *number)
 {
-    if (!list_push(digits, marker) ||
-        ((*sign) != 0 && !list_push(digits, sign))) {
-        result->out_of_memory = true;
+    unsigned char marker = number_at(lexer, number, 1);
+
+    if (number_at(lexer, number, 0) == '0' && strchr("xbo", marker) != NULL &&
+        marker != '\0') {
+        number->base = marker == 'x' ? 16 : marker == 'b' ? 2 : 8;
+        number->radix = true;
+        number->scan += 2;
+    } else if (number_at(lexer, number, 0) == '0' &&
+               strchr("XBO", marker) != NULL && marker != '\0') {
+        /* One spelling: the prefix is lowercase. */
+        skip_word(lexer, number);
+        return number_error(lexer, number, LEXER_UPPERCASE_PREFIX, marker, 0);
+    }
+    return number_digits(lexer, number, number->base) ? NUMBER_CONTINUE
+                                                      : NUMBER_OOM;
+}
+
+/* A radix literal ends at its digits: no fraction, no stray letter. */
+static NumberStatus number_radix_end(Lexer *lexer, Number *number)
+{
+    unsigned char next = number_at(lexer, number, 0);
+    bool fraction = next == '.' && isdigit(number_at(lexer, number, 1));
+
+    if (isalnum(next) || fraction) {
+        /* A digit that does not belong to the base, such as 0b102, or a
+           fraction on a radix literal. Skip the rest of the literal. */
+        skip_word(lexer, number);
+        return number_error(lexer, number, LEXER_INVALID_DIGIT, next,
+                            number->base);
+    }
+    if (!number->bad_separator && number->count == 0) {
+        return number_error(lexer, number, LEXER_MISSING_DIGITS, 0,
+                            number->base);
+    }
+    return NUMBER_CONTINUE;
+}
+
+static bool number_push(Lexer *lexer, Number *number, unsigned char character)
+{
+    if (list_push(&number->digits, &character)) {
         return true;
     }
-    (*scan) = exponent;
-    if (!scan_digits(code, scan, 10, digits, count,
-                     bad_separator)) {
-        result->out_of_memory = true;
-        return true;
-    }
+    lexer->result->out_of_memory = true;
     return false;
 }
 
-/* Lexes one numeric literal starting at code[*cursor], which is a digit.
+static bool number_fraction(Lexer *lexer, Number *number)
+{
+    if (number_at(lexer, number, 0) != '.' ||
+        !isdigit(number_at(lexer, number, 1))) {
+        return true;
+    }
+    number->is_float = true;
+    number->scan++;
+    return number_push(lexer, number, '.') &&
+           number_digits(lexer, number, 10);
+}
+
+static bool number_exponent(Lexer *lexer, Number *number)
+{
+    size_t exponent = number->scan + 1;
+    unsigned char sign = 0;
+
+    if (number_at(lexer, number, 0) != 'e' &&
+        number_at(lexer, number, 0) != 'E') {
+        return true;
+    }
+    if (lexer->code[exponent] == '+' || lexer->code[exponent] == '-') {
+        sign = (unsigned char)lexer->code[exponent];
+        exponent++;
+    }
+    if (!isdigit((unsigned char)lexer->code[exponent])) {
+        return true;
+    }
+    number->is_float = true;
+    number->scan = exponent;
+    return number_push(lexer, number, 'e') &&
+           (sign == 0 || number_push(lexer, number, sign)) &&
+           number_digits(lexer, number, 10);
+}
+
+static NumberStatus number_float_token(Lexer *lexer, Number *number,
+                                       Token *token)
+{
+    double parsed;
+
+    if (!number_push(lexer, number, '\0')) {
+        return NUMBER_OOM;
+    }
+    parsed = strtod(number->digits.items, NULL);
+    /* Only overflow is an error. strtod also sets ERANGE for a denormal
+       result, which is a valid literal. */
+    if (parsed > DBL_MAX) {
+        return number_error(lexer, number, LEXER_FLOAT_OUT_OF_RANGE, 0, 10);
+    }
+    token->type = TOKEN_FLOAT;
+    token->float_value = parsed;
+    return NUMBER_CONTINUE;
+}
+
+static NumberStatus number_integer_token(Lexer *lexer, Number *number,
+                                         Token *token)
+{
+    uint64_t value;
+
+    if (!digits_to_integer(&number->digits, number->base, &value)) {
+        return number_error(lexer, number, LEXER_INTEGER_OUT_OF_RANGE, 0,
+                            number->base);
+    }
+    token->type = TOKEN_INTEGER;
+    token->integer_value_u = value;
+    token->integer_value = value <= INT_MAX ? (int)value : 0;
+    return NUMBER_CONTINUE;
+}
+
+static NumberStatus number_finish(Lexer *lexer, Number *number)
+{
+    Token token = {0};
+    NumberStatus status;
+
+    if (number->bad_separator) {
+        return number_error(lexer, number, LEXER_BAD_SEPARATOR, 0,
+                            number->base);
+    }
+    status = number->is_float ? number_float_token(lexer, number, &token)
+                              : number_integer_token(lexer, number, &token);
+    if (status != NUMBER_CONTINUE) {
+        return status;
+    }
+    token.pos = number->start;
+    return emit_token(lexer, &token) ? NUMBER_CONTINUE : NUMBER_OOM;
+}
+
+/* Scans a float's fraction and exponent, which a radix literal has none of. */
+static NumberStatus number_decimal_tail(Lexer *lexer, Number *number)
+{
+    return number_fraction(lexer, number) && number_exponent(lexer, number)
+               ? NUMBER_CONTINUE
+               : NUMBER_OOM;
+}
+
+static NumberStatus number_scan(Lexer *lexer, Number *number)
+{
+    NumberStatus status = number_prefix(lexer, number);
+
+    if (status != NUMBER_CONTINUE) {
+        return status;
+    }
+    status = number->radix ? number_radix_end(lexer, number)
+                           : number_decimal_tail(lexer, number);
+    return status == NUMBER_CONTINUE ? number_finish(lexer, number) : status;
+}
+
+/* Lexes one numeric literal starting at the cursor, which is a digit.
 
      integer = digits | "0x" hex | "0b" binary | "0o" octal
      float   = digits "." digits [exponent] | digits exponent
@@ -229,124 +440,20 @@ static bool lex_number_step(List *digits, unsigned char *marker, unsigned char *
    Digits of every kind may be grouped with single underscores. A literal that
    is malformed is reported once and skipped whole. Returns false only when out
    of memory, after setting out_of_memory. */
-static bool lex_number(const char *code, LexerResult *result, size_t *cursor,
-                       size_t line, size_t *column)
+static bool lex_number(Lexer *lexer)
 {
-    SourcePos start = {*cursor, line, *column};
-    size_t scan = *cursor;
-    unsigned base = 10;
-    bool radix = false;
-    bool is_float = false;
-    bool bad_separator = false;
-    size_t count = 0;
-    List digits;
-    bool ok = {0};
-    Token token = {0};
-    if (lex_number_token(&digits, code, &scan, &base, &radix, result, &start, &count, &bad_separator, &ok, &token)) {
-        goto finished;
-    }
-    if (radix) {
-        unsigned char next = (unsigned char)code[scan];
-        bool fraction = next == '.' && isdigit((unsigned char)code[scan + 1]);
+    Number number = {here(lexer), lexer->cursor, 10, false, false, false, 0,
+                     {0}};
+    NumberStatus status;
 
-        if (isalnum(next) || fraction) {
-            /* A digit that does not belong to the base, such as 0b102, or a
-               fraction on a radix literal. Skip the rest of the literal. */
-            while (is_identifier_character((unsigned char)code[scan])) {
-                scan++;
-            }
-            ok = push_lexer_error(result, LEXER_INVALID_DIGIT, start, next,
-                                  base);
-            goto finished;
-        }
-        if (!bad_separator && count == 0) {
-            ok = push_lexer_error(result, LEXER_MISSING_DIGITS, start, 0, base);
-            goto finished;
-        }
-    } else {
-        if (code[scan] == '.' && isdigit((unsigned char)code[scan + 1])) {
-            unsigned char point = '.';
-
-            is_float = true;
-            if (!list_push(&digits, &point)) {
-                result->out_of_memory = true;
-                goto finished;
-            }
-            scan++;
-            if (!scan_digits(code, &scan, 10, &digits, &count,
-                             &bad_separator)) {
-                result->out_of_memory = true;
-                goto finished;
-            }
-        }
-        if (code[scan] == 'e' || code[scan] == 'E') {
-            size_t exponent = scan + 1;
-            unsigned char sign = 0;
-
-            if (code[exponent] == '+' || code[exponent] == '-') {
-                sign = (unsigned char)code[exponent];
-                exponent++;
-            }
-            if (isdigit((unsigned char)code[exponent])) {
-                unsigned char marker = 'e';
-
-                is_float = true;
-                if (lex_number_step(&digits, &marker, &sign, result, &scan, exponent, code, &count, &bad_separator)) {
-        goto finished;
-    }
-            }
-        }
-    }
-
-    if (bad_separator) {
-        ok = push_lexer_error(result, LEXER_BAD_SEPARATOR, start, 0, base);
-        goto finished;
-    }
-    if (is_float) {
-        unsigned char terminator = '\0';
-        double parsed;
-
-        if (!list_push(&digits, &terminator)) {
-            result->out_of_memory = true;
-            goto finished;
-        }
-        parsed = strtod(digits.items, NULL);
-        /* Only overflow is an error. strtod also sets ERANGE for a denormal
-           result, which is a valid literal. */
-        if (parsed > DBL_MAX) {
-            ok = push_lexer_error(result, LEXER_FLOAT_OUT_OF_RANGE, start, 0,
-                                  10);
-            goto finished;
-        }
-        token.type = TOKEN_FLOAT;
-        token.float_value = parsed;
-    } else {
-        uint64_t value;
-
-        if (!digits_to_integer(&digits, base, &value)) {
-            ok = push_lexer_error(result, LEXER_INTEGER_OUT_OF_RANGE, start, 0,
-                                  base);
-            goto finished;
-        }
-        token.type = TOKEN_INTEGER;
-        token.integer_value_u = value;
-        token.integer_value = value <= INT_MAX ? (int)value : 0;
-    }
-    token.pos = start;
-    if (!list_push(&result->tokens, &token)) {
-        result->out_of_memory = true;
-        goto finished;
-    }
-    ok = true;
-
-finished:
-    list_free(&digits);
+    list_init(&number.digits, sizeof(unsigned char));
+    status = number_scan(lexer, &number);
+    list_free(&number.digits);
     /* Numbers hold no newline, so the column advances by the bytes consumed. */
-    *column += scan - *cursor;
-    *cursor = scan;
-    return ok;
+    lexer->column += number.scan - lexer->cursor;
+    lexer->cursor = number.scan;
+    return status != NUMBER_OOM;
 }
-
 
 void lexer_result_free(LexerResult *result)
 {
@@ -355,588 +462,289 @@ void lexer_result_free(LexerResult *result)
     list_free(&result->string_bytes);
 }
 
-static bool lexer_tokenize_start(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+/* Punctuation, longest spelling first within each starting character. */
+typedef struct {
+    const char *text;
+    size_t length;
+    TokenType type;
+} Punctuation;
+
+#define PUNCT(text, type) {text, sizeof(text) - 1, type}
+
+static const Punctuation punctuation[] = {
+    PUNCT("===", TOKEN_EQEQEQ), PUNCT("==", TOKEN_EQEQ),
+    PUNCT("=", TOKEN_EQUALS), PUNCT("::", TOKEN_DOUBLE_COLON),
+    PUNCT(":", TOKEN_COLON), PUNCT("<=", TOKEN_LE), PUNCT("<", TOKEN_LT),
+    PUNCT(">=", TOKEN_GE), PUNCT(">", TOKEN_GT), PUNCT("!=", TOKEN_NE),
+    PUNCT("!", TOKEN_BANG), PUNCT("&&", TOKEN_ANDAND), PUNCT("&", TOKEN_AMP),
+    PUNCT("||", TOKEN_OROR), PUNCT("|", TOKEN_PIPE),
+    PUNCT("(", TOKEN_LPAREN), PUNCT(")", TOKEN_RPAREN),
+    PUNCT("[", TOKEN_LBRACKET), PUNCT("]", TOKEN_RBRACKET),
+    PUNCT("{", TOKEN_LBRACE), PUNCT("}", TOKEN_RBRACE),
+    PUNCT(",", TOKEN_COMMA), PUNCT(".", TOKEN_DOT), PUNCT("+", TOKEN_PLUS),
+    PUNCT("-", TOKEN_MINUS), PUNCT("*", TOKEN_STAR), PUNCT("/", TOKEN_SLASH),
+    PUNCT("%", TOKEN_PERCENT), PUNCT("~", TOKEN_TILDE),
+    PUNCT("^", TOKEN_CARET),
+};
+
+#undef PUNCT
+
+static bool lex_punctuation(Lexer *lexer)
 {
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool doubled = code[(*cursor) + 1] == '=';
-    bool tripled = doubled && code[(*cursor) + 2] == '=';
+    SourcePos start = here(lexer);
+    size_t i;
 
-    if (!push_token(&(*result).tokens,
-                    tripled ? TOKEN_EQEQEQ :
-                    doubled ? TOKEN_EQEQ : TOKEN_EQUALS, start)) {
-        (*result).out_of_memory = true;
-        return true;
-    }
-    advance(code, cursor, line, column);
-    if (doubled) {
-        advance(code, cursor, line, column);
-    }
-    if (tripled) {
-        advance(code, cursor, line, column);
-    }
-    return false;
-}
+    for (i = 0; i < sizeof(punctuation) / sizeof(punctuation[0]); i++) {
+        const Punctuation *entry = &punctuation[i];
+        size_t consumed;
 
-static void lexer_tokenize_terminated(const char *code, size_t *cursor, size_t *line, size_t *column, bool *terminated)
-{
-    (*terminated) = false;
-
-    advance(code, cursor, line, column);
-    while (code[(*cursor)] != '\0') {
-        if (code[(*cursor)] == ']' && code[(*cursor) + 1] == '-' &&
-            code[(*cursor) + 2] == '-') {
-            advance(code, cursor, line, column);
-            advance(code, cursor, line, column);
-            advance(code, cursor, line, column);
-            (*terminated) = true;
-            break;
+        if (!starts_with(lexer, entry->text, entry->length)) {
+            continue;
         }
-        advance(code, cursor, line, column);
-    }
-}
-
-static void lexer_tokenize_result(const char *code, size_t *cursor, size_t *line, size_t *column, LexerResult *result)
-{
-    (*result) = (LexerResult){0};
-    (*cursor) = 0;
-    (*line) = 1;
-    (*column) = 1;
-
-    list_init(&(*result).tokens, sizeof(Token));
-    list_init(&(*result).errors, sizeof(LexerError));
-    list_init(&(*result).string_bytes, sizeof(unsigned char));
-
-    if ((unsigned char)code[0] == 0xef &&
-        (unsigned char)code[1] == 0xbb &&
-        (unsigned char)code[2] == 0xbf) {
-        (*cursor) = 3;
-    }
-}
-
-static bool lexer_tokenize_start6(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
-{
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool doubled = code[(*cursor) + 1] == ':';
-
-    if (!push_token(&(*result).tokens,
-                    doubled ? TOKEN_DOUBLE_COLON : TOKEN_COLON,
-                    start)) {
-        (*result).out_of_memory = true;
+        if (!push_token(&lexer->result->tokens, entry->type, start)) {
+            lexer->result->out_of_memory = true;
+            return false;
+        }
+        for (consumed = 0; consumed < entry->length; consumed++) {
+            step(lexer);
+        }
         return true;
     }
-    advance(code, cursor, line, column);
-    if (doubled) {
-        advance(code, cursor, line, column);
+    step(lexer);
+    return emit_error(lexer, LEXER_UNEXPECTED_CHARACTER, start,
+                      (unsigned char)lexer->code[start.offset], 0);
+}
+
+/* A comment: "--" to the end of the line, or "--[" to "]--". */
+static bool lex_comment(Lexer *lexer)
+{
+    SourcePos start = here(lexer);
+    bool block;
+
+    step(lexer);
+    step(lexer);
+    block = peek(lexer, 0) == '[';
+    if (!block) {
+        while (peek(lexer, 0) != '\0' && peek(lexer, 0) != '\n') {
+            step(lexer);
+        }
+        return true;
+    }
+    step(lexer);
+    while (peek(lexer, 0) != '\0' && !starts_with(lexer, "]--", 3)) {
+        step(lexer);
+    }
+    if (peek(lexer, 0) == '\0') {
+        lexer->stopped = true;
+        return emit_error(lexer, LEXER_UNTERMINATED_COMMENT, start, 0, 0);
+    }
+    step(lexer);
+    step(lexer);
+    step(lexer);
+    return true;
+}
+
+typedef struct {
+    unsigned char escape;
+    unsigned char value;
+} Escape;
+
+static const Escape escapes[] = {
+    {'n', '\n'}, {'t', '\t'}, {'r', '\r'}, {'\\', '\\'}, {'"', '"'},
+};
+
+static bool escape_value(unsigned char escape, unsigned char *value)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(escapes) / sizeof(escapes[0]); i++) {
+        if (escapes[i].escape == escape) {
+            *value = escapes[i].value;
+            return true;
+        }
     }
     return false;
 }
 
-static bool lexer_tokenize_start8(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
-{
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool with_equals = code[(*cursor) + 1] == '=';
+typedef enum { STRING_MORE, STRING_END, STRING_OOM } StringStep;
 
-    if (!push_token(&(*result).tokens,
-                    with_equals ? TOKEN_LE : TOKEN_LT, start)) {
-        (*result).out_of_memory = true;
+/* Reports a string error. `valid` records that the literal is spoiled; the
+   caller decides whether scanning goes on. */
+static bool string_error(Lexer *lexer, LexerErrorKind kind, SourcePos pos,
+                         unsigned char character, bool *valid)
+{
+    *valid = false;
+    return emit_error(lexer, kind, pos, character, 0);
+}
+
+static bool string_push(Lexer *lexer, unsigned char byte)
+{
+    if (list_push(&lexer->result->string_bytes, &byte)) {
         return true;
     }
-    advance(code, cursor, line, column);
-    if (with_equals) {
-        advance(code, cursor, line, column);
-    }
+    lexer->result->out_of_memory = true;
     return false;
 }
 
-static bool lexer_tokenize_start10(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+/* The byte after a backslash. An unknown escape is reported and dropped, but
+   the string is scanned on so later errors are found too. */
+static StringStep string_escape(Lexer *lexer, SourcePos start, bool *valid)
 {
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool with_equals = code[(*cursor) + 1] == '=';
+    unsigned char escaped;
+    unsigned char value;
 
-    if (!push_token(&(*result).tokens,
-                    with_equals ? TOKEN_GE : TOKEN_GT, start)) {
-        (*result).out_of_memory = true;
-        return true;
+    step(lexer);
+    escaped = peek(lexer, 0);
+    if (escaped == '\0') {
+        return string_error(lexer, LEXER_UNTERMINATED_STRING, start, 0, valid)
+                   ? STRING_END
+                   : STRING_OOM;
     }
-    advance(code, cursor, line, column);
-    if (with_equals) {
-        advance(code, cursor, line, column);
+    if (!escape_value(escaped, &value)) {
+        bool reported = string_error(lexer, LEXER_INVALID_ESCAPE, here(lexer),
+                                     escaped, valid);
+
+        step(lexer);
+        return reported ? STRING_MORE : STRING_OOM;
     }
-    return false;
+    step(lexer);
+    return string_push(lexer, value) ? STRING_MORE : STRING_OOM;
 }
 
-static bool lexer_tokenize_start12(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+static StringStep string_step(Lexer *lexer, SourcePos start, bool *valid)
 {
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool with_equals = code[(*cursor) + 1] == '=';
+    unsigned char byte = peek(lexer, 0);
+    bool reported;
 
-    if (!push_token(&(*result).tokens,
-                    with_equals ? TOKEN_NE : TOKEN_BANG, start)) {
-        (*result).out_of_memory = true;
-        return true;
+    if (byte == '\0' || byte == '\n' || byte == '\r') {
+        reported = byte == '\0'
+                       ? string_error(lexer, LEXER_UNTERMINATED_STRING, start,
+                                      0, valid)
+                       : string_error(lexer, LEXER_STRING_NEWLINE, here(lexer),
+                                      0, valid);
+        return reported ? STRING_END : STRING_OOM;
     }
-    advance(code, cursor, line, column);
-    if (with_equals) {
-        advance(code, cursor, line, column);
+    if (byte == '"') {
+        step(lexer);
+        return STRING_END;
     }
-    return false;
+    if (byte == '\\') {
+        return string_escape(lexer, start, valid);
+    }
+    step(lexer);
+    return string_push(lexer, byte) ? STRING_MORE : STRING_OOM;
 }
 
-static bool lexer_tokenize_start14(size_t *cursor, size_t *line, size_t *column, const char *code, LexerResult *result)
+static bool lex_string(Lexer *lexer)
 {
-    SourcePos start = {(*cursor), (*line), (*column)};
-    bool doubled = code[(*cursor) + 1] == '|';
+    SourcePos start = here(lexer);
+    List *bytes = &lexer->result->string_bytes;
+    size_t byte_start = bytes->length;
+    bool valid = true;
+    StringStep status;
+    Token token = {0};
 
-    if (!push_token(&(*result).tokens, doubled ? TOKEN_OROR : TOKEN_PIPE,
-                    start)) {
-        (*result).out_of_memory = true;
+    step(lexer);
+    do {
+        status = string_step(lexer, start, &valid);
+    } while (status == STRING_MORE);
+    if (status == STRING_OOM) {
+        return false;
+    }
+    if (!valid) {
+        bytes->length = byte_start;
         return true;
     }
-    advance(code, cursor, line, column);
-    if (doubled) {
-        advance(code, cursor, line, column);
+    token.type = TOKEN_STRING;
+    token.pos = start;
+    token.string_offset = byte_start;
+    token.string_length = bytes->length - byte_start;
+    return emit_token(lexer, &token);
+}
+
+/* An identifier or keyword. */
+static bool lex_word(Lexer *lexer)
+{
+    SourcePos start = here(lexer);
+    Token token = {0};
+    size_t length;
+
+    while (is_identifier_character(peek(lexer, 0))) {
+        lexer->cursor++;
     }
-    return false;
+    length = lexer->cursor - start.offset;
+    lexer->column += length;
+    /* The buffer also needs room for the terminating NUL. */
+    if (length >= NYX_IDENTIFIER_MAX) {
+        return emit_error(lexer, LEXER_IDENTIFIER_TOO_LONG, start, 0, 0);
+    }
+    token.type = keyword_type(lexer->code + start.offset, length);
+    token.pos = start;
+    token.length = length;
+    memcpy(token.text, lexer->code + start.offset, length);
+    token.text[length] = '\0';
+    return emit_token(lexer, &token);
+}
+
+/* Scans one token, comment, or run of whitespace. Returns false only when out
+   of memory. */
+static bool lex_one(Lexer *lexer)
+{
+    unsigned char current = peek(lexer, 0);
+
+    if (current == '-' && peek(lexer, 1) == '-') {
+        return lex_comment(lexer);
+    }
+    if (isspace(current)) {
+        step(lexer);
+        return true;
+    }
+    if (isdigit(current)) {
+        return lex_number(lexer);
+    }
+    if (current == '"') {
+        return lex_string(lexer);
+    }
+    if (isalpha(current) || current == '_') {
+        return lex_word(lexer);
+    }
+    return lex_punctuation(lexer);
+}
+
+static void lexer_free_all(LexerResult *result)
+{
+    list_free(&result->tokens);
+    list_free(&result->errors);
+    list_free(&result->string_bytes);
 }
 
 LexerResult lexer_tokenize(const char *code)
 {
-    size_t cursor = {0};
-    size_t line = {0};
-    size_t column = {0};
     LexerResult result = {0};
-    lexer_tokenize_result(code, &cursor, &line, &column, &result);
+    Lexer lexer = {code, 0, 1, 1, &result, false};
 
-    while (code[cursor] != '\0') {
-        unsigned char current = (unsigned char)code[cursor];
-
-        if (current == '-' && code[cursor + 1] == '-') {
-            SourcePos start = {cursor, line, column};
-
-            advance(code, &cursor, &line, &column);
-            advance(code, &cursor, &line, &column);
-            if (code[cursor] == '[') {
-                bool terminated = {0};
-                lexer_tokenize_terminated(code, &cursor, &line, &column, &terminated);
-                if (!terminated) {
-                    LexerError error = {LEXER_UNTERMINATED_COMMENT, start, 0,
-                                        0};
-                    if (!list_push(&result.errors, &error)) {
-                        result.out_of_memory = true;
-                        goto failed;
-                    }
-                    break;
-                }
-            } else {
-                while (code[cursor] != '\0' && code[cursor] != '\n') {
-                    advance(code, &cursor, &line, &column);
-                }
-            }
-            continue;
-        }
-
-        if (isspace(current)) {
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (isdigit(current)) {
-            if (!lex_number(code, &result, &cursor, line, &column)) {
-                goto failed;
-            }
-            continue;
-        }
-
-        if (current == '"') {
-            SourcePos start = {cursor, line, column};
-            size_t byte_start = result.string_bytes.length;
-            bool literal_ok = true;
-            Token token = {0};
-
-            advance(code, &cursor, &line, &column);
-            for (;;) {
-                unsigned char byte = (unsigned char)code[cursor];
-
-                if (byte == '\0') {
-                    LexerError error = {LEXER_UNTERMINATED_STRING, start, 0, 0};
-                    if (!list_push(&result.errors, &error)) {
-                        result.out_of_memory = true;
-                        goto failed;
-                    }
-                    literal_ok = false;
-                    break;
-                }
-                if (byte == '\n' || byte == '\r') {
-                    LexerError error = {LEXER_STRING_NEWLINE,
-                                        (SourcePos){cursor, line, column}, 0,
-                                        0};
-                    if (!list_push(&result.errors, &error)) {
-                        result.out_of_memory = true;
-                        goto failed;
-                    }
-                    literal_ok = false;
-                    break;
-                }
-                if (byte == '"') {
-                    advance(code, &cursor, &line, &column);
-                    break;
-                }
-                if (byte == '\\') {
-                    unsigned char escaped;
-
-                    advance(code, &cursor, &line, &column);
-                    escaped = (unsigned char)code[cursor];
-                    if (escaped == '\0') {
-                        LexerError error = {LEXER_UNTERMINATED_STRING, start,
-                                            0, 0};
-                        if (!list_push(&result.errors, &error)) {
-                            result.out_of_memory = true;
-                            goto failed;
-                        }
-                        literal_ok = false;
-                        break;
-                    }
-                    if (escaped == 'n') {
-                        byte = '\n';
-                    } else if (escaped == 't') {
-                        byte = '\t';
-                    } else if (escaped == 'r') {
-                        byte = '\r';
-                    } else if (escaped == '\\') {
-                        byte = '\\';
-                    } else if (escaped == '"') {
-                        byte = '"';
-                    } else {
-                        LexerError error = {LEXER_INVALID_ESCAPE,
-                                            (SourcePos){cursor, line, column},
-                                            escaped, 0};
-                        if (!list_push(&result.errors, &error)) {
-                            result.out_of_memory = true;
-                            goto failed;
-                        }
-                        literal_ok = false;
-                        advance(code, &cursor, &line, &column);
-                        continue;
-                    }
-                    advance(code, &cursor, &line, &column);
-                } else {
-                    advance(code, &cursor, &line, &column);
-                }
-                if (!list_push(&result.string_bytes, &byte)) {
-                    result.out_of_memory = true;
-                    goto failed;
-                }
-            }
-            if (!literal_ok) {
-                result.string_bytes.length = byte_start;
-                continue;
-            }
-            token.type = TOKEN_STRING;
-            token.pos = start;
-            token.string_offset = byte_start;
-            token.string_length = result.string_bytes.length - byte_start;
-            if (!list_push(&result.tokens, &token)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            continue;
-        }
-
-        if (isalpha(current) || current == '_') {
-            SourcePos start = {cursor, line, column};
-            size_t length;
-            Token token = {0};
-
-            while (isalnum((unsigned char)code[cursor]) || code[cursor] == '_') {
-                cursor++;
-            }
-            length = cursor - start.offset;
-            column += length;
-
-            /* The buffer also needs room for the terminating NUL. */
-            if (length >= NIPPY_IDENTIFIER_MAX) {
-                LexerError error = {LEXER_IDENTIFIER_TOO_LONG, start, 0, 0};
-                if (!list_push(&result.errors, &error)) {
-                    result.out_of_memory = true;
-                    goto failed;
-                }
-                continue;
-            }
-
-            token.type = keyword_type(code + start.offset, length);
-            token.pos = start;
-            token.length = length;
-            memcpy(token.text, code + start.offset, length);
-            token.text[length] = '\0';
-            if (!list_push(&result.tokens, &token)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            continue;
-        }
-
-        if (current == ':') {
-            if (lexer_tokenize_start6(&cursor, &line, &column, code, &result)) {
-        goto failed;
+    list_init(&result.tokens, sizeof(Token));
+    list_init(&result.errors, sizeof(LexerError));
+    list_init(&result.string_bytes, sizeof(unsigned char));
+    if (peek(&lexer, 0) == 0xef && peek(&lexer, 1) == 0xbb &&
+        peek(&lexer, 2) == 0xbf) {
+        lexer.cursor = 3;
     }
-            continue;
+    while (peek(&lexer, 0) != '\0' && !lexer.stopped) {
+        if (!lex_one(&lexer)) {
+            lexer_free_all(&result);
+            return result;
         }
-
-        if (current == '=') {
-            if (lexer_tokenize_start(&cursor, &line, &column, code, &result)) {
-        goto failed;
     }
-            continue;
-        }
-
-        if (current == '(') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_LPAREN, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == ')') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_RPAREN, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '[') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_LBRACKET, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == ']') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_RBRACKET, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '{') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_LBRACE, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '}') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_RBRACE, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == ',') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_COMMA, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '.') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_DOT, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '+') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_PLUS, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '-') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_MINUS, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '*') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_STAR, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '/') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_SLASH, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '%') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_PERCENT, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '~') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_TILDE, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '^') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_CARET, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '<') {
-            if (lexer_tokenize_start8(&cursor, &line, &column, code, &result)) {
-        goto failed;
-    }
-            continue;
-        }
-
-        if (current == '>') {
-            if (lexer_tokenize_start10(&cursor, &line, &column, code, &result)) {
-        goto failed;
-    }
-            continue;
-        }
-
-        if (current == '!') {
-            if (lexer_tokenize_start12(&cursor, &line, &column, code, &result)) {
-        goto failed;
-    }
-            continue;
-        }
-
-        if (current == '&' && code[cursor + 1] == '&') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_ANDAND, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '&') {
-            SourcePos start = {cursor, line, column};
-
-            if (!push_token(&result.tokens, TOKEN_AMP, start)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-            advance(code, &cursor, &line, &column);
-            continue;
-        }
-
-        if (current == '|') {
-            if (lexer_tokenize_start14(&cursor, &line, &column, code, &result)) {
-        goto failed;
-    }
-            continue;
-        }
-
-        {
-            SourcePos start = {cursor, line, column};
-            LexerError error = {LEXER_UNEXPECTED_CHARACTER, start, current, 0};
-
-            if (!list_push(&result.errors, &error)) {
-                result.out_of_memory = true;
-                goto failed;
-            }
-        }
-        advance(code, &cursor, &line, &column);
-    }
-
     if (result.errors.length != 0) {
         list_free(&result.tokens);
         return result;
     }
-
-    {
-        SourcePos eof = {cursor, line, column};
-
-        if (!push_token(&result.tokens, TOKEN_EOF, eof)) {
-            result.out_of_memory = true;
-            goto failed;
-        }
+    if (!push_token(&result.tokens, TOKEN_EOF, here(&lexer))) {
+        result.out_of_memory = true;
+        lexer_free_all(&result);
+        return result;
     }
-
     result.succeeded = true;
-    return result;
-
-failed:
-    list_free(&result.tokens);
-    list_free(&result.errors);
-    list_free(&result.string_bytes);
     return result;
 }

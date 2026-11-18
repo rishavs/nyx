@@ -79,7 +79,7 @@ TEST("stale handle")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale handle");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -91,7 +91,7 @@ TEST("stale handle write reports its source location")
         "scope s = Store(16) do h = s.alloc<Int32>(1) end\nh.write(2)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale handle write location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 

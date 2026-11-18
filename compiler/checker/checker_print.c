@@ -1,231 +1,86 @@
 #include "checker_internal.h"
 
 
-bool is_printable_type_depth(const TypedProgram *program, size_t type_index, unsigned depth);
-
-static bool is_printable_type_depth_declaration(const TypedProgram *program, const TypedType *type, size_t *i, unsigned int depth)
+/* A string literal prints as Text; anything else is left as it is. */
+static bool coerce_text_literal(CheckContext *ctx, size_t *argument)
 {
-    const TypedNode *declaration = typed_program_node(
-        program, type->declaration_node);
+    const TypedNode *node = typed_program_node(ctx->program, *argument);
+    size_t text_type;
+    size_t coerced;
 
-    if (declaration == NULL) {
+    if (node == NULL || node->kind != TYPED_STRING_LITERAL) {
+        return true;
+    }
+    if (!builtin_type(ctx, NYX_TYPE_DYNAMIC_STRING, &text_type) ||
+        !inject_into(ctx, *argument, text_type, &coerced)) {
         return false;
     }
-    for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
-        size_t child = *(const size_t *)list_get(
-            &program->children, declaration->children_start + (*i));
-        const TypedNode *field = typed_program_node(program, child);
-
-        if (field == NULL ||
-            !is_printable_type_depth(program, field->type_index,
-                                     depth - 1)) {
-            return false;
-        }
-    }
+    *argument = coerced;
     return true;
 }
 
-bool is_printable_type_depth(const TypedProgram *program,
-                                    size_t type_index, unsigned depth)
+/* One argument of print: a checked value that can be printed, with a string
+   literal given the Text type. */
+static bool check_print_argument(CheckContext *ctx, const AstNode *node,
+                                 size_t argument_ast, size_t *argument)
 {
-    const TypedType *type = typed_program_type(program, type_index);
-    size_t i;
+    const AstNode *syntax = ast_get_node(ctx->ast, argument_ast);
+    const TypedNode *typed;
 
-    if (type == NULL || depth == 0) {
-        return false;
-    }
-    switch (type->kind) {
-    case NIPPY_TYPE_INT8:
-    case NIPPY_TYPE_INT16:
-    case NIPPY_TYPE_INT32:
-    case NIPPY_TYPE_INT64:
-    case NIPPY_TYPE_BYTE:
-    case NIPPY_TYPE_UINT16:
-    case NIPPY_TYPE_UINT32:
-    case NIPPY_TYPE_UINT64:
-    case NIPPY_TYPE_FLOAT32:
-    case NIPPY_TYPE_FLOAT64:
-    case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_NIL:
-    case NIPPY_TYPE_STRING:
-    case NIPPY_TYPE_DYNAMIC_STRING:
-    case NIPPY_TYPE_TEXT_BUILDER:
-    case NIPPY_TYPE_ERROR:
-    case NIPPY_TYPE_FUNCTION:
-    case NIPPY_TYPE_HANDLE:
-        return true;
-    case NIPPY_TYPE_RECORD:
-    case NIPPY_TYPE_TABLE:
-        if (type->child_count != 2) {
-            return false;
-        }
-        for (i = 0; i < 2; i++) {
-            size_t part = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (!is_printable_type_depth(program, part, depth - 1)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_FIXED_LIST:
-    case NIPPY_TYPE_LIST:
-    case NIPPY_TYPE_SLICE:
-        if (type->child_count != 1) {
-            return false;
-        }
-        return is_printable_type_depth(
-            program, *(const size_t *)list_get(&program->type_children,
-                                               type->first_child),
-            depth - 1);
-    case NIPPY_TYPE_UNION:
-        for (i = 0; i < type->child_count; i++) {
-            size_t alternative = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (!is_printable_type_depth(program, alternative, depth - 1)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_STRUCT: {
-        if (!is_printable_type_depth_declaration(program, type, &i, depth)) {
-        return false;
-    }
-        return true;
-    }
-    default:
-        return false;
-    }
-}
-
-
-bool is_printable_type(const TypedProgram *program, size_t type_index)
-{
-    return is_printable_type_depth(program, type_index, NIPPY_TYPE_DEPTH);
-}
-
-
-static bool check_print_argument_typed(const AstNode *argument_node, CheckContext *ctx, const AstNode *node, List *children, size_t argument_ast, size_t *argument, const TypedNode **argument_typed)
-{
-    if (argument_node == NULL || argument_node->kind == AST_NAMED_ARG) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_PRINT_NAMED);
-        list_free(children);
+    if (syntax == NULL || syntax->kind == AST_NAMED_ARG) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_PRINT_NAMED);
         return false;
     }
     if (!check_expression(ctx, argument_ast, argument) ||
-        !check_default_numeric(ctx, (*argument))) {
-        list_free(children);
+        !check_default_numeric(ctx, *argument)) {
         return false;
     }
-    (*argument_typed) = typed_program_node(ctx->program, (*argument));
-    if ((*argument_typed) == NULL) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MISSING_AST_NODE, argument_ast);
-        list_free(children);
+    if (!coerce_text_literal(ctx, argument)) {
         return false;
     }
-    return true;
-}
-
-static bool check_print_typed(CheckContext *ctx, const AstNode *node, size_t *nil_type, TypedNode *typed)
-{
-    (*typed) = (TypedNode){0};
-    
-
-    if (!ctx->in_expression_statement) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_PRINT_STATEMENT);
-        return false;
-    }
-    if (node->right_child != AST_NO_NODE) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_PRINT_STATEMENT);
-        return false;
-    }
-    if (!builtin_type(ctx, NIPPY_TYPE_NIL, nil_type)) {
+    typed = typed_program_node(ctx->program, *argument);
+    if (typed == NULL || !is_printable_type(ctx->program, typed->type_index)) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_PRINT_STATEMENT);
         return false;
     }
     return true;
 }
 
-static bool check_print_printable(const TypedNode *argument_typed, CheckContext *ctx, const AstNode *node, List *children, size_t *argument)
+/* print is a statement: it takes values, not a type argument, and yields
+   nothing. */
+bool check_print(CheckContext *ctx, const AstNode *node, size_t ast_index)
 {
-    if (argument_typed == NULL ||
-        !is_printable_type(ctx->program, argument_typed->type_index)) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_PRINT_STATEMENT);
-        list_free(children);
-        return false;
-    }
-    if (!list_push(children, argument)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        list_free(children);
-        return false;
-    }
-    return true;
-}
-
-bool check_print(CheckContext *ctx, const AstNode *node,
-                        size_t ast_index)
-{
-    List children;
+    List arguments;
     size_t nil_type;
-    size_t i = {0};
-    TypedNode typed = {0};
-    if (!check_print_typed(ctx, node, &nil_type, &typed)) {
-        return false;
-    }
-    list_init(&children, sizeof(size_t));
-    for (i = 0; i < node->children_count; i++) {
-        size_t argument_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + i);
-        const AstNode *argument_node = ast_get_node(ctx->ast, argument_ast);
-        size_t argument;
-        const TypedNode *argument_typed = {0};
-        size_t text_type = {0};
-        if (!check_print_argument_typed(argument_node, ctx, node, &children, argument_ast, &argument, &argument_typed)) {
-        return false;
-    }
-        if (argument_typed->kind == TYPED_STRING_LITERAL) {
-            size_t coerced;
+    size_t argument;
+    size_t i;
+    bool ok = true;
+    TypedNode typed;
 
-            if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &text_type) ||
-                !inject_into(ctx, argument, text_type, &coerced)) {
-                list_free(&children);
-                return false;
-            }
-            argument = coerced;
-            argument_typed = typed_program_node(ctx->program, argument);
+    if (!ctx->in_expression_statement || node->right_child != AST_NO_NODE) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_PRINT_STATEMENT);
+        return false;
+    }
+    if (!builtin_type(ctx, NYX_TYPE_NIL, &nil_type)) {
+        return false;
+    }
+    list_init(&arguments, sizeof(size_t));
+    for (i = 0; ok && i < node->children_count; i++) {
+        ok = check_print_argument(
+            ctx,
+            node,
+            *(const size_t *)list_get(&ctx->ast->children,
+                                      node->children_start + i),
+            &argument);
+        if (ok) {
+            checker_ok(ctx->errors, list_push(&arguments, &argument),
+                       MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         }
-        if (!check_print_printable(argument_typed, ctx, node, &children, &argument)) {
-        return false;
     }
-    }
-    {
-        size_t start = ctx->program->children.length;
-
-        for (i = 0; i < children.length; i++) {
-            size_t child = *(const size_t *)list_get(&children, i);
-
-            if (!typed_program_push_child(ctx->program, child)) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                list_free(&children);
-                return false;
-            }
-        }
-        typed.kind = TYPED_PRINT;
-        typed.type_index = nil_type;
-        typed.pos = node->pos;
-        typed.name_index = TYPED_NO_NODE;
-        typed.left_child = TYPED_NO_NODE;
-        typed.right_child = TYPED_NO_NODE;
-        typed.children_start = start;
-        typed.children_count = children.length;
-    }
-    list_free(&children);
-    return emit_node(ctx, &typed, ast_index, &(size_t){0});
+    typed = new_node(TYPED_PRINT, nil_type, node->pos, TYPED_NO_NODE,
+                     TYPED_NO_NODE);
+    typed.children_start = ok ? push_typed_children(ctx, &arguments) : 0;
+    typed.children_count = arguments.length;
+    list_free(&arguments);
+    return ok && emit_node(ctx, &typed, ast_index, &(size_t){0});
 }
-

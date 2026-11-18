@@ -1,5 +1,5 @@
-#ifndef NIPPY_CHECKER_H
-#define NIPPY_CHECKER_H
+#ifndef NYX_CHECKER_H
+#define NYX_CHECKER_H
 
 #include "ast.h"
 #include "error.h"

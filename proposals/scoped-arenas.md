@@ -33,7 +33,7 @@ A Store declared with `global` lasts for the program. A Store introduced by
 `scope` lasts through its body. Pass either to a function with a `Store`
 parameter to let the function allocate into it.
 
-```nippy
+```nyx
 fun label(output: Store, input: Text): Text
   return output.concat("label: ", input)
 end
@@ -55,7 +55,7 @@ as the destination.
 
 Stores can also hold linked data. A handle breaks a type-layout cycle:
 
-```nippy
+```nyx
 type Node
   value: Int32
   next: Handle<Node> | Nil
@@ -159,7 +159,7 @@ For a function, incoming values and capabilities outlive the activation, and
 every Store it opens is shorter-lived than the activation. Store identity is
 separate from ordering. Equal numeric depths from separate lexical chains
 convey no relationship. The compiler uses lexical ancestry and symbolic
-parameter bounds; neither is part of a Nippy surface type.
+parameter bounds; neither is part of a Nyx surface type.
 
 Keep the following facts for an expression of a region-carrying type:
 
@@ -349,7 +349,7 @@ in an arena slot outlives that slot's Store. Direct calls preserve these
 invariants through their summaries, including direct recursion. Indirect
 calls enforce the conservative contract. Whole-value reads and projections preserve the
 reference bound. Dynamic indexing and other runtime validity checks are
-still required. The guarantee covers single-threaded safe Nippy and assumes
+still required. The guarantee covers single-threaded safe Nyx and assumes
 correct C lowering.
 
 ### C11 representation
@@ -360,7 +360,7 @@ duration; scoped headers are locals in the declaring activation. Store
 parameters pass this pointer. Arena-backed descriptors use byte offsets into
 the backing buffer, retaining current generation and bounds validation in
 this release. Static Text keeps its distinct literal representation within the
-same Text ABI. No descriptor exposes its pointer to Nippy or C callers.
+same Text ABI. No descriptor exposes its pointer to Nyx or C callers.
 
 Keep contiguous reallocating buffers for this release. Preserve checked
 alignment, size arithmetic, offset bounds, and initialization. Resolve
@@ -438,7 +438,7 @@ buffer trades heap traffic for stack usage. Neither is needed for correctness.
 
 ## Prior art
 
-Nippy's existing Stores already exercise bump allocation, offset descriptors,
+Nyx's existing Stores already exercise bump allocation, offset descriptors,
 and reset-time generation checks. This RFC keeps that allocation model and
 replaces user-controlled invalidation with lexical cleanup.
 

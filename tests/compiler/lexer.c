@@ -36,7 +36,7 @@ TEST("identifier too long")
     return compile_fails(
         "var abcdefghijklmnopqrstuvwxyzABCDEFG : Int32 = 1\n",
         "an over-long identifier",
-        MESSAGE_LEXER_IDENTIFIER_TOO_LONG, NIPPY_IDENTIFIER_MAX - 1);
+        MESSAGE_LEXER_IDENTIFIER_TOO_LONG, NYX_IDENTIFIER_MAX - 1);
 }
 
 TEST("unexpected character")
@@ -132,4 +132,17 @@ TEST("keywords and identifiers with keyword prefixes")
         }
     }
     return TEST_PASS;
+}
+
+TEST("defer is a keyword but a longer word is not")
+{
+    LexerResult result = lexer_tokenize("defer deferred");
+    const Token *first = list_get(&result.tokens, 0);
+    const Token *second = list_get(&result.tokens, 1);
+    bool ok = result.succeeded && first != NULL && second != NULL &&
+              first->type == TOKEN_KEYWORD_DEFER &&
+              second->type == TOKEN_IDENTIFIER;
+
+    lexer_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
 }

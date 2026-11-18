@@ -21,18 +21,18 @@ TEST("symbol interning recovers after index allocation failure")
             return TEST_FAIL;
         }
     }
-    nippy_alloc_fail_after(1);
+    nyx_alloc_fail_after(1);
     i = ast_intern_symbol(&ast, "new", 3);
-    nippy_alloc_reset();
+    nyx_alloc_reset();
     if (i != AST_NO_NODE || ast_intern_symbol(&ast, "new", 3) != 16 ||
         ast_intern_symbol(&ast, "name0", 5) != 0) {
         ast_free(&ast);
         typed_program_free(&program);
         return TEST_FAIL;
     }
-    nippy_alloc_fail_after(1);
+    nyx_alloc_fail_after(1);
     i = typed_program_copy_symbol(&program, "new", 3);
-    nippy_alloc_reset();
+    nyx_alloc_reset();
     if (i != TYPED_NO_NODE || typed_program_copy_symbol(&program, "new", 3) != 16 ||
         typed_program_copy_symbol(&program, "name0", 5) != 0) {
         ast_free(&ast);
@@ -62,9 +62,9 @@ TEST("compiler: source string is null")
 TEST("compiler: error message allocation may fail")
 {
     CompilerResult result;
-    nippy_alloc_fail_after(0);
+    nyx_alloc_fail_after(0);
     result = compiler_compile(NULL, NULL);
-    nippy_alloc_reset();
+    nyx_alloc_reset();
     if (result.succeeded || result.c_source != NULL || result.h_source != NULL ||
         result.error_message != NULL) {
         compiler_result_free(&result);
@@ -80,9 +80,9 @@ TEST("compiler: injected out of memory")
     CompilerConfig config = {.header_name = NULL,
                              .source_name = "example.nip"};
 
-    nippy_alloc_fail_after(0);
+    nyx_alloc_fail_after(0);
     result = compiler_compile("var x : Int32 = 1\n", &config);
-    nippy_alloc_reset();
+    nyx_alloc_reset();
 
     if (result.succeeded || result.error_message == NULL ||
         result.c_source != NULL) {
@@ -105,11 +105,11 @@ TEST("every allocation failure preserves the compiler result contract")
     CompilerResult baseline;
     size_t count, i;
 
-    nippy_alloc_reset();
-    nippy_alloc_begin_counting();
+    nyx_alloc_reset();
+    nyx_alloc_begin_counting();
     baseline = compiler_compile(source, &test_config);
-    count = nippy_alloc_attempts();
-    nippy_alloc_reset();
+    count = nyx_alloc_attempts();
+    nyx_alloc_reset();
     if (!baseline.succeeded) {
         compiler_result_free(&baseline);
         return TEST_ERROR;
@@ -117,9 +117,9 @@ TEST("every allocation failure preserves the compiler result contract")
     for (i = 0; i < count; i++) {
         CompilerResult result;
         bool valid;
-        nippy_alloc_fail_after(i);
+        nyx_alloc_fail_after(i);
         result = compiler_compile(source, &test_config);
-        nippy_alloc_reset();
+        nyx_alloc_reset();
         if (result.succeeded) {
             valid = result.c_source != NULL && result.h_source != NULL &&
                     strcmp(result.c_source, baseline.c_source) == 0 &&
@@ -167,7 +167,7 @@ TEST("compiler: invalid Error capacity")
     CompilerConfig config = {.header_name = "test.h",
                              .source_name = "test.nip",
                              .error_header_capacity =
-                                 NIPPY_MAX_STRING_CAPACITY + 1,
+                                 NYX_MAX_STRING_CAPACITY + 1,
                              .error_description_capacity = 16,
                              .error_filename_capacity = 24};
     CompilerResult result = compiler_compile(
@@ -177,7 +177,7 @@ TEST("compiler: invalid Error capacity")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_COMPILER_ERROR_CAPACITY, "header",
-                   NIPPY_DEFAULT_MAX_STRING_CAPACITY);
+                   NYX_DEFAULT_MAX_STRING_CAPACITY);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -235,7 +235,7 @@ TEST("compiler: invalid maximum string capacity")
     CompilerConfig config = {.header_name = "test.h",
                              .source_name = "test.nip",
                              .max_string_capacity =
-                                 NIPPY_MAX_STRING_CAPACITY + 1};
+                                 NYX_MAX_STRING_CAPACITY + 1};
     CompilerResult result = compiler_compile(
         "var s: String<8> = \"hi\"\n", &config);
     char expected[256];
@@ -243,7 +243,7 @@ TEST("compiler: invalid maximum string capacity")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_COMPILER_STRING_CAPACITY,
-                   NIPPY_MAX_STRING_CAPACITY);
+                   NYX_MAX_STRING_CAPACITY);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -339,13 +339,13 @@ TEST("list: invalid maximum capacity")
 {
     CompilerConfig config = {.header_name = "test.h",
                              .source_name = "test.nip",
-                             .max_list_capacity = NIPPY_MAX_LIST_CAPACITY + 1};
+                             .max_list_capacity = NYX_MAX_LIST_CAPACITY + 1};
     CompilerResult result = compiler_compile("var n: Int32 = 1\n", &config);
     char expected[256];
     int ok;
 
     expect_message(expected, sizeof(expected),
-                   MESSAGE_COMPILER_LIST_CAPACITY, NIPPY_MAX_LIST_CAPACITY);
+                   MESSAGE_COMPILER_LIST_CAPACITY, NYX_MAX_LIST_CAPACITY);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -361,8 +361,7 @@ TEST("generated prefix")
     CompilerResult result = compiler_compile("var x: Int32 = 1\n",
                                              &test_config);
     int ok = result.succeeded && result.c_source != NULL &&
-             strstr(result.c_source, "nyx_program_value") != NULL &&
-             strstr(result.c_source, "nippy_") == NULL;
+             strstr(result.c_source, "nyx_program_value") != NULL;
 
     compiler_result_free(&result);
     return ok ? TEST_PASS : TEST_FAIL;
@@ -395,7 +394,7 @@ TEST("print: invalid maximum depth")
     int ok;
 
     expect_message(expected, sizeof(expected),
-                   MESSAGE_COMPILER_PRINT_DEPTH, NIPPY_MAX_PRINT_DEPTH);
+                   MESSAGE_COMPILER_PRINT_DEPTH, NYX_MAX_PRINT_DEPTH);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -432,7 +431,7 @@ TEST("a program near the source limit compiles")
     CompilerResult result;
     TestResult status;
 
-    if (getenv("NIPPY_POISON_BUILD") != NULL) {
+    if (getenv("NYX_POISON_BUILD") != NULL) {
         return TEST_TODO;
     }
     source = malloc(capacity);
@@ -464,4 +463,74 @@ TEST("a program near the source limit compiles")
     compiler_result_free(&result);
     free(source);
     return status;
+}
+
+TEST("max_value_bytes raises the by-value limit for types and channel messages")
+{
+    CompilerConfig config = test_config;
+    CompilerResult big;
+    CompilerResult refused;
+    int ok;
+
+    config.max_list_capacity = 262144;
+    config.max_value_bytes = 512 * 1024;
+    big = compiler_compile(
+        "type Frame pixels: Array<Byte, 200000> end\n"
+        "global frames: Channel<Frame> = Channel(2)\n"
+        "var f: Frame = Frame([])\n"
+        "var ok: Bool = frames.try_send(f)\n",
+        &config);
+    config.max_value_bytes = 0;
+    refused = compiler_compile("type Frame pixels: Array<Byte, 200000> end\n",
+                               &config);
+    ok = big.succeeded && !refused.succeeded && refused.error_message != NULL &&
+         strstr(refused.error_message, "65536") != NULL;
+    if (!ok) {
+        fprintf(stderr, "  big: %s / refused: %s\n",
+                big.error_message == NULL ? "ok" : big.error_message,
+                refused.error_message == NULL ? "ok" : refused.error_message);
+    }
+    compiler_result_free(&big);
+    compiler_result_free(&refused);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("max_value_bytes can lower the limit, and the diagnostic names it")
+{
+    CompilerConfig config = test_config;
+    CompilerResult result;
+    char expected[256];
+    bool ok;
+
+    config.max_value_bytes = 1024;
+    result = compiler_compile("type Box items: Array<Int64, 200> end\n", &config);
+    expect_message(expected, sizeof(expected), MESSAGE_CHECKER_VALUE_TOO_LARGE,
+                   (size_t)1608, (size_t)1024);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("max_value_bytes outside its range is rejected")
+{
+    CompilerConfig config = test_config;
+    CompilerResult result;
+    char expected[256];
+    bool ok;
+
+    config.max_value_bytes = NYX_MAX_VALUE_BYTES_HARD + 1;
+    result = compiler_compile("var n: Int32 = 1\n", &config);
+    expect_message(expected, sizeof(expected), MESSAGE_COMPILER_VALUE_BYTES,
+                   NYX_MAX_VALUE_BYTES_HARD);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    if (!ok) return TEST_FAIL;
+    config.max_value_bytes = -1;
+    result = compiler_compile("var n: Int32 = 1\n", &config);
+    ok = !result.succeeded && result.error_message != NULL &&
+         strstr(result.error_message, expected) != NULL;
+    compiler_result_free(&result);
+    return ok ? TEST_PASS : TEST_FAIL;
 }

@@ -9,14 +9,15 @@ bool emit_match_temporaries(const TypedProgram *program, size_t scope,
     while (index != TYPED_NO_NODE) {
         const TypedMatchTemporary *temporary =
             list_get(&program->match_temporaries, index);
-        char type_name[NIPPY_IDENTIFIER_MAX + 32];
-        if (temporary == NULL ||
-            !format_c_type(program, temporary->type_index, type_name,
-                           sizeof(type_name), errors) ||
-            !buffer_appendf(source, "    %s nyx_match_%zu;\n", type_name, index)) {
-            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        char type_name[NYX_IDENTIFIER_MAX + 32];
+        if (temporary == NULL) {
             return false;
         }
+        if (!format_c_type(program, temporary->type_index, type_name,
+                       sizeof(type_name), errors)) {
+            return false;
+        }
+        buffer_appendf(source, "    %s nyx_match_%zu;\n", type_name, index);
         index = temporary->next;
     }
     return true;
@@ -99,6 +100,7 @@ void buffer_init(TextBuffer *buffer)
     buffer->text = NULL;
     buffer->length = 0;
     buffer->capacity = 0;
+    buffer->failed = false;
 }
 
 
@@ -108,6 +110,7 @@ void buffer_free(TextBuffer *buffer)
     buffer->text = NULL;
     buffer->length = 0;
     buffer->capacity = 0;
+    buffer->failed = false;
 }
 
 
@@ -116,18 +119,23 @@ bool buffer_reserve(TextBuffer *buffer, size_t required)
     size_t capacity;
     char *grown;
 
+    if (buffer->failed) {
+        return false;
+    }
     if (required <= buffer->capacity) {
         return true;
     }
     capacity = buffer->capacity == 0 ? 64 : buffer->capacity;
     while (capacity < required) {
         if (capacity > (size_t)-1 / 2) {
+            buffer->failed = true;
             return false;
         }
         capacity *= 2;
     }
-    grown = nippy_realloc(buffer->text, capacity);
+    grown = nyx_realloc(buffer->text, capacity);
     if (grown == NULL) {
+        buffer->failed = true;
         return false;
     }
     buffer->text = grown;
@@ -149,254 +157,207 @@ bool buffer_append(TextBuffer *buffer, const char *text)
     return true;
 }
 
-bool buffer_appendf(TextBuffer *buffer, const char *format, ...)
+/* Appends everything `part` holds. A part that ran out of memory while it was
+   written is incomplete, so it fails `buffer` too instead of being appended. */
+bool buffer_append_buffer(TextBuffer *buffer, const TextBuffer *part)
 {
-    va_list args;
+    if (part->failed) {
+        buffer->failed = true;
+        return false;
+    }
+    return part->text == NULL || buffer_append(buffer, part->text);
+}
+
+bool buffer_vappendf(TextBuffer *buffer, const char *format, va_list args)
+{
     va_list measure;
     int needed;
 
-    va_start(args, format);
     va_copy(measure, args);
     needed = vsnprintf(NULL, 0, format, measure);
     va_end(measure);
     if (needed < 0) {
-        va_end(args);
+        buffer->failed = true;
         return false;
     }
     if (!buffer_reserve(buffer, buffer->length + (size_t)needed + 1)) {
-        va_end(args);
         return false;
     }
     vsnprintf(buffer->text + buffer->length, buffer->capacity - buffer->length,
               format, args);
-    va_end(args);
     buffer->length += (size_t)needed;
     return true;
 }
 
-static bool format_c_type_snprintf(const TypedType *type, char *out, size_t out_size)
+bool buffer_appendf(TextBuffer *buffer, const char *format, ...)
 {
-    if (type->kind == NIPPY_TYPE_INT8) {
-        snprintf(out, out_size, "int8_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_INT16) {
-        snprintf(out, out_size, "int16_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_INT32) {
-        snprintf(out, out_size, "int32_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_INT64) {
-        snprintf(out, out_size, "int64_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_UINT16) {
-        snprintf(out, out_size, "uint16_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_UINT32) {
-        snprintf(out, out_size, "uint32_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_UINT64) {
-        snprintf(out, out_size, "uint64_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_FLOAT32) {
-        snprintf(out, out_size, "float");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_FLOAT64) {
-        snprintf(out, out_size, "double");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_BOOL) {
-        snprintf(out, out_size, "bool");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_NIL) {
-        snprintf(out, out_size, "nyx_nil");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_BYTE) {
-        snprintf(out, out_size, "uint8_t");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_STORE) {
-        snprintf(out, out_size, "nyx_store *");
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_HANDLE) {
-        snprintf(out, out_size, "nyx_handle");
-        return false;
-    }
-    return true;
+    va_list args;
+    bool ok;
+
+    va_start(args, format);
+    ok = buffer_vappendf(buffer, format, args);
+    va_end(args);
+    return ok;
 }
 
-static bool format_c_type_step_step(const TypedType *type, ErrorState *errors, bool *outcome, char *out, size_t out_size)
+bool buffer_line(TextBuffer *buffer, size_t depth, const char *format, ...)
 {
-    if (type == NULL) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (!format_c_type_snprintf(type, out, out_size)) {
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_STRING) {
-        snprintf(out, out_size, "nyx_string_%zu", type->fixed_length);
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        snprintf(out, out_size, "nyx_string");
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
-        snprintf(out, out_size, "nyx_builder");
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_LIST) {
-        snprintf(out, out_size, "nyx_list");
-        do { *outcome = (true); return false; } while (0);
-    }
-    return true;
+    va_list args;
+    bool ok;
+
+    append_indent(buffer, depth);
+    va_start(args, format);
+    ok = buffer_vappendf(buffer, format, args);
+    va_end(args);
+    return ok;
 }
 
-static bool format_c_type_step_format_c_type_step_step(const TypedType *type, ErrorState *errors, bool *outcome, char *out, size_t out_size, size_t type_index)
+const char *checked_user_name(const TypedProgram *program, size_t symbol_index,
+                              char *out, size_t size, ErrorState *errors)
 {
-    if (!format_c_type_step_step(type, errors, outcome, out, out_size)) {
-        return false;
+    const char *name = user_c_name(program, symbol_index, out, size);
+
+    if (name == NULL) {
+        error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
     }
-    if (type->kind == NIPPY_TYPE_FIXED_LIST) {
-        snprintf(out, out_size, "nyx_list_%zu", type_index);
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_SLICE) {
-        snprintf(out, out_size, "nyx_slice");
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_RANGE) {
-        snprintf(out, out_size, "nyx_range_%zu", type_index);
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_RECORD) {
-        snprintf(out, out_size, "nyx_record_%zu", type_index);
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_TABLE) {
-        snprintf(out, out_size, "nyx_table");
-        do { *outcome = (true); return false; } while (0);
-    }
-    if (type->kind == NIPPY_TYPE_ERROR) {
-        snprintf(out, out_size, "nyx_error");
-        do { *outcome = (true); return false; } while (0);
-    }
-    return true;
+    return name;
 }
 
-static bool format_c_type_step(const TypedType *type, ErrorState *errors, char *out, size_t out_size, size_t type_index, const TypedProgram *program, bool *outcome)
-{
-    if (!format_c_type_step_format_c_type_step_step(type, errors, outcome, out, out_size, type_index)) {
-        return true;
-    }
-    if (type->kind == NIPPY_TYPE_STRUCT) {
-        char name_text[USER_NAME_CAPACITY];
-    const char *name = user_c_name(program, type->name_index,
-                                  name_text, sizeof(name_text));
+/* The C type of every kind that does not depend on the particular type. */
+static const char *const plain_c_names[NYX_TYPE_KIND_COUNT] = {
+    [NYX_TYPE_INT8] = "int8_t",
+    [NYX_TYPE_INT16] = "int16_t",
+    [NYX_TYPE_INT32] = "int32_t",
+    [NYX_TYPE_INT64] = "int64_t",
+    [NYX_TYPE_UINT16] = "uint16_t",
+    [NYX_TYPE_UINT32] = "uint32_t",
+    [NYX_TYPE_UINT64] = "uint64_t",
+    [NYX_TYPE_FLOAT32] = "float",
+    [NYX_TYPE_FLOAT64] = "double",
+    [NYX_TYPE_BOOL] = "bool",
+    [NYX_TYPE_NIL] = "nyx_nil",
+    [NYX_TYPE_BYTE] = "uint8_t",
+    [NYX_TYPE_STORE] = "nyx_store *",
+    [NYX_TYPE_HANDLE] = "nyx_handle",
+    [NYX_TYPE_DYNAMIC_STRING] = "nyx_string",
+    [NYX_TYPE_TEXT_BUILDER] = "nyx_builder",
+    [NYX_TYPE_LIST] = "nyx_list",
+    [NYX_TYPE_CHANNEL] = "nyx_chanref",
+    [NYX_TYPE_SLICE] = "nyx_slice",
+    [NYX_TYPE_TABLE] = "nyx_table",
+    [NYX_TYPE_ERROR] = "nyx_error",
+};
 
-        if (!valid_identifier(name)) {
-            error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-            do { *outcome = (false); return true; } while (0);
-        }
-        snprintf(out, out_size, "%s", name);
-        do { *outcome = (true); return true; } while (0);
-    }
-    return false;
+/* The kinds whose C type is numbered: by the type's own index, or by a number
+   it holds. */
+static size_t type_number(const TypedType *type, size_t type_index)
+{
+    (void)type;
+    return type_index;
 }
+
+static size_t string_capacity(const TypedType *type, size_t type_index)
+{
+    (void)type_index;
+    return type->fixed_length;
+}
+
+static size_t signature_number(const TypedType *type, size_t type_index)
+{
+    (void)type_index;
+    return type->signature_index;
+}
+
+static const struct {
+    NyxType kind;
+    const char *format;
+    size_t (*number)(const TypedType *, size_t);
+} numbered_c_names[] = {
+    {NYX_TYPE_STRING, "nyx_string_%zu", string_capacity},
+    {NYX_TYPE_FIXED_LIST, "nyx_list_%zu", type_number},
+    {NYX_TYPE_RANGE, "nyx_range_%zu", type_number},
+    {NYX_TYPE_RECORD, "nyx_record_%zu", type_number},
+    {NYX_TYPE_FUNCTION, "nyx_fun_%zu", signature_number},
+    {NYX_TYPE_UNION, "nyx_sum_%zu", type_number},
+};
 
 bool format_c_type(const TypedProgram *program, size_t type_index,
                           char *out, size_t out_size, ErrorState *errors)
 {
     const TypedType *type = typed_program_type(program, type_index);
+    char name_text[USER_NAME_CAPACITY];
+    const char *name;
+    size_t i;
 
-    {
-        bool outcome;
-
-        if (format_c_type_step(type, errors, out, out_size, type_index, program, &outcome)) {
-            return outcome;
-        }
-    }
-    if (type->kind == NIPPY_TYPE_FUNCTION) {
-        snprintf(out, out_size, "nyx_fun_%zu", type->signature_index);
-        return true;
-    }
-    if (type->kind == NIPPY_TYPE_UNION) {
-        snprintf(out, out_size, "nyx_sum_%zu", type_index);
-        return true;
-    }
-    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-    return false;
-}
-
-static bool format_function_pointer_step(char (*params)[512], const TypedFunctionSignature *signature, size_t *i, const TypedProgram *program, ErrorState *errors, size_t *used)
-{
-    (*params)[0] = '\0';
-    if (signature->parameter_count == 0) {
-        snprintf((*params), sizeof((*params)), "void");
-    } else {
-        for ((*i) = 0; (*i) < signature->parameter_count; (*i)++) {
-            size_t parameter = *(const size_t *)list_get(
-                &program->signature_parameters,
-                signature->first_parameter + (*i));
-            const TypedType *parameter_type = typed_program_type(program,
-                                                                 parameter);
-            char parameter_name[NIPPY_IDENTIFIER_MAX + 32];
-            int written;
-
-            if (parameter_type == NULL ||
-                parameter_type->kind == NIPPY_TYPE_FUNCTION ||
-                !format_c_type(program, parameter, parameter_name,
-                               sizeof(parameter_name), errors)) {
-                return false;
-            }
-            written = snprintf((*params) + (*used), sizeof((*params)) - (*used), "%s%s",
-                               (*i) == 0 ? "" : ", ", parameter_name);
-            if (written < 0 ||
-                (size_t)written >= sizeof((*params)) - (*used)) {
-                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-                return false;
-            }
-            (*used) += (size_t)written;
-        }
-    }
-    return true;
-}
-
-static bool format_function_pointer_step4(const TypedType *type, ErrorState *errors, const TypedFunctionSignature **signature, const TypedProgram *program, char (*return_name)[64], char (*params)[512], size_t *i, size_t *used)
-{
-    if (type == NULL || type->kind != NIPPY_TYPE_FUNCTION ||
-        type->signature_index == TYPED_NO_NODE) {
+    if (type == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    (*signature) = typed_program_signature(program, type->signature_index);
-    if ((*signature) == NULL ||
-        !format_c_type(program, (*signature)->return_type, (*return_name),
-                       sizeof((*return_name)), errors)) {
+    if (plain_c_names[type->kind] != NULL) {
+        snprintf(out, out_size, "%s", plain_c_names[type->kind]);
+        return true;
+    }
+    for (i = 0; i < NYX_COUNT_OF(numbered_c_names); i++) {
+        if (numbered_c_names[i].kind == type->kind) {
+            snprintf(out, out_size, numbered_c_names[i].format,
+                     numbered_c_names[i].number(type, type_index));
+            return true;
+        }
+    }
+    if (type->kind != NYX_TYPE_STRUCT) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    {
-        const TypedType *return_type = typed_program_type(
-            program, (*signature)->return_type);
+    name = checked_user_name(program, type->name_index, name_text,
+                             sizeof(name_text), errors);
+    if (name != NULL) {
+        snprintf(out, out_size, "%s", name);
+    }
+    return name != NULL;
+}
 
-        if (return_type != NULL && return_type->kind == NIPPY_TYPE_FUNCTION) {
+/* A function pointer's return and parameter types may not themselves be
+   function types. */
+static bool format_pointer_part(const TypedProgram *program, size_t type_index,
+                                char *out, size_t size, ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+
+    if (type != NULL && type->kind == NYX_TYPE_FUNCTION) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
+        return false;
+    }
+    return format_c_type(program, type_index, out, size, errors);
+}
+
+/* The parameter types of a function pointer, comma separated. */
+static bool format_pointer_parameters(const TypedProgram *program,
+                                      const TypedFunctionSignature *signature,
+                                      char *params, size_t size,
+                                      ErrorState *errors)
+{
+    size_t used = 0;
+    size_t i;
+
+    snprintf(params, size, "%s", signature->parameter_count == 0 ? "void" : "");
+    for (i = 0; i < signature->parameter_count; i++) {
+        char parameter_name[NYX_IDENTIFIER_MAX + 32];
+        int written;
+
+        if (!format_pointer_part(
+                program,
+                *(const size_t *)list_get(&program->signature_parameters,
+                                          signature->first_parameter + i),
+                parameter_name, sizeof(parameter_name), errors)) {
+            return false;
+        }
+        written = snprintf(params + used, size - used, "%s%s",
+                           i == 0 ? "" : ", ", parameter_name);
+        if ((size_t)written >= size - used) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
             return false;
         }
-    }
-    if (!format_function_pointer_step(params, (*signature), i, program, errors, used)) {
-        return false;
+        used += (size_t)written;
     }
     return true;
 }
@@ -408,17 +369,22 @@ bool format_function_pointer(const TypedProgram *program,
 {
     const TypedType *type = typed_program_type(program, type_index);
     const TypedFunctionSignature *signature;
-    char return_name[NIPPY_IDENTIFIER_MAX + 32];
+    char return_name[NYX_IDENTIFIER_MAX + 32];
     char params[512];
-    size_t used = 0;
-    size_t i;
 
-    if (!format_function_pointer_step4(type, errors, &signature, program, &return_name, &params, &i, &used)) {
+    if (type == NULL || type->kind != NYX_TYPE_FUNCTION) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    if (snprintf(out, out_size, "%s (*%s)(%s)", return_name, name, params) <
-            0 ||
-        strlen(out) >= out_size - 1) {
+    signature = typed_program_signature(program, type->signature_index);
+    if (!format_pointer_part(program, signature->return_type, return_name,
+                             sizeof(return_name), errors) ||
+        !format_pointer_parameters(program, signature, params, sizeof(params),
+                                   errors)) {
+        return false;
+    }
+    if ((size_t)snprintf(out, out_size, "%s (*%s)(%s)", return_name, name,
+                         params) >= out_size - 1) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
@@ -433,7 +399,7 @@ bool fixed_list_element_name(const TypedProgram *program,
 {
     const TypedType *element_type = typed_program_type(program, element);
 
-    if (element_type != NULL && element_type->kind == NIPPY_TYPE_FUNCTION) {
+    if (element_type != NULL && element_type->kind == NYX_TYPE_FUNCTION) {
         if (snprintf(out, out_size, "nyx_list_%zu_elem",
                      list_type_index) < 0 ||
             strlen(out) >= out_size - 1) {
@@ -451,7 +417,7 @@ bool handle_element_type(const TypedProgram *program,
     const TypedType *handle = typed_program_type(program, handle_type_index);
     const size_t *element;
 
-    if (handle == NULL || handle->kind != NIPPY_TYPE_HANDLE ||
+    if (handle == NULL || handle->kind != NYX_TYPE_HANDLE ||
         handle->child_count != 1) {
         return false;
     }
@@ -462,149 +428,6 @@ bool handle_element_type(const TypedProgram *program,
     *out_element = *element;
     return true;
 }
-
-bool types_equivalent(const TypedProgram *program, size_t first, size_t second, unsigned depth);
-
-static bool types_equivalent_step_nippy_type_is_numeric(const TypedType **left, bool *outcome, const TypedType **right, unsigned int depth, const TypedProgram *program)
-{
-    if (nippy_type_is_numeric((*left)->kind) ||
-        (*left)->kind == NIPPY_TYPE_BOOL || (*left)->kind == NIPPY_TYPE_NIL ||
-        (*left)->kind == NIPPY_TYPE_STORE) {
-        do { *outcome = (true); return false; } while (0);
-    }
-    if ((*left)->kind == NIPPY_TYPE_STRUCT) {
-        do { *outcome = ((*left)->name_index == (*right)->name_index); return false; } while (0);
-    }
-    if ((*left)->kind == NIPPY_TYPE_HANDLE) {
-        size_t left_element;
-        size_t right_element;
-
-        if (depth == 0 || (*left)->child_count != 1 ||
-            (*right)->child_count != 1) {
-            do { *outcome = (false); return false; } while (0);
-        }
-        left_element = *(const size_t *)list_get(&program->type_children,
-                                                 (*left)->first_child);
-        right_element = *(const size_t *)list_get(&program->type_children,
-                                                  (*right)->first_child);
-        do { *outcome = (types_equivalent(program, left_element, right_element,
-                                depth - 1)); return false; } while (0);
-    }
-    return true;
-}
-
-static bool types_equivalent_step(size_t first, size_t second, const TypedType **left, const TypedProgram *program, const TypedType **right, unsigned int depth, bool *outcome)
-{
-    if (first == TYPED_NO_NODE || second == TYPED_NO_NODE) {
-        do { *outcome = (false); return true; } while (0);
-    }
-    (*left) = typed_program_type(program, first);
-    (*right) = typed_program_type(program, second);
-    if ((*left) == NULL || (*right) == NULL || (*left)->kind != (*right)->kind) {
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (!types_equivalent_step_nippy_type_is_numeric(left, outcome, right, depth, program)) {
-        return true;
-    }
-    return false;
-}
-
-bool types_equivalent(const TypedProgram *program, size_t first, size_t second, unsigned depth);
-
-static bool types_equivalent_left_signature_left_signature(const TypedType *left, const TypedProgram *program, const TypedType *right, unsigned int depth, bool *outcome2, size_t *i)
-{
-    if (left->kind == NIPPY_TYPE_FUNCTION) {
-        const TypedFunctionSignature *left_signature =
-            typed_program_signature(program, left->signature_index);
-        const TypedFunctionSignature *right_signature =
-            typed_program_signature(program, right->signature_index);
-
-        if (depth == 0 || left_signature == NULL ||
-            right_signature == NULL ||
-            left_signature->parameter_count !=
-                right_signature->parameter_count ||
-            !types_equivalent(program, left_signature->return_type,
-                              right_signature->return_type, depth - 1)) {
-            do { *outcome2 = (false); return false; } while (0);
-        }
-        for ((*i) = 0; (*i) < left_signature->parameter_count; (*i)++) {
-            size_t left_parameter = *(const size_t *)list_get(
-                &program->signature_parameters,
-                left_signature->first_parameter + (*i));
-            size_t right_parameter = *(const size_t *)list_get(
-                &program->signature_parameters,
-                right_signature->first_parameter + (*i));
-
-            if (!types_equivalent(program, left_parameter, right_parameter,
-                                  depth - 1)) {
-                do { *outcome2 = (false); return false; } while (0);
-            }
-        }
-        do { *outcome2 = (true); return false; } while (0);
-    }
-    return true;
-}
-
-static bool types_equivalent_left_signature_left_alternative(const TypedType *left, unsigned int depth, const TypedType *right, bool *outcome2, size_t *i, const TypedProgram *program)
-{
-    if (left->kind == NIPPY_TYPE_UNION) {
-        if (depth == 0 || left->child_count != right->child_count) {
-            do { *outcome2 = (false); return false; } while (0);
-        }
-        for ((*i) = 0; (*i) < left->child_count; (*i)++) {
-            size_t left_alternative = *(const size_t *)list_get(
-                &program->type_children, left->first_child + (*i));
-            size_t right_alternative = *(const size_t *)list_get(
-                &program->type_children, right->first_child + (*i));
-
-            if (!types_equivalent(program, left_alternative,
-                                  right_alternative, depth - 1)) {
-                do { *outcome2 = (false); return false; } while (0);
-            }
-        }
-        do { *outcome2 = (true); return false; } while (0);
-    }
-    return true;
-}
-
-static bool types_equivalent_left_signature(const TypedType *left, const TypedProgram *program, const TypedType *right, unsigned int depth, size_t *i, bool *outcome2)
-{
-    if (!types_equivalent_left_signature_left_signature(left, program, right, depth, outcome2, i)) {
-        return true;
-    }
-    if (!types_equivalent_left_signature_left_alternative(left, depth, right, outcome2, i, program)) {
-        return true;
-    }
-    return false;
-}
-
-bool types_equivalent(const TypedProgram *program, size_t first,
-                             size_t second, unsigned depth)
-{
-    const TypedType *left;
-    const TypedType *right;
-    size_t i;
-
-    if (first == second) {
-        return true;
-    }
-    {
-        bool outcome;
-
-        if (types_equivalent_step(first, second, &left, program, &right, depth, &outcome)) {
-            return outcome;
-        }
-    }
-    {
-        bool outcome2;
-
-        if (types_equivalent_left_signature(left, program, right, depth, &i, &outcome2)) {
-            return outcome2;
-        }
-    }
-    return false;
-}
-
 
 /* Locate the canonical tag of `wanted` inside a union's alternative run. */
 bool find_union_alternative(const TypedProgram *program,
@@ -617,7 +440,7 @@ bool find_union_alternative(const TypedProgram *program,
         size_t alternative = *(const size_t *)list_get(
             &program->type_children, union_type->first_child + i);
 
-        if (types_equivalent(program, alternative, wanted, 16)) {
+        if (typed_types_equivalent(program, alternative, wanted, 16)) {
             *out_tag = i;
             return true;
         }
@@ -685,22 +508,26 @@ bool emit_store_reference(const TypedProgram *program, const TypedNode *node,
     return buffer_appendf(buffer, "&nyx_stores[%zu]", node->store_id);
 }
 
+/* Kinds a braced initialiser cannot stand for directly: they are C structs. */
 bool type_is_c_aggregate(const TypedProgram *program, size_t type_index)
 {
-    const TypedType *type = typed_program_type(program, type_index);
+    static const NyxType aggregates[] = {
+        NYX_TYPE_STRUCT,      NYX_TYPE_HANDLE,     NYX_TYPE_STRING,
+        NYX_TYPE_DYNAMIC_STRING, NYX_TYPE_TEXT_BUILDER, NYX_TYPE_LIST,
+        NYX_TYPE_FIXED_LIST,  NYX_TYPE_SLICE,      NYX_TYPE_RECORD,
+        NYX_TYPE_TABLE,       NYX_TYPE_UNION,      NYX_TYPE_ERROR,
+    };
+    NyxType kind = typed_program_type(program, type_index) == NULL
+                       ? NYX_TYPE_KIND_COUNT
+                       : typed_program_type(program, type_index)->kind;
+    size_t i;
 
-    return type != NULL && (type->kind == NIPPY_TYPE_STRUCT ||
-                            type->kind == NIPPY_TYPE_HANDLE ||
-                            type->kind == NIPPY_TYPE_STRING ||
-                            type->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-                            type->kind == NIPPY_TYPE_TEXT_BUILDER ||
-                            type->kind == NIPPY_TYPE_LIST ||
-                            type->kind == NIPPY_TYPE_FIXED_LIST ||
-                            type->kind == NIPPY_TYPE_SLICE ||
-                            type->kind == NIPPY_TYPE_RECORD ||
-                            type->kind == NIPPY_TYPE_TABLE ||
-                            type->kind == NIPPY_TYPE_UNION ||
-                            type->kind == NIPPY_TYPE_ERROR);
+    for (i = 0; i < NYX_COUNT_OF(aggregates); i++) {
+        if (aggregates[i] == kind) {
+            return true;
+        }
+    }
+    return false;
 }
 
 
@@ -709,9 +536,7 @@ bool append_indent(TextBuffer *source, size_t depth)
     size_t i;
 
     for (i = 0; i < depth; i++) {
-        if (!buffer_append(source, "    ")) {
-            return false;
-        }
+        buffer_append(source, "    ");
     }
     return true;
 }
@@ -727,108 +552,86 @@ bool map_key_names(const TypedProgram *program, size_t key_type,
            format_c_type(program, value_type, value_name, value_size, errors);
 }
 
-static bool append_optional_union_union_alternative_buffer_append_alternative(size_t *i, const TypedType *element_type, const TypedProgram *program, const TypedType *union_type, bool *outcome, TextBuffer *body, const char *result_name, const char *union_name, const char *value_name)
+/* A union element widened into a union that also holds Nil: each alternative
+   keeps its value and takes its tag in the wider union. */
+static bool append_widened_union(TextBuffer *body, const TypedProgram *program,
+                                 const TypedType *union_type,
+                                 const TypedType *element_type,
+                                 const char *union_name,
+                                 const char *value_name,
+                                 const char *result_name)
 {
-    for ((*i) = 0; (*i) < element_type->child_count; (*i)++) {
-        const TypedType *alternative = union_alternative_type(
-            program, element_type, (*i));
+    size_t i;
+
+    buffer_appendf(body, "    switch (%s.tag) {\n", value_name);
+    for (i = 0; i < element_type->child_count; i++) {
+        const TypedType *alternative =
+            union_alternative_type(program, element_type, i);
         size_t result_tag;
 
-        if (alternative == NULL ||
-            alternative->kind == NIPPY_TYPE_NIL ||
-            !find_union_alternative(
-                program, union_type,
-                *(const size_t *)list_get(&program->type_children,
-                                          element_type->first_child + (*i)),
-                &result_tag)) {
-            do { *outcome = (false); return false; } while (0);
+        if (alternative == NULL) {
+            return false;
         }
-        if (!buffer_appendf(
-                body,
-                "    case %zu:\n"
-                "        %s = (%s){ .tag = %zu, .value.v%zu = "
-                "%s.value.v%zu };\n"
-                "        break;\n",
-                (*i), result_name, union_name, result_tag, result_tag,
-                value_name, (*i))) {
-            do { *outcome = (false); return false; } while (0);
+        if (alternative->kind == NYX_TYPE_NIL) {
+            return false;
         }
+        if (!find_union_alternative(
+            program, union_type,
+            *(const size_t *)list_get(&program->type_children,
+                                      element_type->first_child + i),
+            &result_tag)) {
+            return false;
+        }
+        buffer_appendf(
+            body,
+            "    case %zu:\n"
+            "        %s = (%s){ .tag = %zu, .value.v%zu = "
+            "%s.value.v%zu };\n"
+            "        break;\n",
+            i, result_name, union_name, result_tag, result_tag,
+            value_name, i);
     }
-    do { *outcome = (buffer_append(body, "    }\n")); return false; } while (0);
-    return true;
+    return buffer_append(body, "    }\n");
 }
 
-static bool append_optional_union_union_alternative_buffer_append(TextBuffer *body, bool *outcome, const char *value_name, size_t *i, const TypedType *element_type, const TypedProgram *program, const TypedType *union_type, const char *result_name, const char *union_name)
+/* The tag of Nil in `union_type`; an optional result must have one. */
+bool find_nil_tag(const TypedProgram *program, GeneratorContext *gen, const TypedType *union_type,
+                  size_t *out_tag)
 {
-    if (!buffer_append(body, "    switch (")) {
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (!buffer_appendf(body, "%s.tag) {\n", value_name)) {
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (!append_optional_union_union_alternative_buffer_append_alternative(i, element_type, program, union_type, outcome, body, result_name, union_name, value_name)) {
-        return false;
-    }
-    return true;
+    size_t nil = analysis_nil_type(gen->analysis);
+
+    return nil != TYPED_NO_NODE &&
+           find_union_alternative(program, union_type, nil, out_tag);
 }
 
-static bool append_optional_union_union_alternative(bool element_is_union, const TypedProgram *program, const TypedType *union_type, size_t element_index, size_t *element_tag, size_t nil_tag, bool same_result, TextBuffer *body, const char *value_name, size_t *i, const TypedType *element_type, const char *result_name, const char *union_name, bool *outcome)
-{
-    if (!element_is_union &&
-        !find_union_alternative(program, union_type, element_index,
-                                element_tag)) {
-        do { *outcome = (false); return true; } while (0);
-    }
-    (void)nil_tag;
-    if (element_is_union && !same_result) {
-        if (!append_optional_union_union_alternative_buffer_append(body, outcome, value_name, i, element_type, program, union_type, result_name, union_name)) {
-        return true;
-    }
-    }
-    if (element_is_union) {
-        do { *outcome = (buffer_appendf(body, "    %s = %s;\n", result_name, value_name)); return true; } while (0);
-    }
-    return false;
-}
-
-bool append_optional_union(TextBuffer *body, const TypedProgram *program,
+/* Wraps `value_name`, a value of the element type, into the optional union
+   `union_name` and assigns it to `result_name`. */
+bool append_optional_union(GeneratorContext *gen, TextBuffer *body, const TypedProgram *program,
                            size_t union_index, size_t element_index,
                            const char *union_name, const char *value_name,
                            const char *result_name)
 {
     const TypedType *union_type = typed_program_type(program, union_index);
     const TypedType *element_type = typed_program_type(program, element_index);
-    size_t nil_type = TYPED_NO_NODE;
+    size_t element_tag;
     size_t nil_tag;
-    size_t element_tag = TYPED_NO_NODE;
-    bool element_is_union;
-    bool same_result;
-    size_t i;
 
     if (union_type == NULL || element_type == NULL ||
-        union_type->kind != NIPPY_TYPE_UNION) {
+        union_type->kind != NYX_TYPE_UNION ||
+        !find_nil_tag(program, gen, union_type, &nil_tag)) {
         return false;
     }
-    for (i = 0; i < program->types.length; i++) {
-        const TypedType *candidate = typed_program_type(program, i);
-
-        if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
-            nil_type = i;
-            break;
+    if (element_type->kind == NYX_TYPE_UNION) {
+        if (typed_types_equivalent(program, element_index, union_index, 16)) {
+            return buffer_appendf(body, "    %s = %s;\n", result_name,
+                                  value_name);
         }
+        return append_widened_union(body, program, union_type, element_type,
+                                    union_name, value_name, result_name);
     }
-    if (nil_type == TYPED_NO_NODE ||
-        !find_union_alternative(program, union_type, nil_type, &nil_tag)) {
+    if (!find_union_alternative(program, union_type, element_index,
+                                &element_tag)) {
         return false;
-    }
-    element_is_union = element_type->kind == NIPPY_TYPE_UNION;
-    same_result = types_equivalent(program, element_index, union_index, 16);
-    {
-        bool outcome;
-
-        if (append_optional_union_union_alternative(element_is_union, program, union_type, element_index, &element_tag, nil_tag, same_result, body, value_name, &i, element_type, result_name, union_name, &outcome)) {
-            return outcome;
-        }
     }
     return buffer_appendf(body,
                           "    %s = (%s){ .tag = %zu, .value.v%zu = %s };\n",
@@ -836,71 +639,46 @@ bool append_optional_union(TextBuffer *body, const TypedProgram *program,
                           value_name);
 }
 
-static bool typed_calls_name_depth(const TypedProgram *program,
-                                   size_t node_index, size_t symbol_index,
-                                   unsigned depth, unsigned char *visited)
+
+/* The C that traps a handle used after its Store's scope ended. A Store's
+   generation changes only when a scope or a parallel pool is released, so in a
+   program with neither the comparison can never fire and is not emitted. */
+bool append_generation_check(TextBuffer *source, GeneratorContext *gen,
+                             const char *store_generation,
+                             const char *handle_generation, const char *fail)
 {
-    const TypedNode *node;
-    size_t i;
-
-    if (node_index >= program->nodes.length || depth == 0 ||
-        visited[node_index]) {
-        return false;
-    }
-    visited[node_index] = 1;
-    node = typed_program_node(program, node_index);
-    if (node == NULL) {
-        return false;
-    }
-    if (node->kind == TYPED_FUNCTION_CALL &&
-        node->name_index == symbol_index) {
+    if (!analysis_generations_vary(gen->analysis)) {
         return true;
     }
-    if (node->left_child != TYPED_NO_NODE &&
-        typed_calls_name_depth(program, node->left_child, symbol_index,
-                               depth - 1, visited)) {
-        return true;
-    }
-    if (node->right_child != TYPED_NO_NODE &&
-        typed_calls_name_depth(program, node->right_child, symbol_index,
-                               depth - 1, visited)) {
-        return true;
-    }
-    if (node->children_count != 0 &&
-        (node->children_start >= program->children.length ||
-         node->children_count >
-             program->children.length - node->children_start)) {
-        return false;
-    }
-    for (i = 0; i < node->children_count; i++) {
-        size_t child = *(const size_t *)list_get(
-            &program->children, node->children_start + i);
-
-        if (typed_calls_name_depth(program, child, symbol_index, depth - 1,
-                                   visited)) {
-            return true;
-        }
-    }
-    return false;
+    return buffer_appendf(source,
+                          "    if (%s != %s) {\n"
+                          "        %s(\"" MESSAGE_RUNTIME_STALE_HANDLE
+                          "\", file, line, column, pos);\n"
+                          "    }\n",
+                          store_generation, handle_generation, fail);
 }
 
-
-bool typed_calls_name(const TypedProgram *program, size_t node_index,
-                      size_t symbol_index)
+void node_merge_init(NodeMerge *merge, const size_t *a, size_t a_count,
+                     const size_t *b, size_t b_count)
 {
-    unsigned char *visited;
-    bool result;
+    merge->a = a;
+    merge->b = b;
+    merge->a_count = a_count;
+    merge->b_count = b_count;
+    merge->a_next = 0;
+    merge->b_next = 0;
+}
 
-    if (program->nodes.length == 0) {
+bool node_merge_next(NodeMerge *merge, size_t *index)
+{
+    bool take_a;
+
+    if (merge->a_next >= merge->a_count && merge->b_next >= merge->b_count) {
         return false;
     }
-    visited = nippy_malloc(program->nodes.length);
-    if (visited == NULL) {
-        return false;
-    }
-    memset(visited, 0, program->nodes.length);
-    result = typed_calls_name_depth(program, node_index, symbol_index, 1024,
-                                    visited);
-    free(visited);
-    return result;
+    take_a = merge->b_next >= merge->b_count ||
+             (merge->a_next < merge->a_count &&
+              merge->a[merge->a_next] < merge->b[merge->b_next]);
+    *index = take_a ? merge->a[merge->a_next++] : merge->b[merge->b_next++];
+    return true;
 }

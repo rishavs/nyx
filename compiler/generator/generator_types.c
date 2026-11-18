@@ -1,30 +1,5 @@
 #include "generator_internal.h"
 
-size_t find_struct_declaration(const TypedProgram *program,
-                                      const TypedType *type)
-{
-    size_t i;
-
-    if (type->declaration_node != TYPED_NO_NODE) {
-        const TypedNode *node =
-            typed_program_node(program, type->declaration_node);
-
-        if (node != NULL && node->kind == TYPED_TYPE_DECLARATION) {
-            return type->declaration_node;
-        }
-    }
-    for (i = 0; i < program->roots.length; i++) {
-        size_t root = *(const size_t *)list_get(&program->roots, i);
-        const TypedNode *node = typed_program_node(program, root);
-
-        if (node != NULL && node->kind == TYPED_TYPE_DECLARATION &&
-            node->name_index == type->name_index) {
-            return root;
-        }
-    }
-    return TYPED_NO_NODE;
-}
-
 bool struct_emitted_before(const TypedProgram *program, size_t index,
                                   size_t declaration_node, size_t name_index)
 {
@@ -33,14 +8,9 @@ bool struct_emitted_before(const TypedProgram *program, size_t index,
     for (i = 0; i < index; i++) {
         const TypedType *earlier = typed_program_type(program, i);
 
-        if (earlier == NULL || earlier->kind != NIPPY_TYPE_STRUCT) {
-            continue;
-        }
-        if (earlier->name_index == name_index) {
-            return true;
-        }
-        if (declaration_node != TYPED_NO_NODE &&
-            earlier->declaration_node == declaration_node) {
+        if (earlier->kind == NYX_TYPE_STRUCT &&
+            (earlier->name_index == name_index ||
+             earlier->declaration_node == declaration_node)) {
             return true;
         }
     }
@@ -50,19 +20,16 @@ bool struct_emitted_before(const TypedProgram *program, size_t index,
 
 static bool emit_struct_type_buffer_appendf(TextBuffer *header, const TypedNode *node, const char *effective_source, ErrorState *errors, size_t *i, const TypedProgram *program)
 {
-    if (!buffer_appendf(header, "#line %zu \"%s\"\n", node->pos.line,
-                        effective_source) ||
-        !buffer_append(header, "typedef struct {\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(header, "#line %zu \"%s\"\n", node->pos.line,
+                    effective_source);
+    buffer_append(header, "typedef struct {\n");
     for ((*i) = 0; (*i) < node->children_count; (*i)++) {
         size_t child = *(const size_t *)list_get(&program->children,
                                                  node->children_start + (*i));
         const TypedNode *field = typed_program_node(program, child);
         char field_text[USER_NAME_CAPACITY];
         const char *field_name;
-        char field_type_name[NIPPY_IDENTIFIER_MAX + 32];
+        char field_type_name[NYX_IDENTIFIER_MAX + 32];
 
         if (field == NULL || field->kind != TYPED_FIELD) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FIELD);
@@ -78,11 +45,8 @@ static bool emit_struct_type_buffer_appendf(TextBuffer *header, const TypedNode 
             error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
             return false;
         }
-        if (!buffer_appendf(header, "    %s %s;\n", field_type_name,
-                            field_name)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(header, "    %s %s;\n", field_type_name,
+                        field_name);
     }
     return true;
 }
@@ -110,10 +74,7 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
     if (!emit_struct_type_buffer_appendf(header, node, effective_source, errors, &i, program)) {
         return false;
     }
-    if (!buffer_appendf(header, "} %s;\n\n", name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(header, "} %s;\n\n", name);
     return true;
 }
 
@@ -122,31 +83,31 @@ static bool emit_union_type_alternative(size_t *i, const TypedType *type, const 
     for ((*i) = 0; (*i) < type->child_count; (*i)++) {
         const TypedType *alternative =
             union_alternative_type(program, type, (*i));
-        char alternative_name[NIPPY_IDENTIFIER_MAX + 32];
+        char alternative_name[NYX_IDENTIFIER_MAX + 32];
 
         if (alternative == NULL) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
             return false;
         }
-        if (alternative->kind == NIPPY_TYPE_NIL) {
+        if (alternative->kind == NYX_TYPE_NIL) {
             continue;
         }
         {
             size_t alternative_index = *(const size_t *)list_get(
                 &program->type_children, type->first_child + (*i));
 
-            if (alternative->kind == NIPPY_TYPE_FUNCTION) {
+            if (alternative->kind == NYX_TYPE_FUNCTION) {
                 char pointer_name[256];
                 char field_name[32];
 
                 snprintf(field_name, sizeof(field_name), "v%zu", (*i));
                 if (!format_function_pointer(
-                        program, alternative_index, field_name,
-                        pointer_name, sizeof(pointer_name), errors) ||
-                    !buffer_appendf(header, "        %s;\n",
-                                    pointer_name)) {
+                    program, alternative_index, field_name,
+                    pointer_name, sizeof(pointer_name), errors)) {
                     return false;
                 }
+                buffer_appendf(header, "        %s;\n",
+                                pointer_name);
             } else if (!format_c_type(program, alternative_index,
                                       alternative_name,
                                       sizeof(alternative_name), errors) ||
@@ -172,26 +133,17 @@ static bool emit_union_type_payload(const TypedType *type, const TypedProgram *p
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
             return false;
         }
-        if (alternative->kind != NIPPY_TYPE_NIL) {
+        if (alternative->kind != NYX_TYPE_NIL) {
             has_payload = true;
         }
     }
-    if (!buffer_append(header, "typedef struct {\n    uint32_t tag;\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_append(header, "typedef struct {\n    uint32_t tag;\n");
     if (has_payload) {
-        if (!buffer_append(header, "    union {\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_append(header, "    union {\n");
         if (!emit_union_type_alternative(&i, type, program, errors, header)) {
         return false;
     }
-        if (!buffer_append(header, "    } value;\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_append(header, "    } value;\n");
     }
     return true;
 }
@@ -203,10 +155,7 @@ bool emit_union_type(const TypedProgram *program, const TypedType *type,
     if (!emit_union_type_payload(type, program, errors, header)) {
         return false;
     }
-    if (!buffer_appendf(header, "} nyx_sum_%zu;\n\n", type_index)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(header, "} nyx_sum_%zu;\n\n", type_index);
     return true;
 }
 
@@ -215,9 +164,9 @@ static bool emit_types_in_order_header(const TypedType *type, ErrorState *errors
     const size_t *header_type;
     const size_t *description_type;
     const size_t *filename_type;
-    char header_name[NIPPY_IDENTIFIER_MAX + 32];
-    char description_name[NIPPY_IDENTIFIER_MAX + 32];
-    char filename_name[NIPPY_IDENTIFIER_MAX + 32];
+    char header_name[NYX_IDENTIFIER_MAX + 32];
+    char description_name[NYX_IDENTIFIER_MAX + 32];
+    char filename_name[NYX_IDENTIFIER_MAX + 32];
 
     if (type->child_count != 3) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
@@ -242,27 +191,24 @@ static bool emit_types_in_order_header(const TypedType *type, ErrorState *errors
         }
         return false;
     }
-    if (!buffer_appendf(
-            header,
-            "typedef struct {\n"
-            "    %s header;\n"
-            "    %s description;\n"
-            "    %s filename;\n"
-            "    int32_t line;\n"
-            "    int32_t col;\n"
-            "    int32_t pos;\n"
-            "} nyx_error;\n\n",
-            header_name, description_name, filename_name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(
+        header,
+        "typedef struct {\n"
+        "    %s header;\n"
+        "    %s description;\n"
+        "    %s filename;\n"
+        "    int32_t line;\n"
+        "    int32_t col;\n"
+        "    int32_t pos;\n"
+        "} nyx_error;\n\n",
+        header_name, description_name, filename_name);
     return true;
 }
 
 static bool emit_types_in_order_element_name(const TypedType *type, ErrorState *errors, const TypedProgram *program, size_t i, TextBuffer *header)
 {
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
-    char list_name[NIPPY_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    char list_name[NYX_IDENTIFIER_MAX + 32];
     size_t element;
     size_t capacity = type->fixed_length;
 
@@ -282,70 +228,62 @@ static bool emit_types_in_order_element_name(const TypedType *type, ErrorState *
                                                            element);
 
         if (element_type != NULL &&
-            element_type->kind == NIPPY_TYPE_FUNCTION) {
+            element_type->kind == NYX_TYPE_FUNCTION) {
             char pointer_name[256];
 
             if (!format_function_pointer(program, element,
-                                         element_name, pointer_name,
-                                         sizeof(pointer_name),
-                                         errors) ||
-                !buffer_appendf(header, "typedef %s;\n\n",
-                                pointer_name)) {
+                                     element_name, pointer_name,
+                                     sizeof(pointer_name),
+                                     errors)) {
                 return false;
             }
+            buffer_appendf(header, "typedef %s;\n\n",
+                            pointer_name);
         }
     }
-    if (!buffer_appendf(
-            header,
-            "typedef struct {\n"
-            "    %s data[%zu];\n"
-            "    uint32_t length;\n"
-            "} %s;\n\n",
-            element_name, capacity == 0 ? (size_t)1 : capacity,
-            list_name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(
+        header,
+        "typedef struct {\n"
+        "    %s data[%zu];\n"
+        "    uint32_t length;\n"
+        "} %s;\n\n",
+        element_name, capacity == 0 ? (size_t)1 : capacity,
+        list_name);
     return true;
 }
 
+/* A String of this capacity is defined once, however many types name it. */
 static bool emit_types_in_order_already(size_t i, const TypedProgram *program, const TypedType *type, TextBuffer *header, ErrorState *errors)
 {
-    bool already = false;
     size_t j;
 
+    (void)errors;
     for (j = 0; j < i; j++) {
         const TypedType *earlier = typed_program_type(program, j);
 
-        if (earlier != NULL && earlier->kind == NIPPY_TYPE_STRING &&
+        if (earlier->kind == NYX_TYPE_STRING &&
             earlier->fixed_length == type->fixed_length) {
-            already = true;
-            break;
+            return true;
         }
     }
-    if (!already &&
-        (!buffer_appendf(
-             header,
-             "typedef struct {\n"
-             "    uint8_t data[%zu];\n"
-             "    uint32_t length;\n"
-             "} nyx_string_%zu;\n\n",
-             type->fixed_length + 1, type->fixed_length) ||
-         !buffer_appendf(
-             header,
-             "static inline uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
-             "int32_t i, const char *file, size_t line, size_t column, size_t offset);\n\n",
-             type->fixed_length, type->fixed_length))) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(header,
+                   "typedef struct {\n"
+                   "    uint8_t data[%zu];\n"
+                   "    uint32_t length;\n"
+                   "} nyx_string_%zu;\n\n",
+                   type->fixed_length + 1, type->fixed_length);
+    buffer_appendf(header,
+                   "static inline uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
+                   "int32_t i, const char *file, size_t line, size_t column, "
+                   "size_t offset);\n\n",
+                   type->fixed_length, type->fixed_length);
     return true;
 }
 
 static bool emit_types_in_order_key_name(const TypedProgram *program, const TypedType *type, ErrorState *errors, TextBuffer *header, size_t i)
 {
-    char key_name[NIPPY_IDENTIFIER_MAX + 32];
-    char value_name[NIPPY_IDENTIFIER_MAX + 32];
+    char key_name[NYX_IDENTIFIER_MAX + 32];
+    char value_name[NYX_IDENTIFIER_MAX + 32];
     size_t key_type = *(const size_t *)list_get(
         &program->type_children, type->first_child);
     size_t value_type = *(const size_t *)list_get(
@@ -355,23 +293,22 @@ static bool emit_types_in_order_key_name(const TypedProgram *program, const Type
                          : type->fixed_length + 1;
 
     if (!format_c_type(program, key_type, key_name,
-                       sizeof(key_name), errors) ||
-        !format_c_type(program, value_type, value_name,
-                       sizeof(value_name), errors) ||
-        !buffer_appendf(
-            header,
-            "typedef struct {\n"
-            "    %s keys[%zu];\n"
-            "    %s values[%zu];\n"
-            "    uint8_t states[%zu];\n"
-            "    size_t length;\n"
-            "} nyx_record_%zu;\n\n",
-            key_name, buckets, value_name, buckets, buckets, i)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+                   sizeof(key_name), errors)) {
         return false;
     }
+    if (!format_c_type(program, value_type, value_name,
+                   sizeof(value_name), errors)) {
+        return false;
+    }
+    buffer_appendf(
+        header,
+        "typedef struct {\n"
+        "    %s keys[%zu];\n"
+        "    %s values[%zu];\n"
+        "    uint8_t states[%zu];\n"
+        "    size_t length;\n"
+        "} nyx_record_%zu;\n\n",
+        key_name, buckets, value_name, buckets, buckets, i);
     return true;
 }
 
@@ -379,335 +316,235 @@ static bool emit_types_in_order_element(const TypedProgram *program, const Typed
 {
     size_t element = *(const size_t *)list_get(&program->type_children,
                                                 type->first_child);
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
     if (!format_c_type(program, element, element_name, sizeof(element_name),
-                       errors) ||
-        !buffer_appendf(header,
-            "typedef struct { %s start, end; int64_t step; } nyx_range_%zu;\n\n",
-            element_name, i)) {
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                   errors)) {
         return false;
     }
+    buffer_appendf(header,
+        "typedef struct { %s start, end; int64_t step; } nyx_range_%zu;\n\n",
+        element_name, i);
     return true;
 }
+
+/* How the C for one kind of type is written: fixed text written once however
+   many types of the kind there are, or a function that writes it for each. */
+typedef bool (*TypeWriter)(const TypedProgram *program, const TypedType *type,
+                           size_t index, const char *effective_source,
+                           TextBuffer *header, ErrorState *errors);
+
+typedef struct {
+    const char *once;
+    TypeWriter write;
+} TypeRule;
+
+static bool write_range(const TypedProgram *program, const TypedType *type,
+                        size_t index, const char *effective_source,
+                        TextBuffer *header, ErrorState *errors)
+{
+    (void)effective_source;
+    return emit_types_in_order_element(program, type, errors, header, index);
+}
+
+static bool write_struct(const TypedProgram *program, const TypedType *type,
+                         size_t index, const char *effective_source,
+                         TextBuffer *header, ErrorState *errors)
+{
+    size_t declaration = type->declaration_node;
+
+    /* Instantiations of one generic struct share a declaration. */
+    if (struct_emitted_before(program, index, declaration, type->name_index)) {
+        return true;
+    }
+    return emit_struct_type(program, type, declaration, effective_source,
+                            header, errors);
+}
+
+static bool write_union(const TypedProgram *program, const TypedType *type,
+                        size_t index, const char *effective_source,
+                        TextBuffer *header, ErrorState *errors)
+{
+    (void)effective_source;
+    return emit_union_type(program, type, index, header, errors);
+}
+
+static bool write_record(const TypedProgram *program, const TypedType *type,
+                         size_t index, const char *effective_source,
+                         TextBuffer *header, ErrorState *errors)
+{
+    (void)effective_source;
+    return emit_types_in_order_key_name(program, type, errors, header, index);
+}
+
+static bool write_fixed_list(const TypedProgram *program, const TypedType *type,
+                             size_t index, const char *effective_source,
+                             TextBuffer *header, ErrorState *errors)
+{
+    (void)effective_source;
+    return emit_types_in_order_element_name(type, errors, program, index,
+                                            header);
+}
+
+static bool write_string(const TypedProgram *program, const TypedType *type,
+                         size_t index, const char *effective_source,
+                         TextBuffer *header, ErrorState *errors)
+{
+    (void)effective_source;
+    return emit_types_in_order_already(index, program, type, header, errors);
+}
+
+static bool write_error(const TypedProgram *program, const TypedType *type,
+                        size_t index, const char *effective_source,
+                        TextBuffer *header, ErrorState *errors)
+{
+    (void)index;
+    (void)effective_source;
+    return emit_types_in_order_header(type, errors, program, header);
+}
+
+/* A handle to a collection or channel is the same record for every element
+   type, so it is written once. */
+#define STORE_HANDLE_STRUCT(name)                                             \
+    "typedef struct {\n"                                                      \
+    "    nyx_store *store;\n"                                                 \
+    "    size_t offset;\n"                                                    \
+    "    uint64_t generation;\n"                                              \
+    "} " name ";\n\n"
+
+static const TypeRule type_rules[NYX_TYPE_KIND_COUNT] = {
+    [NYX_TYPE_NIL] = {.once = "typedef uint8_t nyx_nil;\n\n"},
+    [NYX_TYPE_DYNAMIC_STRING] = {.once =
+        "typedef struct {\n"
+        "    const uint8_t *static_data;\n"
+        "    nyx_store *store;\n"
+        "    size_t offset;\n"
+        "    size_t length;\n"
+        "    uint64_t generation;\n"
+        "} nyx_string;\n\n"},
+    [NYX_TYPE_TEXT_BUILDER] = {.once = STORE_HANDLE_STRUCT("nyx_builder")},
+    [NYX_TYPE_LIST] = {.once = STORE_HANDLE_STRUCT("nyx_list")},
+    [NYX_TYPE_CHANNEL] = {.once = STORE_HANDLE_STRUCT("nyx_chanref")},
+    [NYX_TYPE_TABLE] = {.once = STORE_HANDLE_STRUCT("nyx_table")},
+    [NYX_TYPE_SLICE] = {.once =
+        "typedef struct {\n"
+        "    nyx_store *store;\n"
+        "    size_t offset; /* the parent list's state */\n"
+        "    size_t start;  /* index of the first element */\n"
+        "    size_t length;\n"
+        "    uint64_t generation;\n"
+        "} nyx_slice;\n\n"},
+    [NYX_TYPE_RANGE] = {.write = write_range},
+    [NYX_TYPE_STRUCT] = {.write = write_struct},
+    [NYX_TYPE_UNION] = {.write = write_union},
+    [NYX_TYPE_RECORD] = {.write = write_record},
+    [NYX_TYPE_FIXED_LIST] = {.write = write_fixed_list},
+    [NYX_TYPE_STRING] = {.write = write_string},
+    [NYX_TYPE_ERROR] = {.write = write_error}
+};
 
 static bool emit_types_in_order(const TypedProgram *program,
                                 const char *effective_source,
                                 TextBuffer *header, ErrorState *errors,
                                 const List *order)
 {
-    bool emitted_nil = false;
-    bool table_emitted = false;
-    bool list_emitted = false, slice_emitted = false;
-    size_t i, order_index;
+    bool written[NYX_TYPE_KIND_COUNT] = {false};
+    size_t position;
 
-    for (order_index = 0; order_index < order->length; order_index++) {
-        i = *(const size_t *)list_get(order, order_index);
-        const TypedType *type = typed_program_type(program, i);
+    for (position = 0; position < order->length; position++) {
+        size_t index = *(const size_t *)list_get(order, position);
+        const TypedType *type = typed_program_type(program, index);
+        const TypeRule *rule = &type_rules[type->kind];
 
-        if (type == NULL || type->kind == NIPPY_TYPE_UNKNOWN) {
+        if (type->kind == NYX_TYPE_UNKNOWN) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
             return false;
         }
-        if (type->kind == NIPPY_TYPE_NIL) {
-            if (!emitted_nil) {
-                if (!buffer_append(header,
-                                   "typedef uint8_t nyx_nil;\n\n")) {
-                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                    return false;
-                }
-                emitted_nil = true;
+        if (rule->once != NULL) {
+            if (!written[type->kind]) {
+                buffer_append(header, rule->once);
             }
-        } else if (type->kind == NIPPY_TYPE_RANGE) {
-            if (!emit_types_in_order_element(program, type, errors, header, i)) {
-        return false;
-    }
-        } else if (type->kind == NIPPY_TYPE_STRUCT) {
-            size_t declaration_node = find_struct_declaration(program, type);
-
-            if (declaration_node == TYPED_NO_NODE) {
-                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-                return false;
-            }
-            if (struct_emitted_before(program, i, declaration_node,
-                                      type->name_index)) {
-                continue;
-            }
-            if (!emit_struct_type(program, type, declaration_node,
-                                  effective_source, header, errors)) {
-                return false;
-            }
-        } else if (type->kind == NIPPY_TYPE_UNION) {
-            if (!emit_union_type(program, type, i, header, errors)) {
-                return false;
-            }
-        } else if (type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            if (!buffer_append(
-                    header,
-                    "typedef struct {\n"
-                    "    const uint8_t *static_data;\n"
-                    "    nyx_store *store;\n"
-                    "    size_t offset;\n"
-                    "    size_t length;\n"
-                    "    uint64_t generation;\n"
-                    "} nyx_string;\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-        } else if (type->kind == NIPPY_TYPE_TEXT_BUILDER) {
-            if (!buffer_append(
-                    header,
-                    "typedef struct {\n"
-                    "    nyx_store *store;\n"
-                    "    size_t offset;\n"
-                    "    uint64_t generation;\n"
-                    "} nyx_builder;\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-        } else if (type->kind == NIPPY_TYPE_LIST) {
-            if (!list_emitted &&
-                !buffer_append(
-                    header,
-                    "typedef struct {\n"
-                    "    nyx_store *store;\n"
-                    "    size_t offset;\n"
-                    "    uint64_t generation;\n"
-                    "} nyx_list;\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-            list_emitted = true;
-        } else if (type->kind == NIPPY_TYPE_RECORD) {
-            if (!emit_types_in_order_key_name(program, type, errors, header, i)) {
-        return false;
-    }
-        } else if (type->kind == NIPPY_TYPE_TABLE) {
-            if (!table_emitted &&
-                !buffer_append(
-                    header,
-                    "typedef struct {\n"
-                    "    nyx_store *store;\n"
-                    "    size_t offset;\n"
-                    "    uint64_t generation;\n"
-                    "} nyx_table;\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-            table_emitted = true;
-        } else if (type->kind == NIPPY_TYPE_SLICE) {
-            if (!slice_emitted &&
-                !buffer_append(
-                    header,
-                    "typedef struct {\n"
-                    "    nyx_store *store;\n"
-                    "    size_t offset; /* the parent list's state */\n"
-                    "    size_t start;  /* index of the first element */\n"
-                    "    size_t length;\n"
-                    "    uint64_t generation;\n"
-                    "} nyx_slice;\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-            slice_emitted = true;
-        } else if (type->kind == NIPPY_TYPE_FIXED_LIST) {
-            if (!emit_types_in_order_element_name(type, errors, program, i, header)) {
-        return false;
-    }
-        } else if (type->kind == NIPPY_TYPE_STRING) {
-            if (!emit_types_in_order_already(i, program, type, header, errors)) {
-        return false;
-    }
-        } else if (type->kind == NIPPY_TYPE_ERROR) {
-            if (!emit_types_in_order_header(type, errors, program, header)) {
-        return false;
-    }
+            written[type->kind] = true;
+        } else if (rule->write != NULL &&
+                   !rule->write(program, type, index, effective_source, header,
+                                errors)) {
+            return false;
         }
     }
     return true;
 }
 
 
-typedef struct {
-    size_t index;
-    size_t next;
-} TypeOrderFrame;
-
-static bool type_order_dependency(const TypedProgram *program, size_t index,
-                                  size_t at, size_t *dependency, bool *found)
-{
-    const TypedType *type = typed_program_type(program, index);
-    *found = false;
-    if (type == NULL) return false;
-    if (type->kind == NIPPY_TYPE_STRUCT) {
-        const TypedNode *decl = typed_program_node(program, type->declaration_node);
-        const TypedNode *field;
-        size_t field_index;
-        if (decl == NULL) return false;
-        if (at >= decl->children_count) return true;
-        field_index = *(const size_t *)list_get(&program->children,
-                                                decl->children_start + at);
-        field = typed_program_node(program, field_index);
-        if (field == NULL) return false;
-        *dependency = field->type_index;
-    } else if (type->kind == NIPPY_TYPE_UNION ||
-               type->kind == NIPPY_TYPE_FIXED_LIST ||
-               type->kind == NIPPY_TYPE_RECORD || type->kind == NIPPY_TYPE_ERROR) {
-        if (at >= type->child_count) return true;
-        *dependency = *(const size_t *)list_get(&program->type_children,
-                                                type->first_child + at);
-    } else if (type->kind == NIPPY_TYPE_FUNCTION) {
-        const TypedFunctionSignature *signature = typed_program_signature(
-            program, type->signature_index);
-        if (signature == NULL) return false;
-        if (at > signature->parameter_count) return true;
-        *dependency = at == 0 ? signature->return_type :
-            *(const size_t *)list_get(&program->signature_parameters,
-                                      signature->first_parameter + at - 1);
-    } else {
-        return true;
-    }
-    *found = true;
-    return *dependency < program->types.length;
-}
-
+/* The definitions of every type, in the order the analyser worked out (each
+   after the types it holds by value). */
 bool emit_type_definitions(const TypedProgram *program,
+                           const Analysis *analysis,
                            const char *effective_source,
                            TextBuffer *header, ErrorState *errors)
 {
-    unsigned char *state = NULL;
-    TypeOrderFrame *stack = NULL;
-    List order;
-    size_t i, depth = 0, count = program->types.length;
-    bool ok = false;
-    list_init(&order, sizeof(size_t));
-    if (count > SIZE_MAX / sizeof(*stack)) goto oom;
-    state = nippy_malloc(count == 0 ? 1 : count);
-    stack = nippy_malloc(count == 0 ? sizeof(*stack) : count * sizeof(*stack));
-    if (state == NULL || stack == NULL) goto oom;
-    memset(state, 0, count);
-    for (i = 0; i < count; i++) {
-        if (state[i] != 0) continue;
-        stack[depth++] = (TypeOrderFrame){i, 0};
-        state[i] = 1;
-        while (depth > 0) {
-            TypeOrderFrame *frame = &stack[depth - 1];
-            size_t dependency;
-            bool found;
-            if (!type_order_dependency(program, frame->index, frame->next++,
-                                       &dependency, &found)) goto invalid;
-            if (!found) {
-                size_t completed = frame->index;
-                state[completed] = 2;
-                depth--;
-                if (!list_push(&order, &completed)) goto oom;
-            } else if (state[dependency] == 1) {
-                goto invalid;
-            } else if (state[dependency] == 0) {
-                state[dependency] = 1;
-                stack[depth++] = (TypeOrderFrame){dependency, 0};
-            }
-        }
-    }
-    ok = emit_types_in_order(program, effective_source, header, errors, &order);
-    goto done;
-oom:
-    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-    goto done;
-invalid:
-    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-done:
-    list_free(&order);
-    free(stack);
-    free(state);
-    return ok;
+    return emit_types_in_order(program, effective_source, header, errors,
+                               &analysis->type_emit_order);
 }
 
-static bool emit_function_typedefs_parameter(const TypedFunctionSignature *signature, TextBuffer *header, ErrorState *errors, size_t *j, const TypedProgram *program)
+/* "void", or the parameter types of a signature, comma separated. */
+static bool write_signature_parameters(const TypedProgram *program,
+                                       const TypedFunctionSignature *signature,
+                                       TextBuffer *header, ErrorState *errors)
 {
+    size_t i;
+
     if (signature->parameter_count == 0) {
-        if (!buffer_append(header, "void")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        buffer_append(header, "void");
+    }
+    for (i = 0; i < signature->parameter_count; i++) {
+        char parameter_name[NYX_IDENTIFIER_MAX + 32];
+
+        if (!format_c_type(program,
+                           *(const size_t *)list_get(
+                               &program->signature_parameters,
+                               signature->first_parameter + i),
+                           parameter_name, sizeof(parameter_name), errors)) {
             return false;
         }
-    } else {
-        for ((*j) = 0; (*j) < signature->parameter_count; (*j)++) {
-            size_t parameter_type = *(const size_t *)list_get(
-                &program->signature_parameters,
-                signature->first_parameter + (*j));
-            char parameter_name[NIPPY_IDENTIFIER_MAX + 32];
-
-            if (!format_c_type(program, parameter_type, parameter_name,
-                               sizeof(parameter_name), errors)) {
-                if (!errors->reported) {
-                    error_report(errors,
-                                 MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-                }
-                return false;
-            }
-            if ((*j) > 0 && !buffer_append(header, ", ")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-            if (!buffer_append(header, parameter_name)) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-        }
+        buffer_appendf(header, i > 0 ? ", %s" : "%s", parameter_name);
     }
     return true;
 }
 
-static bool emit_function_typedefs_i(const TypedProgram *program, ErrorState *errors, TextBuffer *header, bool *outcome)
+/* One `typedef R (*nyx_fun_N)(P, ...);` for the signature at `index`. */
+static bool write_signature_typedef(const TypedProgram *program, size_t index,
+                                    TextBuffer *header, ErrorState *errors)
+{
+    const TypedFunctionSignature *signature =
+        typed_program_signature(program, index);
+    char return_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok = format_c_type(program, signature->return_type, return_name,
+                            sizeof(return_name), errors);
+
+    if (!ok) {
+        return false;
+    }
+    buffer_appendf(header, "typedef %s (*nyx_fun_%zu)(", return_name, index);
+    ok = write_signature_parameters(program, signature, header, errors);
+    buffer_append(header, ");\n");
+    return ok;
+}
+
+/* A function type is one signature, so each signature in the program's
+   signature table is one typedef, in table order, followed by a blank line if
+   there were any. */
+bool emit_function_typedefs(const TypedProgram *program,
+                                   TextBuffer *header, ErrorState *errors)
 {
     size_t i;
 
     if (program->signatures.length == 0) {
-        do { *outcome = (true); return true; } while (0);
+        return true;
     }
     for (i = 0; i < program->signatures.length; i++) {
-        const TypedFunctionSignature *signature =
-            typed_program_signature(program, i);
-        char return_name[NIPPY_IDENTIFIER_MAX + 32];
-        size_t j;
-
-        if (signature == NULL ||
-            !format_c_type(program, signature->return_type, return_name,
-                           sizeof(return_name), errors)) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-            }
-            do { *outcome = (false); return true; } while (0);
-        }
-        if (!buffer_appendf(header, "typedef %s (*nyx_fun_%zu)(",
-                            return_name, i)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            do { *outcome = (false); return true; } while (0);
-        }
-        if (!emit_function_typedefs_parameter(signature, header, errors, &j, program)) {
-        do { *outcome = (false); return true; } while (0);
-    }
-        if (!buffer_append(header, ");\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            do { *outcome = (false); return true; } while (0);
+        if (!write_signature_typedef(program, i, header, errors)) {
+            return false;
         }
     }
-    return false;
-}
-
-bool emit_function_typedefs(const TypedProgram *program,
-                                   TextBuffer *header, ErrorState *errors)
-{
-    {
-        bool outcome;
-
-        if (emit_function_typedefs_i(program, errors, header, &outcome)) {
-            return outcome;
-        }
-    }
-    if (!buffer_append(header, "\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_append(header, "\n");
     return true;
 }

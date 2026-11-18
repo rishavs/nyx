@@ -1,0 +1,14 @@
+fun f(n: Int32): Int32
+  defer do print("outer") end
+  for i in range(0, n) do
+    defer do print("step", i) end
+    if i == 2 then break end
+    if i == 1 then continue end
+  end
+  if n > 5 then
+    defer do print("big") end
+    return n
+  end
+  return 0
+end
+print(f(3))

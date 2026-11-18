@@ -1,116 +1,83 @@
 #include "generator_internal.h"
 
 
-static bool emit_list_runtime_union_alternative(bool element_is_union, const TypedProgram *program, const TypedType *union_type, const TypedNode *node, size_t *element_tag, TextBuffer *body, char (*union_name)[64], size_t i, const TypedType *receiver_type, ErrorState *errors, char (*list_name)[64], char (*element_name)[64], size_t nil_tag)
+/* The part of a pop helper that returns Nil for an empty list and otherwise
+   removes the last element into `value`. */
+static bool append_pop_prologue(TextBuffer *body, const char *union_name,
+                                const char *element_name,
+                                const char *list_name, size_t index,
+                                bool fixed, size_t nil_tag)
 {
-    if (!element_is_union &&
-        !find_union_alternative(program, union_type,
-                                node->auxiliary_type, element_tag)) {
-        return false;
+    const char *params_format = fixed
+        ? "%s *list"
+        : "nyx_list list, const char *file, size_t line, size_t column, "
+          "size_t pos";
+    char params[NYX_IDENTIFIER_MAX + 96];
+
+    snprintf(params, sizeof(params), params_format, list_name);
+    buffer_appendf(body,
+                    "static NYX_UNUSED %s nyx_list_pop_%zu(%s)\n{\n"
+                    "    %s result;\n    %s value;\n\n"
+                    "    if (%s == 0) {\n"
+                    "        result = (%s){ .tag = %zu };\n"
+                    "        return result;\n"
+                    "    }\n",
+                    union_name, index, params, union_name, element_name,
+                    fixed ? "list->length"
+                          : "nyx_list_get_state_at(list, file, line, "
+                            "column, pos)->length",
+                    union_name, nil_tag);
+    if (fixed) {
+        return buffer_append(body,
+                             "    value = list->data[list->length - 1];\n"
+                             "    list->length--;\n");
     }
-    buffer_init(body);
-    if (!buffer_appendf(
-            body,
-            "static NIPPY_UNUSED %s nyx_list_pop_%zu(",
-            (*union_name), i) ||
-        !buffer_append(body,
-                       receiver_type->kind == NIPPY_TYPE_FIXED_LIST
-                           ? ""
-                           : "nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n{\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-        if (!buffer_appendf(body, "%s *list)\n{\n", (*list_name))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(body);
-            return false;
-        }
-    }
-    if (!buffer_appendf(body, "    %s result;\n    %s value;\n\n",
-                        (*union_name), (*element_name)) ||
-        !buffer_appendf(body,
-                        "    if (%s == 0) {\n"
-                        "        result = (%s){ .tag = %zu };\n"
-                        "        return result;\n"
-                        "    }\n",
-                        receiver_type->kind == NIPPY_TYPE_FIXED_LIST
-                            ? "list->length"
-                            : "nyx_list_get_state_at(list, file, line, column, pos)->length",
-                        (*union_name), nil_tag)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-        if (!buffer_append(
-                body,
-                "    value = list->data[list->length - 1];\n"
-                "    list->length--;\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(body);
-            return false;
-        }
-    } else {
-        if (!buffer_appendf(
-                body,
-                "    {\n"
-                "        nyx_list_state *state = "
-                "nyx_list_get_state_at(list, file, line, column, pos);\n"
-                "        nyx_store *store = nyx_list_store_at(list, file, line, column, pos);\n"
-                "        size_t offset = state->offset + "
-                "(state->length - 1) * sizeof(%s);\n\n"
-                "        value = *(%s *)(void *)(store->data + offset);\n"
-                "        state->length--;\n"
-                "    }\n",
-                (*element_name), (*element_name))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(body);
-            return false;
-        }
-    }
-    return true;
+    return buffer_appendf(
+        body,
+        "    {\n"
+        "        nyx_list_state *state = "
+        "nyx_list_get_state_at(list, file, line, column, pos);\n"
+        "        nyx_store *store = "
+        "nyx_list_store_at(list, file, line, column, pos);\n"
+        "        size_t offset = state->offset + "
+        "(state->length - 1) * sizeof(%s);\n\n"
+        "        value = *(%s *)(void *)(store->data + offset);\n"
+        "        state->length--;\n"
+        "    }\n",
+        element_name, element_name);
 }
 
-static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *program, bool *ok, TextBuffer *source)
+static void emit_list_runtime_dynamic_list(GeneratorContext *gen, bool *ok, TextBuffer *source)
 {
+    (void)ok;
     {
-        bool dynamic_list = false;
-
-        for ((*i) = 0; (*i) < program->types.length; (*i)++) {
-            const TypedType *type = typed_program_type(program, (*i));
-
-            if (type != NULL && type->kind == NIPPY_TYPE_LIST) {
-                dynamic_list = true;
-                break;
-            }
-        }
-        if (dynamic_list) {
-            (*ok) = (*ok) && buffer_append(
+        if (analysis_has(gen->analysis, ANALYSIS_DYNAMIC_LIST)) {
+            buffer_append(
                            source,
                            "typedef struct {\n"
                            "    size_t offset;\n"
                            "    size_t length;\n"
                            "    size_t capacity;\n"
                            "} nyx_list_state;\n\n"
-                           "static NIPPY_UNUSED nyx_store *nyx_list_store_at("
+                           "static NYX_UNUSED nyx_store *nyx_list_store_at("
                            "nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n"
                            "{\n"
                            "    if (list.store == NULL) {\n"
                            "        nyx_list_fail_at(\""
                            MESSAGE_RUNTIME_STORE_RANGE "\", file, line, column, pos);\n"
                            "    }\n"
-                           "    if (list.store->generation != "
-                           "list.generation) {\n"
-                           "        nyx_list_fail_at(\""
-                           MESSAGE_RUNTIME_STALE_HANDLE "\", file, line, column, pos);\n"
-                           "    }\n"
+                           );
+            append_generation_check(source, gen,
+                                         "list.store->generation",
+                                         "list.generation",
+                                         "nyx_list_fail_at");
+            buffer_append(
+                           source,
                            "    return list.store;\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED nyx_store *nyx_list_store(nyx_list list)\n"
+                           "static NYX_UNUSED nyx_store *nyx_list_store(nyx_list list)\n"
                            "{ return nyx_list_store_at(list, NULL, 0, 0, 0); }\n\n"
-                           "static NIPPY_UNUSED nyx_list_state *"
+                           "static NYX_UNUSED nyx_list_state *"
                            "nyx_list_get_state_at(nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n"
                            "{\n"
                            "    nyx_store *store = nyx_list_store_at(list, file, line, column, pos);\n\n"
@@ -123,9 +90,9 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "    return (nyx_list_state *)(void *)"
                            "(store->data + list.offset);\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED nyx_list_state *nyx_list_get_state(nyx_list list)\n"
+                           "static NYX_UNUSED nyx_list_state *nyx_list_get_state(nyx_list list)\n"
                            "{ return nyx_list_get_state_at(list, NULL, 0, 0, 0); }\n\n"
-                           "static NIPPY_UNUSED void *nyx_list_data_at("
+                           "static NYX_UNUSED void *nyx_list_data_at("
                            "nyx_list list, int32_t index,\n"
                            "                                      "
                            "size_t element_size, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -136,7 +103,7 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "    if (index < 0 || (size_t)index >= state->length ||\n"
                            "        element_size == 0) {\n"
                            "        nyx_list_fail_at(\"");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
                            MESSAGE_RUNTIME_LIST_BOUNDS "\", file, line, column, pos);\n"
                            "    }\n"
@@ -150,17 +117,17 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "    if (offset > store->used ||\n"
                            "        element_size > store->used - offset) {\n"
                            "        nyx_list_fail_at(\"");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
                            MESSAGE_RUNTIME_HANDLE_BOUNDS "\", file, line, column, pos);\n"
                            "    }\n"
                            "    return (void *)(store->data + offset);\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED void *nyx_list_data(nyx_list list, int32_t index, size_t element_size)\n"
+                           "static NYX_UNUSED void *nyx_list_data(nyx_list list, int32_t index, size_t element_size)\n"
                            "{ return nyx_list_data_at(list, index, element_size, NULL, 0, 0, 0); }\n\n");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
-                           "static NIPPY_UNUSED nyx_list nyx_list_create("
+                           "static NYX_UNUSED nyx_list nyx_list_create("
                            "nyx_store *store, int32_t capacity,\n"
                            "                                              "
                            "size_t element_size, size_t alignment, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -199,9 +166,9 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "    list.generation = handle.generation;\n"
                            "    return list;\n"
                            "}\n\n");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
-                           "static NIPPY_UNUSED void nyx_list_push("
+                           "static NYX_UNUSED void nyx_list_push("
                            "nyx_list list, const void *value,\n"
                            "                                      "
                            "size_t element_size, size_t alignment, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -212,7 +179,7 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "    size_t capacity;\n\n"
                            "    if (state->length == (size_t)-1) {\n"
                            "        nyx_list_fail_at(\"");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\", file, line, column, pos);\n"
                            "    }\n"
@@ -228,7 +195,7 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "        while (capacity < needed) {\n"
                            "            if (capacity > (size_t)-1 / 2) {\n"
                            "                nyx_list_fail_at(\"");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\", file, line, column, pos);\n"
                            "            }\n"
@@ -236,7 +203,7 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "        }\n"
                            "        if (capacity > (size_t)-1 / element_size) {\n"
                            "            nyx_list_fail_at(\"");
-            (*ok) = (*ok) && buffer_append(
+            buffer_append(
                            source,
                            MESSAGE_RUNTIME_OUT_OF_MEMORY "\", file, line, column, pos);\n"
                            "        }\n"
@@ -260,220 +227,237 @@ static void emit_list_runtime_dynamic_list(size_t *i, const TypedProgram *progra
                            "           value, element_size);\n"
                            "    state->length = needed;\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED int32_t nyx_list_len_at("
+                           "static NYX_UNUSED int32_t nyx_list_len_at("
                            "nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n"
                            "{\n"
                            "    return (int32_t)nyx_list_get_state_at(list, file, line, column, pos)->length;\n"
                            "}\n\n"
-                           "static NIPPY_UNUSED int32_t nyx_list_len(nyx_list list)\n"
+                           "static NYX_UNUSED int32_t nyx_list_len(nyx_list list)\n"
                            "{ return nyx_list_len_at(list, NULL, 0, 0, 0); }\n\n");
         }
     }
 }
 
-static bool emit_list_runtime_format_c(const TypedProgram *program, const TypedNode *node, char (*union_name)[64], ErrorState *errors, char (*element_name)[64], size_t *j, size_t *nil_type, const TypedType *union_type, size_t *nil_tag, TextBuffer *body, const TypedType *receiver_type, const TypedNode *receiver, char (*list_name)[64], size_t i)
-{
-    if (!format_c_type(program, node->type_index, (*union_name),
-                       sizeof((*union_name)), errors) ||
-        !format_c_type(program, node->auxiliary_type, (*element_name),
-                       sizeof((*element_name)), errors)) {
-        return false;
-    }
-    for ((*j) = 0; (*j) < program->types.length; (*j)++) {
-        const TypedType *candidate = typed_program_type(program, (*j));
+/* One optional read of a list, array or slice, as a helper in the C output:
+   the element, or Nil when the index is out of range. */
+typedef struct {
+    const TypedProgram *program;
+    GeneratorContext *gen;
+    const TypedNode *node;
+    size_t index;
+    size_t nil_tag;
+    char union_name[NYX_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    char list_name[NYX_IDENTIFIER_MAX + 32];
+} OptionalGet;
 
-        if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
-            (*nil_type) = (*j);
-            break;
-        }
-    }
-    if ((*nil_type) == TYPED_NO_NODE ||
-        !find_union_alternative(program, union_type, (*nil_type), nil_tag)) {
+/* An Array is a value: the helper reads it directly. */
+static void optional_prologue_array(const OptionalGet *g, TextBuffer *body)
+{
+    buffer_appendf(
+        body,
+        "static NYX_UNUSED %s nyx_list_get_optional_%zu(%s list, int32_t index)\n"
+        "{\n"
+        "    %s result;\n"
+        "    %s value;\n\n"
+        "    if (index < 0 || (size_t)index >= list.length) {\n"
+        "        result = (%s){ .tag = %zu };\n"
+        "        return result;\n"
+        "    }\n"
+        "    value = list.data[index];\n",
+        g->union_name, g->index, g->list_name, g->union_name, g->element_name,
+        g->union_name, g->nil_tag);
+}
+
+/* A List is found through its state in a Store. */
+static void optional_prologue_list(const OptionalGet *g, TextBuffer *body)
+{
+    buffer_appendf(
+        body,
+        "static NYX_UNUSED %s nyx_list_get_optional_%zu("
+        "nyx_list list, int32_t index, const char *file, size_t line, size_t column, size_t pos)\n"
+        "{\n"
+        "    %s result;\n"
+        "    %s value;\n\n"
+        "    {\n"
+        "        nyx_list_state *state = "
+        "nyx_list_get_state_at(list, file, line, column, pos);\n"
+        "        nyx_store *store;\n"
+        "        size_t offset;\n\n"
+        "        if (index < 0 || "
+        "(size_t)index >= state->length) {\n"
+        "            result = (%s){ .tag = %zu };\n"
+        "            return result;\n"
+        "        }\n"
+        "        store = nyx_list_store_at(list, file, line, column, pos);\n"
+        "        offset = state->offset + "
+        "(size_t)index * sizeof(%s);\n"
+        "        if (offset > store->used ||\n"
+        "            sizeof(%s) > store->used - offset) {\n"
+        "            nyx_list_fail_at(\""
+        MESSAGE_RUNTIME_HANDLE_BOUNDS "\", file, line, column, pos);\n"
+        "        }\n"
+        "        value = *(%s *)(void *)"
+        "(store->data + offset);\n"
+        "    }\n",
+        g->union_name, g->index, g->union_name, g->element_name, g->union_name,
+        g->nil_tag, g->element_name, g->element_name, g->element_name);
+}
+
+/* A Slice is a window onto its List. */
+static void optional_prologue_slice(const OptionalGet *g, TextBuffer *body)
+{
+    buffer_appendf(
+        body,
+        "static NYX_UNUSED %s nyx_slice_get_optional_%zu("
+        "nyx_slice slice, int32_t index, const char *file, size_t line, size_t column, size_t pos)\n"
+        "{\n"
+        "    %s result;\n"
+        "    %s value;\n"
+        "    nyx_store *store = nyx_slice_store_at(slice, file, line, column, pos);\n"
+        "    nyx_list_state *state = nyx_slice_window_at(slice, file, line, column, pos);\n"
+        "    size_t offset;\n\n"
+        "    if (index < 0 || (size_t)index >= slice.length) {\n"
+        "        result = (%s){ .tag = %zu };\n"
+        "        return result;\n"
+        "    }\n"
+        "    offset = state->offset + (slice.start + (size_t)index) * "
+        "sizeof(%s);\n"
+        "    if (offset > store->used ||\n"
+        "        sizeof(%s) > store->used - offset) {\n"
+        "        nyx_list_fail_at(\""
+        MESSAGE_RUNTIME_HANDLE_BOUNDS "\", file, line, column, pos);\n"
+        "    }\n"
+        "    value = *(%s *)(const void *)(store->data + offset);\n",
+        g->union_name, g->index, g->union_name, g->element_name, g->union_name,
+        g->nil_tag, g->element_name, g->element_name, g->element_name);
+}
+
+/* A read whose element type is Nil has nothing to return but Nil. */
+static void emit_nil_optional_get(TextBuffer *source, size_t index, bool slice)
+{
+    buffer_appendf(
+        source,
+        slice ? "static NYX_UNUSED nyx_nil nyx_slice_get_optional_%zu("
+                "nyx_slice slice, int32_t index, const char *file, size_t line, "
+                "size_t column, size_t pos)\n{\n"
+                "    (void)nyx_slice_store_at(slice, file, line, column, pos);\n"
+                "    (void)index;\n"
+                "    return (nyx_nil)0;\n}\n\n"
+              : "static NYX_UNUSED nyx_nil nyx_list_get_optional_%zu(nyx_list "
+                "list, int32_t index)\n{\n"
+                "    (void)list;\n"
+                "    (void)index;\n"
+                "    return (nyx_nil)0;\n}\n\n",
+        index);
+}
+
+static bool optional_get_names(OptionalGet *g, NyxType receiver,
+                               ErrorState *errors)
+{
+    const TypedType *union_type = typed_program_type(g->program, g->node->type_index);
+
+    return format_c_type(g->program, g->node->type_index, g->union_name,
+                         sizeof(g->union_name), errors) &&
+           format_c_type(g->program, g->node->auxiliary_type, g->element_name,
+                         sizeof(g->element_name), errors) &&
+           find_nil_tag(g->program, g->gen, union_type, &g->nil_tag) &&
+           (receiver != NYX_TYPE_FIXED_LIST ||
+            format_c_type(g->program,
+                          typed_program_node(g->program, g->node->left_child)
+                              ->type_index,
+                          g->list_name, sizeof(g->list_name), errors));
+}
+
+static bool emit_optional_get(const TypedProgram *program, GeneratorContext *gen,
+                              size_t index, NyxType receiver,
+                              TextBuffer *source, ErrorState *errors)
+{
+    OptionalGet g = {program, gen, typed_program_node(program, index), index, 0,
+                     "", "", ""};
+    TextBuffer body;
+    bool ok;
+
+    if (!optional_get_names(&g, receiver, errors)) {
         return false;
     }
-    buffer_init(body);
-    if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-        if (!format_c_type(program, receiver->type_index, (*list_name),
-                           sizeof((*list_name)), errors) ||
-            !buffer_appendf(
-                body,
-                "static NIPPY_UNUSED %s nyx_list_get_optional_%zu("
-                "%s list, int32_t index)\n"
-                "{\n"
-                "    %s result;\n"
-                "    %s value;\n\n"
-                "    if (index < 0 || (size_t)index >= list.length) {\n"
-                "        result = (%s){ .tag = %zu };\n"
-                "        return result;\n"
-                "    }\n"
-                "    value = list.data[index];\n",
-                (*union_name), i, (*list_name), (*union_name), (*element_name),
-                (*union_name), (*nil_tag))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(body);
-            return false;
-        }
+    buffer_init(&body);
+    if (receiver == NYX_TYPE_SLICE) {
+        optional_prologue_slice(&g, &body);
+    } else if (receiver == NYX_TYPE_FIXED_LIST) {
+        optional_prologue_array(&g, &body);
     } else {
-        if (!buffer_appendf(
-                body,
-                "static NIPPY_UNUSED %s nyx_list_get_optional_%zu("
-                "nyx_list list, int32_t index, const char *file, size_t line, size_t column, size_t pos)\n"
-                "{\n"
-                "    %s result;\n"
-                "    %s value;\n\n"
-                "    {\n"
-                "        nyx_list_state *state = "
-                "nyx_list_get_state_at(list, file, line, column, pos);\n"
-                "        nyx_store *store;\n"
-                "        size_t offset;\n\n"
-                "        if (index < 0 || "
-                "(size_t)index >= state->length) {\n"
-                "            result = (%s){ .tag = %zu };\n"
-                "            return result;\n"
-                "        }\n"
-                "        store = nyx_list_store_at(list, file, line, column, pos);\n"
-                "        offset = state->offset + "
-                "(size_t)index * sizeof(%s);\n"
-                "        if (offset > store->used ||\n"
-                "            sizeof(%s) > store->used - offset) {\n"
-                "            nyx_list_fail_at(\""
-                MESSAGE_RUNTIME_HANDLE_BOUNDS "\", file, line, column, pos);\n"
-                "        }\n"
-                "        value = *(%s *)(void *)"
-                "(store->data + offset);\n"
-                "    }\n",
-                (*union_name), i, (*union_name), (*element_name), (*union_name),
-                (*nil_tag), (*element_name), (*element_name), (*element_name))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(body);
+        optional_prologue_list(&g, &body);
+    }
+    ok = append_optional_union(gen, &body, program, g.node->type_index,
+                               g.node->auxiliary_type, g.union_name, "value",
+                               "result");
+    buffer_append(&body, "    return result;\n}\n\n");
+    buffer_append_buffer(source, &body);
+    buffer_free(&body);
+    return ok;
+}
+
+/* One helper per optional read in the program: of Slices when `slices`, of
+   Lists and Arrays otherwise. */
+static bool emit_optional_gets(GeneratorContext *gen, const TypedProgram *program,
+                               bool slices, TextBuffer *source,
+                               ErrorState *errors)
+{
+    size_t count, k;
+    const size_t *optionals = analysis_nodes(gen->analysis,
+                                             TYPED_LIST_GET_OPTIONAL, &count);
+
+    for (k = 0; k < count; k++) {
+        const TypedNode *node = typed_program_node(program, optionals[k]);
+        NyxType receiver = typed_program_node_kind(program, node->left_child);
+
+        if ((receiver == NYX_TYPE_SLICE) != slices) {
+            continue;
+        }
+        if (typed_program_type(program, node->type_index)->kind ==
+            NYX_TYPE_NIL) {
+            emit_nil_optional_get(source, optionals[k], slices);
+        } else if (!emit_optional_get(program, gen, optionals[k], receiver,
+                                      source, errors)) {
             return false;
         }
     }
     return true;
 }
 
-static bool emit_list_runtime_node_append_optional_union(TextBuffer *body, const TypedProgram *program, const TypedNode *node, char (*union_name)[64], TextBuffer *source, ErrorState *errors)
+static bool emit_list_runtime_buffer_append(GeneratorContext *gen, bool *ok, TextBuffer *source, size_t *i, const TypedProgram *program, ErrorState *errors)
 {
-    if (!append_optional_union(body, program, node->type_index,
-                               node->auxiliary_type, (*union_name), "value",
-                               "result") ||
-        !buffer_append(body, "    return result;\n}\n\n") ||
-        !buffer_append(source, (*body).text)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    return true;
-}
-
-static bool emit_list_runtime_node(size_t *i, const TypedProgram *program, bool *ok, TextBuffer *source, ErrorState *errors)
-{
-    for ((*i) = 0; (*i) < program->nodes.length; (*i)++) {
-        const TypedNode *node = typed_program_node(program, (*i));
-        const TypedNode *receiver;
-        const TypedType *receiver_type;
-        const TypedType *union_type;
-        const TypedType *element_type;
-        size_t nil_type = TYPED_NO_NODE;
-        size_t nil_tag;
-        char union_name[NIPPY_IDENTIFIER_MAX + 32];
-        char element_name[NIPPY_IDENTIFIER_MAX + 32];
-        char list_name[NIPPY_IDENTIFIER_MAX + 32];
-        TextBuffer body;
-        size_t j;
-
-        if (node == NULL || node->kind != TYPED_LIST_GET_OPTIONAL) {
-            continue;
-        }
-        receiver = typed_program_node(program, node->left_child);
-        receiver_type = receiver == NULL
-                            ? NULL
-                            : typed_program_type(program, receiver->type_index);
-        if (receiver_type == NULL || receiver_type->kind == NIPPY_TYPE_SLICE) {
-            continue;
-        }
-        union_type = typed_program_type(program, node->type_index);
-        element_type = typed_program_type(program, node->auxiliary_type);
-        if (union_type == NULL || element_type == NULL) {
-            return false;
-        }
-        if (union_type->kind == NIPPY_TYPE_NIL) {
-            (*ok) = (*ok) && buffer_appendf(
-                           source,
-                           "static NIPPY_UNUSED nyx_nil "
-                           "nyx_list_get_optional_%zu(nyx_list list, "
-                           "int32_t index)\n"
-                           "{\n"
-                           "    (void)list;\n"
-                           "    (void)index;\n"
-                           "    return (nyx_nil)0;\n"
-                           "}\n\n",
-                           (*i));
-            continue;
-        }
-        if (!emit_list_runtime_format_c(program, node, &union_name, errors, &element_name, &j, &nil_type, union_type, &nil_tag, &body, receiver_type, receiver, &list_name, (*i))) {
-        return false;
-    }
-        if (!emit_list_runtime_node_append_optional_union(&body, program, node, &union_name, source, errors)) {
-        return false;
-    }
-        buffer_free(&body);
-    }
-    return true;
-}
-
-static bool emit_list_runtime_format_c7(const TypedType *receiver_type, const TypedType *union_type, const TypedType *element_type, const TypedProgram *program, const TypedNode *node, char (*union_name)[64], ErrorState *errors, char (*element_name)[64], const TypedNode *receiver, char (*list_name)[64], bool *element_is_union, bool *same_result, size_t *j, size_t *nil_type)
-{
-    if (receiver_type == NULL || union_type == NULL ||
-        element_type == NULL || union_type->kind != NIPPY_TYPE_UNION ||
-        !format_c_type(program, node->type_index, (*union_name),
-                       sizeof((*union_name)), errors) ||
-        !format_c_type(program, node->auxiliary_type, (*element_name),
-                       sizeof((*element_name)), errors) ||
-        !format_c_type(program, receiver->type_index, (*list_name),
-                       sizeof((*list_name)), errors)) {
-        return false;
-    }
-    (*element_is_union) = element_type->kind == NIPPY_TYPE_UNION;
-    (*same_result) = types_equivalent(program, node->auxiliary_type,
-                                   node->type_index, 16);
-    for ((*j) = 0; (*j) < program->types.length; (*j)++) {
-        const TypedType *candidate = typed_program_type(program, (*j));
-
-        if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
-            (*nil_type) = (*j);
-            break;
-        }
-    }
-    return true;
-}
-
-static bool emit_list_runtime_buffer_append(bool *ok, TextBuffer *source, size_t *i, const TypedProgram *program, ErrorState *errors)
-{
-    (*ok) = (*ok) && buffer_append(
+    (void)ok;
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nyx_list_fail("
+                   "static NYX_UNUSED void nyx_list_fail("
                    "const char *message)\n"
                    "{\n"
                    "    fflush(stdout);\n"
                    "    fprintf(stderr, \"%s\\n\", message);\n"
                    "    exit(1);\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nyx_list_fail_at(const char *message, const char *file, size_t line, size_t column, size_t offset)\n"
+                   "static NYX_UNUSED void nyx_list_fail_at(const char *message, const char *file, size_t line, size_t column, size_t offset)\n"
                    "{\n"
                    "    if (file == NULL) nyx_list_fail(message);\n"
                    "    fflush(stdout);\n"
                    "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", file, line, column, offset, message + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
                    "    exit(1);\n"
                    "}\n\n");
-    for ((*i) = 0; (*i) < program->types.length; (*i)++) {
-        const TypedType *type = typed_program_type(program, (*i));
-        char element_name[NIPPY_IDENTIFIER_MAX + 32];
-        char list_name[NIPPY_IDENTIFIER_MAX + 32];
+    size_t fixed_count, k;
+    const size_t *fixed_types = analysis_types(gen->analysis, NYX_TYPE_FIXED_LIST,
+                                               &fixed_count);
+
+    for (k = 0; k < fixed_count; k++) {
+        const TypedType *type;
+        char element_name[NYX_IDENTIFIER_MAX + 32];
+        char list_name[NYX_IDENTIFIER_MAX + 32];
         size_t element;
 
-        if (type == NULL || type->kind != NIPPY_TYPE_FIXED_LIST ||
-            type->child_count != 1) {
+        (*i) = fixed_types[k];
+        type = typed_program_type(program, (*i));
+        if (type == NULL || type->child_count != 1) {
             continue;
         }
         element = *(const size_t *)list_get(&program->type_children,
@@ -483,9 +467,9 @@ static bool emit_list_runtime_buffer_append(bool *ok, TextBuffer *source, size_t
             return false;
         }
         snprintf(list_name, sizeof(list_name), "nyx_list_%zu", (*i));
-        (*ok) = (*ok) && buffer_appendf(
+        buffer_appendf(
                        source,
-                       "static NIPPY_UNUSED %s nyx_list_%zu_get("
+                       "static NYX_UNUSED %s nyx_list_%zu_get("
                        "%s list, int32_t i, const char *file, size_t line, size_t column, size_t offset)\n"
                        "{\n"
                        "    if (i < 0 || (size_t)i >= list.length) {\n"
@@ -494,7 +478,7 @@ static bool emit_list_runtime_buffer_append(bool *ok, TextBuffer *source, size_t
                        "    }\n"
                        "    return list.data[i];\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED void nyx_list_%zu_push("
+                       "static NYX_UNUSED void nyx_list_%zu_push("
                        "%s *list, %s value, const char *file, size_t line, size_t column, size_t offset)\n"
                        "{\n"
                        "    if (list->length %s %zu) {\n"
@@ -504,7 +488,7 @@ static bool emit_list_runtime_buffer_append(bool *ok, TextBuffer *source, size_t
                        "    list->data[list->length] = value;\n"
                        "    list->length++;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED %s *nyx_list_%zu_at("
+                       "static NYX_UNUSED %s *nyx_list_%zu_at("
                        "%s *list, int32_t i, const char *file, size_t line, size_t column, size_t offset)\n"
                        "{\n"
                        "    if (i < 0 || (size_t)i >= list->length) {\n"
@@ -522,175 +506,65 @@ static bool emit_list_runtime_buffer_append(bool *ok, TextBuffer *source, size_t
     return true;
 }
 
-static bool emit_list_runtime_format_c10(const TypedProgram *program, const TypedNode *receiver, char (*list_name)[64], ErrorState *errors, const TypedType *receiver_type, bool *ok, TextBuffer *source, size_t i)
+/* The helper behind one `pop`: its result is the element, or Nil. */
+static bool emit_list_pop(const TypedProgram *program, GeneratorContext *gen, size_t index,
+                          TextBuffer *source, ErrorState *errors)
 {
-    if (!format_c_type(program, receiver->type_index, (*list_name),
-                       sizeof((*list_name)), errors)) {
+    const TypedNode *node = typed_program_node(program, index);
+    const TypedNode *receiver = typed_program_node(program, node->left_child);
+    const TypedType *union_type = typed_program_type(program, node->type_index);
+    char union_name[NYX_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    char list_name[NYX_IDENTIFIER_MAX + 32];
+    TextBuffer body;
+    size_t nil_tag;
+    bool ok;
+
+    if (!format_c_type(program, node->type_index, union_name,
+                       sizeof(union_name), errors) ||
+        !format_c_type(program, node->auxiliary_type, element_name,
+                       sizeof(element_name), errors) ||
+        !format_c_type(program, receiver->type_index, list_name,
+                       sizeof(list_name), errors) ||
+        !find_nil_tag(program, gen, union_type, &nil_tag)) {
         return false;
     }
-    if (receiver_type->kind == NIPPY_TYPE_FIXED_LIST) {
-        (*ok) = (*ok) && buffer_appendf(
-                       source,
-                       "static NIPPY_UNUSED nyx_nil "
-                       "nyx_list_pop_%zu(%s *list)\n"
-                       "{\n"
-                       "    if (list->length != 0) {\n"
-                       "        list->length--;\n"
-                       "    }\n"
-                       "    return (nyx_nil)0;\n"
-                       "}\n\n",
-                       i, (*list_name));
-    } else {
-        (*ok) = (*ok) && buffer_appendf(
-                       source,
-                       "static NIPPY_UNUSED nyx_nil "
-                       "nyx_list_pop_%zu(nyx_list list, const char *file, size_t line, size_t column, size_t pos)\n"
-                       "{\n"
-                       "    nyx_list_state *state = "
-                       "nyx_list_get_state_at(list, file, line, column, pos);\n"
-                       "    if (state->length != 0) {\n"
-                       "        state->length--;\n"
-                       "    }\n"
-                       "    return (nyx_nil)0;\n"
-                       "}\n\n",
-                       i);
-    }
-    return true;
+    buffer_init(&body);
+    ok = append_pop_prologue(&body, union_name, element_name, list_name, index,
+                             typed_program_type(program, receiver->type_index)
+                                     ->kind == NYX_TYPE_FIXED_LIST,
+                             nil_tag) &&
+         append_optional_union(gen, &body, program, node->type_index,
+                               node->auxiliary_type, union_name, "value",
+                               "result");
+    buffer_append(&body, "    return result;\n}\n\n");
+    buffer_append_buffer(source, &body);
+    buffer_free(&body);
+    return ok;
 }
 
-static bool emit_list_runtime_union_alternative12(const TypedType *alternative, const TypedProgram *program, const TypedType *union_type, const TypedType *element_type, size_t j, size_t *result_tag, ErrorState *errors, TextBuffer *body, char (*union_name)[64])
-{
-    if (alternative == NULL ||
-        alternative->kind == NIPPY_TYPE_NIL ||
-        !find_union_alternative(
-            program, union_type,
-            *(const size_t *)list_get(
-                &program->type_children,
-                element_type->first_child + j),
-            result_tag)) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        buffer_free(body);
-        return false;
-    }
-    if (!buffer_appendf(
-            body,
-            "    case %zu:\n"
-            "        result = (%s){ .tag = %zu, "
-            ".value.v%zu = value.value.v%zu };\n"
-            "        break;\n",
-            j, (*union_name), (*result_tag), (*result_tag), j)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    return true;
-}
-
-static bool emit_list_runtime_union_alternative14(size_t nil_type, const TypedProgram *program, const TypedType *union_type, size_t *nil_tag, bool element_is_union, const TypedNode *node, size_t *element_tag, TextBuffer *body, char (*union_name)[64], size_t i, const TypedType *receiver_type, ErrorState *errors, char (*list_name)[64], char (*element_name)[64])
-{
-    if (nil_type == TYPED_NO_NODE ||
-        !find_union_alternative(program, union_type, nil_type, nil_tag)) {
-        return false;
-    }
-    if (!emit_list_runtime_union_alternative(element_is_union, program, union_type, node, element_tag, body, union_name, i, receiver_type, errors, list_name, element_name, (*nil_tag))) {
-    return false;
-}
-    return true;
-}
-
-bool emit_list_runtime(const TypedProgram *program,
-                              TextBuffer *source, ErrorState *errors)
+bool emit_list_runtime(const TypedProgram *program, GeneratorContext *gen, TextBuffer *source,
+                       ErrorState *errors)
 {
     bool ok = true;
     size_t i;
 
-    if (!emit_list_runtime_buffer_append(&ok, source, &i, program, errors)) {
+    if (!emit_list_runtime_buffer_append(gen, &ok, source, &i, program, errors)) {
         return false;
     }
-    emit_list_runtime_dynamic_list(&i, program, &ok, source);
-    for (i = 0; i < program->nodes.length; i++) {
-        const TypedNode *node = typed_program_node(program, i);
-        const TypedNode *receiver;
-        const TypedType *receiver_type;
-        const TypedType *union_type;
-        const TypedType *element_type;
-        size_t nil_type = TYPED_NO_NODE;
-        size_t element_tag = TYPED_NO_NODE;
-        size_t nil_tag;
-        bool element_is_union;
-        bool same_result;
-        char union_name[NIPPY_IDENTIFIER_MAX + 32];
-        char element_name[NIPPY_IDENTIFIER_MAX + 32];
-        char list_name[NIPPY_IDENTIFIER_MAX + 32];
-        TextBuffer body;
-        size_t j;
+    emit_list_runtime_dynamic_list(gen, &ok, source);
+    {
+        size_t count;
+        const size_t *pops = analysis_nodes(gen->analysis, TYPED_LIST_POP,
+                                            &count);
 
-        if (node == NULL || node->kind != TYPED_LIST_POP) {
-            continue;
-        }
-        receiver = typed_program_node(program, node->left_child);
-        receiver_type = receiver == NULL
-                            ? NULL
-                            : typed_program_type(program, receiver->type_index);
-        union_type = typed_program_type(program, node->type_index);
-        element_type = typed_program_type(program, node->auxiliary_type);
-        if (receiver_type != NULL && union_type != NULL &&
-            union_type->kind == NIPPY_TYPE_NIL) {
-            if (!emit_list_runtime_format_c10(program, receiver, &list_name, errors, receiver_type, &ok, source, i)) {
-        return false;
-    }
-            continue;
-        }
-        if (!emit_list_runtime_format_c7(receiver_type, union_type, element_type, program, node, &union_name, errors, &element_name, receiver, &list_name, &element_is_union, &same_result, &j, &nil_type)) {
-        return false;
-    }
-        if (!emit_list_runtime_union_alternative14(nil_type, program, union_type, &nil_tag, element_is_union, node, &element_tag, &body, &union_name, i, receiver_type, errors, &list_name, &element_name)) {
-        return false;
-    }
-        if (element_is_union && !same_result) {
-            if (!buffer_append(&body, "    switch (value.tag) {\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                buffer_free(&body);
+        for (i = 0; i < count; i++) {
+            if (!emit_list_pop(program, gen, pops[i], source, errors)) {
                 return false;
             }
-            for (j = 0; j < element_type->child_count; j++) {
-                const TypedType *alternative =
-                    union_alternative_type(program, element_type, j);
-                size_t result_tag;
-
-                if (!emit_list_runtime_union_alternative12(alternative, program, union_type, element_type, j, &result_tag, errors, &body, &union_name)) {
-        return false;
-    }
-            }
-            if (!buffer_append(&body, "    }\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                buffer_free(&body);
-                return false;
-            }
-        } else if (element_is_union) {
-            if (!buffer_append(&body, "    result = value;\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                buffer_free(&body);
-                return false;
-            }
-        } else if (!buffer_appendf(
-                       &body,
-                       "    result = (%s){ .tag = %zu, "
-                       ".value.v%zu = value };\n",
-                       union_name, element_tag, element_tag)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(&body);
-            return false;
         }
-        if (!buffer_append(&body, "    return result;\n}\n\n") ||
-            !buffer_append(source, body.text)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            buffer_free(&body);
-            return false;
-        }
-        buffer_free(&body);
     }
-    if (!emit_list_runtime_node(&i, program, &ok, source, errors)) {
+    if (!emit_optional_gets(gen, program, false, source, errors)) {
         return false;
     }
     if (!ok) {
@@ -701,90 +575,33 @@ bool emit_list_runtime(const TypedProgram *program,
 }
 
 
-static bool emit_slice_runtime_format_c(const TypedProgram *program, const TypedNode *node, char (*union_name)[64], ErrorState *errors, char (*element_name)[64], size_t *j, size_t *nil_type, const TypedType *union_type, size_t *nil_tag, TextBuffer *body, size_t i, TextBuffer *source)
+/* nyx_slice_store_at: the Store behind a slice, trapping on a missing one and,
+   when a generation can change, on a stale one. */
+static bool emit_slice_store_accessor(TextBuffer *source,
+                                      GeneratorContext *gen)
 {
-    if (!format_c_type(program, node->type_index, (*union_name),
-                       sizeof((*union_name)), errors) ||
-        !format_c_type(program, node->auxiliary_type, (*element_name),
-                       sizeof((*element_name)), errors)) {
-        return false;
-    }
-    for ((*j) = 0; (*j) < program->types.length; (*j)++) {
-        const TypedType *candidate = typed_program_type(program, (*j));
-
-        if (candidate != NULL && candidate->kind == NIPPY_TYPE_NIL) {
-            (*nil_type) = (*j);
-            break;
-        }
-    }
-    if ((*nil_type) == TYPED_NO_NODE ||
-        !find_union_alternative(program, union_type, (*nil_type), nil_tag)) {
-        return false;
-    }
-    buffer_init(body);
-    if (!buffer_appendf(
-            body,
-            "static NIPPY_UNUSED %s nyx_slice_get_optional_%zu("
-            "nyx_slice slice, int32_t index, const char *file, size_t line, size_t column, size_t pos)\n"
-            "{\n"
-            "    %s result;\n"
-            "    %s value;\n"
-            "    nyx_store *store = nyx_slice_store_at(slice, file, line, column, pos);\n"
-            "    nyx_list_state *state = nyx_slice_window_at(slice, file, line, column, pos);\n"
-            "    size_t offset;\n\n"
-            "    if (index < 0 || (size_t)index >= slice.length) {\n"
-            "        result = (%s){ .tag = %zu };\n"
-            "        return result;\n"
-            "    }\n"
-            "    offset = state->offset + (slice.start + (size_t)index) * "
-            "sizeof(%s);\n"
-            "    if (offset > store->used ||\n"
-            "        sizeof(%s) > store->used - offset) {\n"
-            "        nyx_list_fail_at(\""
-            MESSAGE_RUNTIME_HANDLE_BOUNDS "\", file, line, column, pos);\n"
-            "    }\n"
-            "    value = *(%s *)(const void *)(store->data + offset);\n",
-            (*union_name), i, (*union_name), (*element_name), (*union_name),
-            (*nil_tag), (*element_name), (*element_name), (*element_name))) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    if (!append_optional_union(body, program, node->type_index,
-                               node->auxiliary_type, (*union_name), "value",
-                               "result") ||
-        !buffer_append(body, "    return result;\n}\n\n") ||
-        !buffer_append(source, (*body).text)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        buffer_free(body);
-        return false;
-    }
-    return true;
+    return buffer_append(
+               source,
+               "static NYX_UNUSED nyx_store *nyx_slice_store_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
+               "{\n"
+               "    if (slice.store == NULL) {\n"
+               "        nyx_list_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE "\", file, line, column, pos);\n"
+               "    }\n") &&
+           append_generation_check(source, gen, "slice.store->generation",
+                                   "slice.generation", "nyx_list_fail_at") &&
+           buffer_append(source,
+                         "    return slice.store;\n"
+                         "}\n");
 }
 
-static bool emit_slice_runtime_i(bool *ok, TextBuffer *source, const TypedProgram *program, ErrorState *errors)
+/* The slice's Store accessor and the window onto its list's current state. */
+static bool emit_slice_accessors(TextBuffer *source, GeneratorContext *gen)
 {
-    size_t i;
-
-    /* A slice is a window onto its list: it holds the list's state offset, the
-       index of its first element, and its length, and finds the buffer through
-       the list's current state on every access. Growing the list moves the
-       buffer and the window follows; if the list has shrunk below the window,
-       any use of the slice traps. It never reads a stale copy. */
-    (*ok) = (*ok) && buffer_append(
+    return emit_slice_store_accessor(source, gen) &&
+           buffer_append(
                    source,
-                   "static NIPPY_UNUSED nyx_store *nyx_slice_store_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
-                   "{\n"
-                   "    if (slice.store == NULL) {\n"
-                   "        nyx_list_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE "\", file, line, column, pos);\n"
-                   "    }\n"
-                   "    if (slice.store->generation != slice.generation) {\n"
-                   "        nyx_list_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE "\", file, line, column, pos);\n"
-                   "    }\n"
-                   "    return slice.store;\n"
-                   "}\n"
                    "\n"
-                   "static NIPPY_UNUSED nyx_list_state *nyx_slice_window_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "static NYX_UNUSED nyx_list_state *nyx_slice_window_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_store *store = nyx_slice_store_at(slice, file, line, column, pos);\n"
                    "    nyx_list_state *state;\n"
@@ -801,9 +618,19 @@ static bool emit_slice_runtime_i(bool *ok, TextBuffer *source, const TypedProgra
                    "    return state;\n"
                    "}\n"
                    "\n");
-    (*ok) = (*ok) && buffer_append(
+}
+
+static bool emit_slice_runtime_i(GeneratorContext *gen, bool *ok, TextBuffer *source, const TypedProgram *program, ErrorState *errors)
+{
+    /* A slice is a window onto its list: it holds the list's state offset, the
+       index of its first element, and its length, and finds the buffer through
+       the list's current state on every access. Growing the list moves the
+       buffer and the window follows; if the list has shrunk below the window,
+       any use of the slice traps. It never reads a stale copy. */
+    emit_slice_accessors(source, gen);
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED nyx_slice nyx_slice_from_list(nyx_list list, int32_t start, int32_t length,\n"
+                   "static NYX_UNUSED nyx_slice nyx_slice_from_list(nyx_list list, int32_t start, int32_t length,\n"
                    "                                                  size_t element_size, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_list_state *state = nyx_list_get_state_at(list, file, line, column, pos);\n"
@@ -824,7 +651,7 @@ static bool emit_slice_runtime_i(bool *ok, TextBuffer *source, const TypedProgra
                    "    return result;\n"
                    "}\n"
                    "\n"
-                   "static NIPPY_UNUSED nyx_slice nyx_slice_sub(nyx_slice slice, int32_t start, int32_t length,\n"
+                   "static NYX_UNUSED nyx_slice nyx_slice_sub(nyx_slice slice, int32_t start, int32_t length,\n"
                    "                                            size_t element_size, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_slice result;\n"
@@ -842,9 +669,9 @@ static bool emit_slice_runtime_i(bool *ok, TextBuffer *source, const TypedProgra
                    "    return result;\n"
                    "}\n"
                    "\n");
-    (*ok) = (*ok) && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED const void *nyx_slice_data_at(nyx_slice slice, int32_t index, size_t element_size, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "static NYX_UNUSED const void *nyx_slice_data_at(nyx_slice slice, int32_t index, size_t element_size, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_store *store = nyx_slice_store_at(slice, file, line, column, pos);\n"
                    "    nyx_list_state *state = nyx_slice_window_at(slice, file, line, column, pos);\n"
@@ -866,71 +693,24 @@ static bool emit_slice_runtime_i(bool *ok, TextBuffer *source, const TypedProgra
                    "    return (const void *)(store->data + offset);\n"
                    "}\n"
                    "\n"
-                   "static NIPPY_UNUSED int32_t nyx_slice_len_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "static NYX_UNUSED int32_t nyx_slice_len_at(nyx_slice slice, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    (void)nyx_slice_window_at(slice, file, line, column, pos);\n"
                    "    return (int32_t)slice.length;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED const void *nyx_slice_data(nyx_slice slice, int32_t index, size_t size)\n"
+                   "static NYX_UNUSED const void *nyx_slice_data(nyx_slice slice, int32_t index, size_t size)\n"
                    "{ return nyx_slice_data_at(slice, index, size, NULL, 0, 0, 0); }\n\n"
-                   "static NIPPY_UNUSED int32_t nyx_slice_len(nyx_slice slice)\n"
+                   "static NYX_UNUSED int32_t nyx_slice_len(nyx_slice slice)\n"
                    "{ return nyx_slice_len_at(slice, NULL, 0, 0, 0); }\n");
-    for (i = 0; i < program->nodes.length; i++) {
-        const TypedNode *node = typed_program_node(program, i);
-        const TypedNode *receiver;
-        const TypedType *receiver_type;
-        const TypedType *union_type;
-        const TypedType *element_type;
-        size_t nil_type = TYPED_NO_NODE;
-        size_t nil_tag;
-        char union_name[NIPPY_IDENTIFIER_MAX + 32];
-        char element_name[NIPPY_IDENTIFIER_MAX + 32];
-        TextBuffer body;
-        size_t j;
-
-        if (node == NULL || node->kind != TYPED_LIST_GET_OPTIONAL) {
-            continue;
-        }
-        receiver = typed_program_node(program, node->left_child);
-        receiver_type = receiver == NULL
-                            ? NULL
-                            : typed_program_type(program, receiver->type_index);
-        if (receiver_type == NULL || receiver_type->kind != NIPPY_TYPE_SLICE) {
-            continue;
-        }
-        union_type = typed_program_type(program, node->type_index);
-        element_type = typed_program_type(program, node->auxiliary_type);
-        if (union_type == NULL || element_type == NULL) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (union_type->kind == NIPPY_TYPE_NIL) {
-            (*ok) = (*ok) && buffer_appendf(
-                           source,
-                           "static NIPPY_UNUSED nyx_nil "
-                           "nyx_slice_get_optional_%zu(nyx_slice slice, "
-                           "int32_t index, const char *file, size_t line, size_t column, size_t pos)\n"
-                           "{\n"
-                           "    (void)nyx_slice_store_at(slice, file, line, column, pos);\n"
-                           "    (void)index;\n"
-                           "    return (nyx_nil)0;\n"
-                           "}\n\n",
-                           i);
-            continue;
-        }
-        if (!emit_slice_runtime_format_c(program, node, &union_name, errors, &element_name, &j, &nil_type, union_type, &nil_tag, &body, i, source)) {
-        return false;
-    }
-        buffer_free(&body);
-    }
-    return true;
+    (void)ok;
+    return emit_optional_gets(gen, program, true, source, errors);
 }
 
-bool emit_slice_runtime(const TypedProgram *program, TextBuffer *source,
+bool emit_slice_runtime(const TypedProgram *program, GeneratorContext *gen, TextBuffer *source,
                         ErrorState *errors)
 {
     bool ok = true;
-    if (!emit_slice_runtime_i(&ok, source, program, errors)) {
+    if (!emit_slice_runtime_i(gen, &ok, source, program, errors)) {
         return false;
     }
     if (!ok) {

@@ -9,7 +9,9 @@ bool token_opens_nesting(TokenType type)
            type == TOKEN_KEYWORD_WHILE || type == TOKEN_KEYWORD_FOR ||
            type == TOKEN_KEYWORD_MATCH || type == TOKEN_KEYWORD_FUN ||
            type == TOKEN_KEYWORD_METHOD || type == TOKEN_KEYWORD_STATIC ||
-           type == TOKEN_KEYWORD_TYPE || type == TOKEN_KEYWORD_SCOPE;
+           type == TOKEN_KEYWORD_TYPE || type == TOKEN_KEYWORD_SCOPE ||
+           type == TOKEN_KEYWORD_DEFER || type == TOKEN_KEYWORD_PARALLEL ||
+           type == TOKEN_KEYWORD_WHEN;
 }
 
 bool token_closes_nesting(TokenType type)
@@ -48,10 +50,10 @@ static bool check_parse_nesting(const TokenList *tokens, ErrorState *errors)
 
         if (token_opens_nesting(token->type)) {
             depth++;
-            if (depth > NIPPY_MAX_PARSE_NESTING) {
+            if (depth > NYX_MAX_PARSE_NESTING) {
                 error_report_at(errors, token->pos,
                                 MESSAGE_PARSER_NESTING_LIMIT,
-                                NIPPY_MAX_PARSE_NESTING);
+                                NYX_MAX_PARSE_NESTING);
                 return false;
             }
         } else if (token_closes_nesting(token->type)) {
@@ -63,10 +65,10 @@ static bool check_parse_nesting(const TokenList *tokens, ErrorState *errors)
         if (token->type == TOKEN_MINUS || token->type == TOKEN_BANG ||
             token->type == TOKEN_TILDE) {
             unary_depth++;
-            if (unary_depth > NIPPY_MAX_PARSE_NESTING) {
+            if (unary_depth > NYX_MAX_PARSE_NESTING) {
                 error_report_at(errors, token->pos,
                                 MESSAGE_PARSER_NESTING_LIMIT,
-                                NIPPY_MAX_PARSE_NESTING);
+                                NYX_MAX_PARSE_NESTING);
                 return false;
             }
         } else {
@@ -182,181 +184,147 @@ static bool parser_parse_token(Ast *ast, const TokenList *tokens, ErrorState *er
     return true;
 }
 
+/* A declaration that starts at the token at *cursor, which names its kind. The
+   parser consumes the keyword and records the declaration as a root. */
+typedef bool (*DeclarationParser)(const TokenList *tokens,
+                                  const List *string_bytes, Ast *ast,
+                                  size_t *cursor, const Token *token,
+                                  ErrorState *errors);
+
+static bool declare_variable(const TokenList *tokens, const List *string_bytes,
+                             Ast *ast, size_t *cursor, const Token *token,
+                             ErrorState *errors)
+{
+    bool is_const = token->type == TOKEN_KEYWORD_CONST;
+
+    (*cursor)++;
+    return parse_var_declaration(tokens, string_bytes, ast, cursor, token->pos,
+                                 false, is_const, false, NULL, errors);
+}
+
+static bool declare_global(const TokenList *tokens, const List *string_bytes,
+                           Ast *ast, size_t *cursor, const Token *token,
+                           ErrorState *errors)
+{
+    (*cursor)++;
+    return parse_var_declaration(tokens, string_bytes, ast, cursor, token->pos,
+                                 true, false, false, NULL, errors);
+}
+
+static bool declare_type(const TokenList *tokens, const List *string_bytes,
+                         Ast *ast, size_t *cursor, const Token *token,
+                         ErrorState *errors)
+{
+    (*cursor)++;
+    return parse_type_declaration(tokens, string_bytes, ast, cursor,
+                                  token->pos, errors);
+}
+
+static bool declare_function(const TokenList *tokens, const List *string_bytes,
+                             Ast *ast, size_t *cursor, const Token *token,
+                             ErrorState *errors)
+{
+    (*cursor)++;
+    return parse_function_declaration(tokens, string_bytes, ast, cursor,
+                                      token->pos, errors);
+}
+
+static bool declare_method(const TokenList *tokens, const List *string_bytes,
+                           Ast *ast, size_t *cursor, const Token *token,
+                           ErrorState *errors)
+{
+    bool is_static = token->type == TOKEN_KEYWORD_STATIC;
+
+    (*cursor)++;
+    return parse_method_declaration(tokens, string_bytes, ast, cursor,
+                                    token->pos, is_static, errors);
+}
+
+static const struct {
+    TokenType token;
+    DeclarationParser parse;
+} declarations[] = {
+    {TOKEN_KEYWORD_VAR, declare_variable},
+    {TOKEN_KEYWORD_CONST, declare_variable},
+    {TOKEN_KEYWORD_GLOBAL, declare_global},
+    {TOKEN_KEYWORD_TYPE, declare_type},
+    {TOKEN_KEYWORD_FUN, declare_function},
+    {TOKEN_KEYWORD_METHOD, declare_method},
+    {TOKEN_KEYWORD_STATIC, declare_method},
+};
+
+typedef enum {
+    ROOT_PARSED,
+    ROOT_RECOVER, /* an error is reported; skip to the next declaration */
+    ROOT_ABORT    /* out of memory */
+} RootResult;
+
+/* One top-level item: a declaration, or a statement kept as a root. */
+static RootResult parse_root(const TokenList *tokens, const List *string_bytes,
+                             Ast *ast, size_t *cursor, ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+    size_t statement;
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(declarations); i++) {
+        if (token->type == declarations[i].token) {
+            return declarations[i].parse(tokens, string_bytes, ast, cursor,
+                                         token, errors)
+                       ? ROOT_PARSED
+                       : ROOT_RECOVER;
+        }
+    }
+    switch (parse_shared_statement(tokens, string_bytes, ast, cursor,
+                                   &statement, errors)) {
+    case STATEMENT_NONE:
+        error_report_at(errors, token->pos,
+                        MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
+        return ROOT_RECOVER;
+    case STATEMENT_FAILED:
+        return ROOT_RECOVER;
+    case STATEMENT_PARSED:
+        break;
+    }
+    if (!list_push(&ast->roots, &statement)) {
+        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+        return ROOT_ABORT;
+    }
+    return ROOT_PARSED;
+}
+
 bool parser_parse(const TokenList *tokens, const List *string_bytes, Ast *ast,
                   ErrorState *errors)
 {
     const Token *token = {0};
     size_t cursor = {0};
     bool had_errors = {0};
+
     if (!parser_parse_token(ast, tokens, errors, &token, &cursor, &had_errors)) {
         return false;
     }
-
     while (token != NULL && token->type != TOKEN_EOF) {
-        SourcePos declaration_pos = token->pos;
         size_t start = cursor;
         size_t error_start = errors->length;
+        RootResult result = parse_root(tokens, string_bytes, ast, &cursor,
+                                       errors);
 
-        if (token->type == TOKEN_KEYWORD_VAR ||
-            token->type == TOKEN_KEYWORD_CONST) {
-            bool is_const = token->type == TOKEN_KEYWORD_CONST;
-
-            cursor++;
-            if (!parse_var_declaration(tokens, string_bytes, ast, &cursor,
-                                       declaration_pos, false, is_const, false,
-                                       NULL, errors)) {
-                goto recover;
-            }
-        } else if (token->type == TOKEN_KEYWORD_GLOBAL) {
-            cursor++;
-            if (!parse_var_declaration(tokens, string_bytes, ast, &cursor,
-                                       declaration_pos, true, false, false,
-                                       NULL, errors)) {
-                goto recover;
-            }
-        } else if (token->type == TOKEN_KEYWORD_TYPE) {
-            cursor++;
-            if (!parse_type_declaration(tokens, string_bytes, ast, &cursor,
-                                        declaration_pos,
-                                        errors)) {
-                goto recover;
-            }
-        } else if (token->type == TOKEN_KEYWORD_FUN) {
-            cursor++;
-            if (!parse_function_declaration(tokens, string_bytes, ast, &cursor,
-                                            declaration_pos, errors)) {
-                goto recover;
-            }
-        } else if (token->type == TOKEN_KEYWORD_METHOD ||
-                   token->type == TOKEN_KEYWORD_STATIC) {
-            bool is_static = token->type == TOKEN_KEYWORD_STATIC;
-
-            cursor++;
-            if (!parse_method_declaration(tokens, string_bytes, ast, &cursor,
-                                          declaration_pos, is_static, errors)) {
-                goto recover;
-            }
-        } else if (assignment_ahead(tokens, cursor)) {
-            size_t statement;
-
-            if (!parse_assignment(tokens, string_bytes, ast, &cursor,
-                                  &statement, errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (token->type == TOKEN_KEYWORD_IF) {
-            size_t statement;
-
-            if (!parse_if(tokens, string_bytes, ast, &cursor, &statement,
-                          errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (token->type == TOKEN_KEYWORD_MATCH) {
-            size_t statement;
-
-            if (!parse_match(tokens, string_bytes, ast, &cursor, false,
-                             &statement, errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (token->type == TOKEN_KEYWORD_FOR) {
-            size_t statement;
-
-            if (!parse_for(tokens, string_bytes, ast, &cursor, &statement,
-                           errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (token->type == TOKEN_KEYWORD_SCOPE) {
-            size_t statement;
-            if (!parse_scope(tokens, string_bytes, ast, &cursor, &statement, errors)) goto recover;
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (token->type == TOKEN_KEYWORD_WHILE) {
-            size_t statement;
-
-            if (!parse_while(tokens, string_bytes, ast, &cursor, &statement,
-                             errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (index_assignment_ahead(tokens, cursor)) {
-            size_t statement;
-
-            if (!parse_index_assignment(tokens, string_bytes, ast, &cursor,
-                                        &statement, errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (field_assignment_ahead(tokens, cursor)) {
-            size_t statement;
-
-            if (!parse_field_assignment(tokens, string_bytes, ast, &cursor,
-                                        &statement, errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else if (argument_looks_like_expression(token)) {
-            size_t statement;
-
-            if (!parse_expression_statement(tokens, string_bytes, ast, &cursor,
-                                            &statement,
-                                            errors)) {
-                goto recover;
-            }
-            if (!list_push(&ast->roots, &statement)) {
-                error_report_fatal(errors,
-                             MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                return false;
-            }
-        } else {
-            error_report_at(errors, token->pos,
-                            MESSAGE_PARSER_EXPECTED_VAR_TYPE_OR_FUN);
-            goto recover;
+        if (result == ROOT_ABORT) {
+            return false;
         }
-        if (errors->length > error_start) had_errors = true;
-        token = token_at(tokens, cursor);
-        continue;
-
-recover:
+        if (result == ROOT_PARSED) {
+            had_errors = had_errors || errors->length > error_start;
+            token = token_at(tokens, cursor);
+            continue;
+        }
         if (errors->length == error_start) {
-            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            error_report_fatal(errors,
+                               MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         }
-        if (!parser_parse_step(errors, &had_errors, start, tokens, &cursor, &token)) {
-        return false;
+        if (!parser_parse_step(errors, &had_errors, start, tokens, &cursor,
+                               &token)) {
+            return false;
+        }
     }
-    }
-
     return !had_errors;
 }

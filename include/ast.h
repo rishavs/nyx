@@ -1,5 +1,5 @@
-#ifndef NIPPY_AST_H
-#define NIPPY_AST_H
+#ifndef NYX_AST_H
+#define NYX_AST_H
 
 #include "identifier.h"
 #include "list.h"
@@ -61,13 +61,18 @@ typedef enum {
     AST_INDEX_ASSIGNMENT,
     AST_MEMBER_ACCESS,
     AST_MEMBER_ASSIGNMENT,
-    AST_SCOPE
+    AST_SCOPE,
+    AST_DEFER,
+    AST_PARALLEL,
+    AST_PARALLEL_ARM,
+    AST_WHEN,
+    AST_WHEN_ARM
 } AstNodeKind;
 
 /* Names live inline: a List element may not hold a pointer, so a symbol is a
    fixed-size character array and nodes refer to it by index. */
 typedef struct {
-    char text[NIPPY_IDENTIFIER_MAX];
+    char text[NYX_IDENTIFIER_MAX];
 } AstSymbol;
 
 /* The syntax tree carries no resolved types. A node records only syntax: what
@@ -81,7 +86,7 @@ typedef struct {
     int integer_value;
     uint64_t integer_value_u;
     double float_value;
-    NippyOperator op;
+    NyxOperator op;
     size_t name_index;
     /* AST_FOR: optional value binding; associated functions: owner name. */
     size_t second_name_index;

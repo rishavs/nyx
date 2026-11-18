@@ -2,53 +2,86 @@
 
 static bool validate_source_type_depth(CheckContext *ctx, size_t index, bool union_alternative, size_t depth);
 
-static bool validate_source_type_depth_name(const AstNode *node, CheckContext *ctx, bool union_alternative, size_t *i, size_t depth, bool *outcome)
+/* Which operands of a type syntax node hold another type. */
+static const struct {
+    AstNodeKind kind;
+    bool left;
+    bool right;
+} type_operands[] = {
+    {AST_TYPE_LIST, true, false},   {AST_TYPE_FIXED_LIST, true, false},
+    {AST_TYPE_SLICE, true, false},  {AST_TYPE_RECORD, true, true},
+    {AST_TYPE_TABLE, true, true},   {AST_TYPE_FUNCTION, false, true},
+};
+
+static bool is_nil_name(const CheckContext *ctx, size_t index)
 {
-    if (node->kind == AST_TYPE_NAME) {
-        const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    const AstNode *node = ast_get_node(ctx->ast, index);
+    const char *name = node != NULL && node->kind == AST_TYPE_NAME
+                           ? ast_symbol_text(ctx->ast, node->name_index)
+                           : NULL;
 
-        if (!union_alternative && name != NULL && strcmp(name, "Nil") == 0) {
-            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
-            do { *outcome = (false); return true; } while (0);
-        }
-        do { *outcome = (true); return true; } while (0);
-    }
-    if (node->kind == AST_TYPE_UNION || node->kind == AST_TYPE_APPLICATION ||
-        node->kind == AST_TYPE_FUNCTION) {
-        bool only_nil = node->kind == AST_TYPE_UNION;
+    return name != NULL && strcmp(name, "Nil") == 0;
+}
 
-        for ((*i) = 0; (*i) < node->children_count; (*i)++) {
-            size_t child = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start + (*i));
-            const AstNode *alternative = ast_get_node(ctx->ast, child);
-            const char *name = alternative != NULL &&
-                                       alternative->kind == AST_TYPE_NAME
-                                   ? ast_symbol_text(ctx->ast,
-                                                     alternative->name_index)
-                                   : NULL;
+/* The children of a union, a type application or a function type. A union of
+   nothing but Nil has no value to hold. */
+static bool validate_alternatives(CheckContext *ctx, const AstNode *node,
+                                  size_t depth)
+{
+    bool is_union = node->kind == AST_TYPE_UNION;
+    bool only_nil = is_union;
+    size_t i;
 
-            if (name == NULL || strcmp(name, "Nil") != 0) {
-                only_nil = false;
-            }
-            if (!validate_source_type_depth(ctx, child,
-                                            node->kind == AST_TYPE_UNION,
-                                            depth - 1)) {
-                do { *outcome = (false); return true; } while (0);
-            }
-        }
-        if (only_nil) {
-            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
-            do { *outcome = (false); return true; } while (0);
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(&ctx->ast->children,
+                                                 node->children_start + i);
+
+        only_nil = only_nil && is_nil_name(ctx, child);
+        if (!validate_source_type_depth(ctx, child, is_union, depth - 1)) {
+            return false;
         }
     }
-    return false;
+    if (only_nil) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+    }
+    return !only_nil;
+}
+
+static bool validate_operands(CheckContext *ctx, const AstNode *node,
+                              size_t depth)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(type_operands); i++) {
+        if (type_operands[i].kind != node->kind) {
+            continue;
+        }
+        return (!type_operands[i].left ||
+                validate_source_type_depth(ctx, node->left_child, false,
+                                           depth - 1)) &&
+               (!type_operands[i].right ||
+                validate_source_type_depth(ctx, node->right_child, false,
+                                           depth - 1));
+    }
+    return true;
+}
+
+/* A bare Nil is no type to hold a value, except as a union alternative. */
+static bool validate_name(CheckContext *ctx, const AstNode *node, size_t index,
+                          bool union_alternative)
+{
+    if (!union_alternative && is_nil_name(ctx, index)) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+        return false;
+    }
+    return true;
 }
 
 static bool validate_source_type_depth(CheckContext *ctx, size_t index,
                                        bool union_alternative, size_t depth)
 {
     const AstNode *node = ast_get_node(ctx->ast, index);
-    size_t i;
+    bool alternatives;
 
     if (node == NULL) {
         return true;
@@ -58,25 +91,14 @@ static bool validate_source_type_depth(CheckContext *ctx, size_t index,
                         MESSAGE_PARSER_TREE_DEPTH_LIMIT, 256);
         return false;
     }
-    {
-        bool outcome;
-
-        if (validate_source_type_depth_name(node, ctx, union_alternative, &i, depth, &outcome)) {
-            return outcome;
-        }
+    if (node->kind == AST_TYPE_NAME) {
+        return validate_name(ctx, node, index, union_alternative);
     }
-    if ((node->kind == AST_TYPE_LIST || node->kind == AST_TYPE_FIXED_LIST ||
-         node->kind == AST_TYPE_SLICE || node->kind == AST_TYPE_RECORD ||
-         node->kind == AST_TYPE_TABLE) &&
-        !validate_source_type_depth(ctx, node->left_child, false, depth - 1)) {
-        return false;
-    }
-    if ((node->kind == AST_TYPE_RECORD || node->kind == AST_TYPE_TABLE ||
-         node->kind == AST_TYPE_FUNCTION) &&
-        !validate_source_type_depth(ctx, node->right_child, false, depth - 1)) {
-        return false;
-    }
-    return true;
+    alternatives = node->kind == AST_TYPE_UNION ||
+                   node->kind == AST_TYPE_APPLICATION ||
+                   node->kind == AST_TYPE_FUNCTION;
+    return (!alternatives || validate_alternatives(ctx, node, depth)) &&
+           validate_operands(ctx, node, depth);
 }
 
 static bool validate_source_type(CheckContext *ctx, size_t index,
@@ -103,63 +125,88 @@ static bool mark_invalid_root(CheckContext *ctx, List *invalid_roots, SourcePos 
     return true;
 }
 
-static bool validate_source_types_j(const AstNode *node, CheckContext *ctx, bool *valid, List *invalid_roots)
+/* Where each kind of node keeps a source type. A static call keeps its owner
+   type; `is` and match patterns name union alternatives, where Nil is allowed. */
+static const struct {
+    AstNodeKind kind;
+    size_t offset;
+    bool static_only;
+    bool union_alternative;
+} source_types[] = {
+    {AST_FIELD, offsetof(AstNode, left_child), false, false},
+    {AST_PARAMETER, offsetof(AstNode, left_child), false, false},
+    {AST_DECLARATION, offsetof(AstNode, right_child), false, false},
+    {AST_FUNCTION_DECLARATION, offsetof(AstNode, right_child), false, false},
+    {AST_TYPE_ALIAS, offsetof(AstNode, right_child), false, false},
+    {AST_MEMBER_CALL, offsetof(AstNode, right_child), false, false},
+    {AST_CALL, offsetof(AstNode, owner_type_index), true, false},
+    {AST_IS, offsetof(AstNode, right_child), false, true},
+};
+
+static size_t source_type_index(const AstNode *node, bool *union_alternative)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(source_types); i++) {
+        if (source_types[i].kind != node->kind ||
+            (source_types[i].static_only && !node->is_static)) {
+            continue;
+        }
+        *union_alternative = source_types[i].union_alternative;
+        return *(const size_t *)((const char *)node + source_types[i].offset);
+    }
+    return AST_NO_NODE;
+}
+
+/* Validate one source type; a bad one marks the root that holds it. Returns
+   false when that root cannot be found. */
+static bool check_source_type(CheckContext *ctx, List *invalid_roots,
+                              const AstNode *node, size_t index,
+                              bool union_alternative, bool *valid)
+{
+    if (index == AST_NO_NODE ||
+        validate_source_type(ctx, index, union_alternative)) {
+        return true;
+    }
+    *valid = false;
+    return mark_invalid_root(ctx, invalid_roots, node->pos);
+}
+
+/* A match's patterns sit at the even children, each followed by its arm. */
+static bool check_match_patterns(CheckContext *ctx, List *invalid_roots,
+                                 const AstNode *node, bool *valid)
 {
     size_t j;
 
     for (j = 0; j < node->children_count; j += 2) {
         size_t pattern = *(const size_t *)list_get(
             &ctx->ast->children, node->children_start + j);
-        if (!validate_source_type(ctx, pattern, true)) {
-            (*valid) = false;
-            if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
-        }
-    }
-    return true;
-}
 
-static bool validate_source_types_validate_source(size_t index, CheckContext *ctx, bool *valid, List *invalid_roots, const AstNode *node)
-{
-    if (index != AST_NO_NODE && !validate_source_type(ctx, index, false)) {
-        (*valid) = false;
-        if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
+        if (!check_source_type(ctx, invalid_roots, node, pattern, true, valid)) {
+            return false;
+        }
     }
     return true;
 }
 
 static bool validate_source_types(CheckContext *ctx, List *invalid_roots)
 {
-    size_t i;
     bool valid = true;
+    size_t i;
 
     for (i = 0; i < ctx->ast->nodes.length; i++) {
         const AstNode *node = ast_get_node(ctx->ast, i);
-        size_t index = AST_NO_NODE;
+        bool union_alternative = false;
+        size_t index = source_type_index(node, &union_alternative);
+        bool matches = (node->kind == AST_MATCH ||
+                        node->kind == AST_MATCH_EXPRESSION) &&
+                       node->integer_value != 0;
 
-        if (node->kind == AST_FIELD || node->kind == AST_PARAMETER) {
-            index = node->left_child;
-        } else if (node->kind == AST_DECLARATION ||
-                   node->kind == AST_FUNCTION_DECLARATION ||
-                   node->kind == AST_TYPE_ALIAS ||
-                   node->kind == AST_MEMBER_CALL) {
-            index = node->right_child;
-        } else if (node->kind == AST_CALL && node->is_static) {
-            index = node->owner_type_index;
-        } else if (node->kind == AST_IS) {
-            if (!validate_source_type(ctx, node->right_child, true)) {
-                valid = false;
-                if (!mark_invalid_root(ctx, invalid_roots, node->pos)) return false;
-            }
-        } else if ((node->kind == AST_MATCH ||
-                    node->kind == AST_MATCH_EXPRESSION) &&
-                   node->integer_value != 0) {
-            if (!validate_source_types_j(node, ctx, &valid, invalid_roots)) {
-        return false;
-    }
+        if (!check_source_type(ctx, invalid_roots, node, index,
+                               union_alternative, &valid) ||
+            (matches && !check_match_patterns(ctx, invalid_roots, node, &valid))) {
+            return false;
         }
-        if (!validate_source_types_validate_source(index, ctx, &valid, invalid_roots, node)) {
-        return false;
-    }
     }
     return valid;
 }
@@ -171,7 +218,8 @@ Checkpoint checker_checkpoint(const CheckContext *ctx)
                         ctx->struct_instantiations->length,
                         ctx->function_instantiations->length,
                         ctx->locals->length, ctx->globals->length,
-                        ctx->stores->length, ctx->narrowings->length};
+                        ctx->stores->length, ctx->atomics->length,
+                        ctx->channels->length, ctx->narrowings->length};
 }
 
 void checker_restore(CheckContext *ctx, Checkpoint checkpoint)
@@ -183,6 +231,8 @@ void checker_restore(CheckContext *ctx, Checkpoint checkpoint)
     ctx->locals->length = checkpoint.locals;
     ctx->globals->length = checkpoint.globals;
     ctx->stores->length = checkpoint.stores;
+    ctx->atomics->length = checkpoint.atomics;
+    ctx->channels->length = checkpoint.channels;
     ctx->narrowings->length = checkpoint.narrowings;
     name_index_rebuild(&ctx->function_index, ctx->functions);
 }
@@ -198,7 +248,7 @@ bool check_int32_expression(CheckContext *ctx, size_t ast_index, size_t *out)
     size_t type;
 
     return check_expression(ctx, ast_index, &value) &&
-           builtin_type(ctx, NIPPY_TYPE_INT32, &type) &&
+           builtin_type(ctx, NYX_TYPE_INT32, &type) &&
            inject_into(ctx, value, type, out);
 }
 
@@ -236,54 +286,131 @@ bool check_expression_expected(CheckContext *ctx, size_t ast_index,
 }
 
 
-static bool check_expression_invalidate_access_narrowing(const AstNode *node, CheckContext *ctx, size_t *out_typed, size_t *slot, size_t ast_index)
+static bool node_is_call(const AstNode *node)
 {
+    return node->kind == AST_CALL || node->kind == AST_MEMBER_CALL;
+}
+
+/* A call may change what the code around it learned about a variable. The
+   one exception is print, which reads. */
+static void invalidate_for_call(CheckContext *ctx, const AstNode *node)
+{
+    const char *called = node->kind == AST_CALL
+                             ? ast_symbol_text(ctx->ast, node->name_index)
+                             : NULL;
+
     if (node->kind == AST_MEMBER_CALL) {
         invalidate_access_narrowing(ctx, node->left_child);
     }
-    if (node->kind == AST_MEMBER_CALL || node->kind == AST_CALL) {
-        const char *called = node->kind == AST_CALL
-            ? ast_symbol_text(ctx->ast, node->name_index) : NULL;
-        if (called == NULL || strcmp(called, "print") != 0)
-            invalidate_aliased_narrowings(ctx);
+    if (node_is_call(node) && (called == NULL || strcmp(called, "print") != 0)) {
+        invalidate_aliased_narrowings(ctx);
     }
-    *out_typed = *slot;
-    if ((node->kind == AST_CALL || node->kind == AST_MEMBER_CALL) &&
-        ast_index != ctx->statement_call_ast) {
-        const TypedNode *result = typed_program_node(ctx->program,
-                                                     *out_typed);
-        const TypedType *type = result == NULL ? NULL :
-            typed_program_type(ctx->program, result->type_index);
-
-        if (type != NULL && type->kind == NIPPY_TYPE_NIL) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_VOID_VALUE);
-            return false;
-        }
-    }
-    return true;
 }
 
-static bool check_expression_apply_access_narrowing(bool ok, const AstNode *node, size_t ast_index, CheckContext *ctx, size_t *out_typed, size_t *slot)
+/* A call that yields nothing may only stand alone as a statement. */
+static bool call_yields_value(CheckContext *ctx, const AstNode *node,
+                              size_t ast_index, size_t typed)
 {
-    if (ok) {
-        if ((node->kind == AST_MEMBER_ACCESS || node->kind == AST_INDEX) &&
-            ast_index != ctx->assignment_target_ast &&
-            !apply_access_narrowing(ctx, ast_index)) {
-            return false;
-        }
-        if (!check_expression_invalidate_access_narrowing(node, ctx, out_typed, slot, ast_index)) {
+    const TypedNode *result;
+    const TypedType *type;
+
+    if (!node_is_call(node) || ast_index == ctx->statement_call_ast) {
+        return true;
+    }
+    result = typed_program_node(ctx->program, typed);
+    type = result == NULL ? NULL
+                          : typed_program_type(ctx->program, result->type_index);
+    if (type == NULL || type->kind != NYX_TYPE_NIL) {
+        return true;
+    }
+    error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_VOID_VALUE);
     return false;
 }
+
+/* What a checked expression changes around it: narrowing a member or index
+   read, forgetting what a call may have changed, and refusing a value-less
+   call used as a value. */
+static bool settle_expression(CheckContext *ctx, const AstNode *node,
+                              size_t ast_index, const size_t *slot, size_t *out)
+{
+    bool access = node->kind == AST_MEMBER_ACCESS || node->kind == AST_INDEX;
+
+    if (access && ast_index != ctx->assignment_target_ast &&
+        !apply_access_narrowing(ctx, ast_index)) {
+        return false;
     }
-    return true;
+    invalidate_for_call(ctx, node);
+    *out = *slot;
+    return call_yields_value(ctx, node, ast_index, *out);
 }
 
-bool check_expression(CheckContext *ctx, size_t ast_index,
-                             size_t *out_typed)
+/* A failed allocation is recorded once and the check carries on: the checker
+   stops descending at the next expression or statement (both refuse to run
+   after a fatal error) and the result is discarded, so a branch per
+   allocation buys nothing. Returns `allocated` for the few callers that need
+   it. */
+bool checker_ok(ErrorState *errors, bool allocated, const char *message)
+{
+    if (!allocated && !errors->fatal) {
+        error_report_fatal(errors, message);
+    }
+    return allocated;
+}
+
+/* Allocation failure leaves no reliable state for recovery, and a full
+   message buffer leaves no room to report more. */
+bool checker_cannot_recover(const ErrorState *errors)
+{
+    return errors->fatal || errors->length >= ERROR_MESSAGE_CAPACITY - 1;
+}
+
+static bool expression_match(CheckContext *ctx, const AstNode *node,
+                             size_t ast_index)
+{
+    return check_match(ctx, node, ast_index, true, TYPED_NO_NODE, &(size_t){0});
+}
+
+static const struct {
+    AstNodeKind kind;
+    NodeCheck check;
+} expression_checks[] = {
+    {AST_INTEGER_LITERAL, check_literal},
+    {AST_FLOAT_LITERAL, check_literal},
+    {AST_BOOL_LITERAL, check_bool_literal},
+    {AST_NIL_LITERAL, check_nil_literal},
+    {AST_STRING_LITERAL, check_string_literal},
+    {AST_LIST_LITERAL, check_list_literal},
+    {AST_RECORD_LITERAL, check_record_literal},
+    {AST_INDEX, check_index_expression},
+    {AST_MEMBER_ACCESS, check_member_access},
+    {AST_IS, check_is},
+    {AST_IF_EXPRESSION, check_if_expression},
+    {AST_MATCH_EXPRESSION, expression_match},
+    {AST_MEMBER_CALL, check_member_call},
+    {AST_UNARY, check_unary},
+    {AST_IDENTIFIER, check_identifier},
+    {AST_BINARY, check_binary},
+    {AST_CALL, check_call},
+};
+
+static NodeCheck expression_check_for(AstNodeKind kind)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(expression_checks); i++) {
+        if (expression_checks[i].kind == kind) {
+            return expression_checks[i].check;
+        }
+    }
+    return NULL;
+}
+
+static bool check_expression_node(CheckContext *ctx, size_t ast_index,
+                                  size_t *out_typed)
 {
     const AstNode *node = ast_get_node(ctx->ast, ast_index);
     size_t *slot;
+    NodeCheck check;
 
     if (node == NULL) {
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
@@ -295,203 +422,88 @@ bool check_expression(CheckContext *ctx, size_t ast_index,
         *out_typed = *slot;
         return true;
     }
-
-    {
-        bool ok;
-
-        switch (node->kind) {
-        case AST_INTEGER_LITERAL:
-        case AST_FLOAT_LITERAL:
-            ok = check_literal(ctx, node, ast_index);
-            break;
-        case AST_BOOL_LITERAL:
-            ok = check_bool_literal(ctx, node, ast_index);
-            break;
-        case AST_NIL_LITERAL:
-            ok = check_nil_literal(ctx, node, ast_index);
-            break;
-        case AST_STRING_LITERAL:
-            ok = check_string_literal(ctx, node, ast_index);
-            break;
-        case AST_LIST_LITERAL:
-            ok = check_list_literal(ctx, node, ast_index);
-            break;
-        case AST_RECORD_LITERAL:
-            ok = check_record_literal(ctx, node, ast_index);
-            break;
-        case AST_INDEX:
-            ok = check_index_expression(ctx, node, ast_index);
-            break;
-        case AST_MEMBER_ACCESS:
-            ok = check_member_access(ctx, node, ast_index);
-            break;
-        case AST_IS:
-            ok = check_is(ctx, node, ast_index);
-            break;
-        case AST_IF_EXPRESSION:
-            ok = check_if_expression(ctx, node, ast_index);
-            break;
-        case AST_MATCH_EXPRESSION:
-            ok = check_match(ctx, node, ast_index, true, TYPED_NO_NODE,
-                             &(size_t){0});
-            break;
-        case AST_MEMBER_CALL:
-            ok = check_member_call(ctx, node, ast_index);
-            break;
-        case AST_UNARY:
-            ok = check_unary(ctx, node, ast_index);
-            break;
-        case AST_IDENTIFIER:
-            ok = check_identifier(ctx, node, ast_index);
-            break;
-        case AST_BINARY:
-            ok = check_binary(ctx, node, ast_index);
-            break;
-        case AST_CALL:
-            ok = check_call(ctx, node, ast_index);
-            break;
-        default:
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-            return false;
-        }
-        if (!check_expression_apply_access_narrowing(ok, node, ast_index, ctx, out_typed, slot)) {
-        return false;
-    }
-        return ok;
-    }
-}
-
-
-static bool check_statement_narrowing_count(CheckContext *ctx, const AstNode *node, size_t *condition, Checkpoint *checkpoint, bool *then_ok, size_t return_type, size_t *then_block, size_t *else_block, size_t *children_start)
-{
-    size_t narrowing_count;
-
-    if (!check_condition(ctx, node->left_child, condition)) {
-        return false;
-    }
-    if (node->children_count == 0) {
+    check = expression_check_for(node->kind);
+    if (check == NULL) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
         return false;
     }
-    narrowing_count = ctx->narrowings->length;
-    (*checkpoint) = checker_checkpoint(ctx);
-    if (!push_if_narrowing(ctx, node->left_child)) {
-        return false;
-    }
-    {
-        size_t then_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start);
-
-        (*then_ok) = check_block(ctx, then_ast, return_type, then_block);
-    }
-    ctx->narrowings->length = narrowing_count;
-    if (!(*then_ok)) {
-        if (ctx->errors->fatal ||
-            ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) return false;
-        checker_restore(ctx, (*checkpoint));
-    }
-    if (node->children_count > 1) {
-        size_t else_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + 1);
-
-        if (!(*then_ok)) ctx->errors->reported = false;
-        if (!push_else_narrowing(ctx, node->left_child)) {
-            ctx->narrowings->length = narrowing_count;
-            return false;
-        }
-        if (!check_block(ctx, else_ast, return_type, else_block)) {
-            ctx->narrowings->length = narrowing_count;
-            return false;
-        }
-        ctx->narrowings->length = narrowing_count;
-    }
-    if (!(*then_ok)) {
-        ctx->errors->reported = true;
-        return false;
-    }
-
-    (*children_start) = ctx->program->children.length;
-    if (!typed_program_push_child(ctx->program, (*then_block))) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
-    if ((*else_block) != TYPED_NO_NODE &&
-        !typed_program_push_child(ctx->program, (*else_block))) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
-    return true;
+    return check(ctx, node, ast_index) &&
+           settle_expression(ctx, node, ast_index, slot, out_typed);
 }
+
+/* Copy a name into the typed program. A failed copy is recorded and yields
+   TYPED_NO_NODE; the node that carries the name is then refused (emit_node),
+   so callers do not test it. */
+size_t checker_name(CheckContext *ctx, const char *text)
+{
+    size_t index = typed_program_copy_symbol(ctx->program, text, strlen(text));
+
+    checker_ok(ctx->errors, index != TYPED_NO_NODE,
+               MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+    return index;
+}
+
+/* A block node over children already appended. */
+bool push_block(CheckContext *ctx, SourcePos pos, size_t start,
+                       size_t count, size_t *out)
+{
+    TypedNode block = new_node(TYPED_BLOCK, TYPED_NO_NODE, pos, TYPED_NO_NODE,
+                               TYPED_NO_NODE);
+
+    block.children_start = start;
+    block.children_count = count;
+    return checker_push_node(ctx, &block, out,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+/* Allocations that produce an index the caller reads next. They refuse to run
+   after a failed allocation, because the data they would read is incomplete. */
+bool checker_push_node(CheckContext *ctx, const TypedNode *node, size_t *out,
+                       const char *message)
+{
+    return !ctx->errors->fatal &&
+           checker_ok(ctx->errors, typed_program_push(ctx->program, node, out),
+                      message);
+}
+
+bool checker_add_type(CheckContext *ctx, const TypedType *type, size_t *out)
+{
+    return !ctx->errors->fatal &&
+           checker_ok(ctx->errors,
+                      typed_program_add_type(ctx->program, type, out),
+                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+bool checker_add_signature(CheckContext *ctx,
+                           const TypedFunctionSignature *signature, size_t *out)
+{
+    return !ctx->errors->fatal &&
+           checker_ok(ctx->errors,
+                      typed_program_add_signature(ctx->program, signature, out),
+                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+bool check_expression(CheckContext *ctx, size_t ast_index, size_t *out_typed)
+{
+    return !ctx->errors->fatal &&
+           check_expression_node(ctx, ast_index, out_typed) &&
+           !ctx->errors->fatal;
+}
+
 
 static bool check_statement_locals_start(CheckContext *ctx, const char *name, const AstNode *node, size_t *int32_type, VariableEntry *entry, size_t *locals_start)
 {
     (*locals_start) = ctx->locals->length;
     (*entry) = (VariableEntry){0};
-    
-
-    if (name == NULL || find_variable(ctx->locals, name) != NULL ||
-        (!ctx->in_function && find_variable(ctx->globals, name) != NULL) ||
-        find_store(ctx->stores, name) != NULL || find_type(ctx->types, name) != NULL ||
-        find_function(ctx, name) != NULL || is_builtin_type_name(name) ||
-        is_builtin_function_name(name)) {
+    if (name == NULL || name_is_taken(ctx, name, true)) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DUPLICATE_NAME,
                         name == NULL ? "" : name);
         return false;
     }
-    if (!check_reserved_name(ctx, node->pos, name) ||
-        !check_negative_capacity(ctx, node->left_child) ||
-        !builtin_type(ctx, NIPPY_TYPE_INT32, int32_type)) return false;
-    return true;
-}
-
-static bool check_statement_local_declaration_index_assignment(const AstNode *node, bool *outcome, CheckContext *ctx, size_t ast_index, size_t *out_typed, TypedNode *typed)
-{
-    if (node->kind == AST_INDEX_ASSIGNMENT) {
-        do { *outcome = (check_index_assignment(ctx, node, ast_index, out_typed)); return false; } while (0);
-    }
-    if (node->kind == AST_MEMBER_ASSIGNMENT) {
-        do { *outcome = (check_member_assignment(ctx, node, ast_index, out_typed)); return false; } while (0);
-    }
-
-    if (node->kind == AST_EXPRESSION_STATEMENT) {
-        do { *outcome = (check_expression_statement(ctx, ast_index, out_typed)); return false; } while (0);
-    }
-
-    if (node->kind == AST_BREAK || node->kind == AST_CONTINUE) {
-        if (ctx->loop_depth == 0) {
-            error_report_at(ctx->errors, node->pos,
-                            node->kind == AST_BREAK
-                                ? MESSAGE_CHECKER_BREAK_OUTSIDE_LOOP
-                                : MESSAGE_CHECKER_CONTINUE_OUTSIDE_LOOP);
-            do { *outcome = (false); return false; } while (0);
-        }
-        (*typed).kind = node->kind == AST_BREAK ? TYPED_BREAK : TYPED_CONTINUE;
-        (*typed).type_index = TYPED_NO_NODE;
-        (*typed).pos = node->pos;
-        (*typed).left_child = TYPED_NO_NODE;
-        (*typed).right_child = TYPED_NO_NODE;
-        do { *outcome = (emit_node(ctx, typed, ast_index, out_typed)); return false; } while (0);
-    }
-    return true;
-}
-
-static bool check_statement_local_declaration(const AstNode *node, CheckContext *ctx, size_t ast_index, size_t *out_typed, size_t return_type, TypedNode *typed, bool *outcome)
-{
-    if (node->kind == AST_DECLARATION) {
-        do { *outcome = (check_local_declaration(ctx, node, ast_index, out_typed)); return true; } while (0);
-    }
-    if (node->kind == AST_FOR) {
-        do { *outcome = (check_for(ctx, node, ast_index, return_type, out_typed)); return true; } while (0);
-    }
-    if (node->kind == AST_ASSIGNMENT) {
-        do { *outcome = (check_assignment(ctx, node, ast_index, out_typed)); return true; } while (0);
-    }
-    if (!check_statement_local_declaration_index_assignment(node, outcome, ctx, ast_index, out_typed, typed)) {
-        return true;
-    }
-    return false;
+    return check_reserved_name(ctx, node->pos, name) &&
+           check_negative_capacity(ctx, node->left_child) &&
+           builtin_type(ctx, NYX_TYPE_INT32, int32_type);
 }
 
 static bool check_statement_step(const AstNode *node, CheckContext *ctx, size_t return_type, size_t *expression, const TypedNode **expression_node, size_t *coerced)
@@ -499,7 +511,7 @@ static bool check_statement_step(const AstNode *node, CheckContext *ctx, size_t 
     if (node->left_child == AST_NO_NODE) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_RETURN_TYPE_MISMATCH,
-                        ctx->function_name == NULL ? "function"
+                        ctx->function_name == NULL ? MESSAGE_FRAGMENT_FUNCTION
                                                    : ctx->function_name);
         return false;
     }
@@ -512,7 +524,7 @@ static bool check_statement_step(const AstNode *node, CheckContext *ctx, size_t 
         !inject_into(ctx, (*expression), return_type, coerced)) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_RETURN_TYPE_MISMATCH,
-                        ctx->function_name == NULL ? "function"
+                        ctx->function_name == NULL ? MESSAGE_FRAGMENT_FUNCTION
                                                    : ctx->function_name);
         return false;
     }
@@ -532,156 +544,391 @@ static bool check_statement_entry(CheckContext *ctx, const char *name, const Ast
             error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_SCOPE_CAPACITY);
         return false;
     }
-    if (!builtin_type(ctx, NIPPY_TYPE_STORE, store_type)) return false;
+    if (!builtin_type(ctx, NYX_TYPE_STORE, store_type)) return false;
     memcpy(entry.name, name, strlen(name) + 1);
     entry.type_index = (*store_type);
     entry.is_const = true;
-    if (!list_push(ctx->locals, &entry)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
+    checker_ok(ctx->errors, list_push(ctx->locals, &entry), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     checked = check_block(ctx, node->right_child, return_type, body);
     ctx->locals->length = locals_start;
     if (!checked) return false;
     return true;
 }
 
-bool check_statement(CheckContext *ctx, size_t ast_index,
-                            size_t return_type, size_t *out_typed)
+/* A deferred block runs later, when its enclosing block exits, so nothing the
+   code around it has learned about a variable still holds: a `typeof` test
+   that narrowed `x` before the defer says nothing about `x` when the block
+   runs. The body is checked with no narrowings, and it cannot leave itself by
+   return, break, or continue because those would cut the unwinding short. */
+static bool check_defer_body(CheckContext *ctx, const AstNode *node,
+                             size_t return_type, size_t *out_body)
 {
-    const AstNode *node = ast_get_node(ctx->ast, ast_index);
+    List *saved_narrowings = ctx->narrowings;
+    size_t saved_loop = ctx->loop_depth;
+    List fresh;
+    bool ok;
+
+    list_init(&fresh, sizeof(Narrowing));
+    ctx->narrowings = &fresh;
+    ctx->loop_depth = 0;
+    ctx->defer_depth++;
+    ok = check_block(ctx, node->left_child, return_type, out_body);
+    ctx->defer_depth--;
+    ctx->loop_depth = saved_loop;
+    ctx->narrowings = saved_narrowings;
+    list_free(&fresh);
+    return ok;
+}
+
+/* A node with the fields every node sets; callers add the rest. */
+TypedNode new_node(TypedNodeKind kind, size_t type_index, SourcePos pos,
+                   size_t left, size_t right)
+{
     TypedNode typed = {0};
 
+    typed.kind = kind;
+    typed.type_index = type_index;
     typed.name_index = TYPED_NO_NODE;
+    typed.pos = pos;
+    typed.left_child = left;
+    typed.right_child = right;
+    return typed;
+}
+
+static bool statement_return_unit(CheckContext *ctx, const AstNode *node,
+                                  size_t ast_index, size_t return_type,
+                                  size_t *out)
+{
+    TypedNode unit = new_node(TYPED_NIL_LITERAL, return_type, node->pos,
+                                    TYPED_NO_NODE, TYPED_NO_NODE);
+    size_t expression;
+    TypedNode typed;
+
+    if (node->left_child != AST_NO_NODE) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_VOID_RETURN);
+        return false;
+    }
+    if (!checker_push_node(ctx, &unit, &expression,
+                           MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
+        return false;
+    }
+    typed = new_node(TYPED_RETURN, return_type, node->pos, expression,
+                           TYPED_NO_NODE);
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+static bool statement_return(CheckContext *ctx, const AstNode *node,
+                             size_t ast_index, size_t return_type, size_t *out)
+{
+    const TypedType *result = typed_program_type(ctx->program, return_type);
+    const TypedNode *expression_node;
+    size_t expression;
+    size_t coerced;
+    TypedNode typed;
+
+    if (ctx->defer_depth > 0) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DEFER_EXIT);
+        return false;
+    }
+    if (result != NULL && result->kind == NYX_TYPE_NIL) {
+        return statement_return_unit(ctx, node, ast_index, return_type, out);
+    }
+    if (!check_statement_step(node, ctx, return_type, &expression,
+                              &expression_node, &coerced)) {
+        return false;
+    }
+    typed = new_node(TYPED_RETURN, return_type, node->pos, coerced,
+                           TYPED_NO_NODE);
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+/* The else block, checked under the negation of the condition. */
+static bool check_else_branch(CheckContext *ctx, const AstNode *node,
+                              size_t return_type, size_t narrowing_count,
+                              bool then_ok, size_t *else_block)
+{
+    size_t else_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                                node->children_start + 1);
+    bool ok;
+
+    if (!then_ok) {
+        ctx->errors->reported = false;
+    }
+    ok = push_else_narrowing(ctx, node->left_child) &&
+         check_block(ctx, else_ast, return_type, else_block);
+    ctx->narrowings->length = narrowing_count;
+    return ok;
+}
+
+/* The then block under the condition, then the else block. A bad then block
+   is recorded and the else block is still checked, so one pass reports both. */
+static bool check_if_branches(CheckContext *ctx, const AstNode *node,
+                              size_t return_type, size_t *then_block,
+                              size_t *else_block, bool *then_ok)
+{
+    size_t narrowing_count = ctx->narrowings->length;
+    Checkpoint checkpoint = checker_checkpoint(ctx);
+    size_t then_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                                node->children_start);
+
+    if (!push_if_narrowing(ctx, node->left_child)) {
+        return false;
+    }
+    *then_ok = check_block(ctx, then_ast, return_type, then_block);
+    ctx->narrowings->length = narrowing_count;
+    if (!*then_ok) {
+        if (checker_cannot_recover(ctx->errors)) {
+            return false;
+        }
+        checker_restore(ctx, checkpoint);
+    }
+    return node->children_count <= 1 ||
+           check_else_branch(ctx, node, return_type, narrowing_count, *then_ok,
+                             else_block);
+}
+
+static bool statement_if(CheckContext *ctx, const AstNode *node,
+                         size_t ast_index, size_t return_type, size_t *out)
+{
+    size_t else_block = TYPED_NO_NODE;
+    size_t condition;
+    size_t then_block;
+    bool then_ok;
+    TypedNode typed;
+
+    if (!check_condition(ctx, node->left_child, &condition)) {
+        return false;
+    }
+    if (node->children_count == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return false;
+    }
+    if (!check_if_branches(ctx, node, return_type, &then_block, &else_block,
+                           &then_ok)) {
+        return false;
+    }
+    if (!then_ok) {
+        ctx->errors->reported = true;
+        return false;
+    }
+    typed = new_node(TYPED_IF, TYPED_NO_NODE, node->pos, condition,
+                           TYPED_NO_NODE);
+    typed.children_start = ctx->program->children.length;
+    typed.children_count = node->children_count > 1 ? 2 : 1;
+    checker_ok(ctx->errors, typed_program_push_child(ctx->program, then_block),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    if (else_block != TYPED_NO_NODE) {
+        checker_ok(ctx->errors,
+                   typed_program_push_child(ctx->program, else_block),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+static bool statement_match(CheckContext *ctx, const AstNode *node,
+                            size_t ast_index, size_t return_type, size_t *out)
+{
+    return check_match(ctx, node, ast_index, false, return_type, out);
+}
+
+static bool statement_scope(CheckContext *ctx, const AstNode *node,
+                            size_t ast_index, size_t return_type, size_t *out)
+{
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    size_t capacity, int32_type, store_type, body;
+    TypedNode typed;
+
+    if (!check_statement_entry(ctx, name, node, &int32_type, &capacity,
+                               &store_type, return_type, &body)) {
+        return false;
+    }
+    typed = new_node(TYPED_SCOPE, store_type, node->pos, capacity, body);
+    typed.name_index = typed_program_copy_symbol(ctx->program, name,
+                                                 strlen(name));
+    typed.store_id = TYPED_NO_NODE;
+    if (typed.name_index == TYPED_NO_NODE) {
+        error_report_fatal(ctx->errors,
+                           MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
+        return false;
+    }
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+static bool statement_parallel(CheckContext *ctx, const AstNode *node,
+                               size_t ast_index, size_t return_type,
+                               size_t *out)
+{
+    return check_parallel(ctx, node, ast_index, return_type, out);
+}
+
+static bool statement_when(CheckContext *ctx, const AstNode *node,
+                           size_t ast_index, size_t return_type, size_t *out)
+{
+    return check_when(ctx, node, ast_index, return_type, out);
+}
+
+static bool statement_defer(CheckContext *ctx, const AstNode *node,
+                            size_t ast_index, size_t return_type, size_t *out)
+{
+    size_t body;
+    TypedNode typed;
+
+    if (!check_defer_body(ctx, node, return_type, &body)) {
+        return false;
+    }
+    typed = new_node(TYPED_DEFER, TYPED_NO_NODE, node->pos, body,
+                           TYPED_NO_NODE);
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+static bool statement_while(CheckContext *ctx, const AstNode *node,
+                            size_t ast_index, size_t return_type, size_t *out)
+{
+    size_t condition;
+    size_t body;
+    bool checked;
+    TypedNode typed;
+
+    if (!check_condition(ctx, node->left_child, &condition)) {
+        return false;
+    }
+    ctx->loop_depth++;
+    checked = check_block(ctx, node->right_child, return_type, &body);
+    ctx->loop_depth--;
+    if (!checked) {
+        return false;
+    }
+    typed = new_node(TYPED_WHILE, TYPED_NO_NODE, node->pos, condition,
+                           body);
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+static bool statement_declaration(CheckContext *ctx, const AstNode *node,
+                                  size_t ast_index, size_t return_type,
+                                  size_t *out)
+{
+    (void)return_type;
+    return check_local_declaration(ctx, node, ast_index, out);
+}
+
+static bool statement_for(CheckContext *ctx, const AstNode *node,
+                          size_t ast_index, size_t return_type, size_t *out)
+{
+    return check_for(ctx, node, ast_index, return_type, out);
+}
+
+static bool statement_assignment(CheckContext *ctx, const AstNode *node,
+                                 size_t ast_index, size_t return_type,
+                                 size_t *out)
+{
+    (void)return_type;
+    return check_assignment(ctx, node, ast_index, out);
+}
+
+static bool statement_index_assignment(CheckContext *ctx, const AstNode *node,
+                                       size_t ast_index, size_t return_type,
+                                       size_t *out)
+{
+    (void)return_type;
+    return check_index_assignment(ctx, node, ast_index, out);
+}
+
+static bool statement_member_assignment(CheckContext *ctx, const AstNode *node,
+                                        size_t ast_index, size_t return_type,
+                                        size_t *out)
+{
+    (void)return_type;
+    return check_member_assignment(ctx, node, ast_index, out);
+}
+
+static bool statement_expression(CheckContext *ctx, const AstNode *node,
+                                 size_t ast_index, size_t return_type,
+                                 size_t *out)
+{
+    (void)node;
+    (void)return_type;
+    return check_expression_statement(ctx, ast_index, out);
+}
+
+/* break and continue: only inside a loop, and never out of a defer block. */
+static bool statement_jump(CheckContext *ctx, const AstNode *node,
+                           size_t ast_index, size_t return_type, size_t *out)
+{
+    bool is_break = node->kind == AST_BREAK;
+    TypedNode typed;
+
+    (void)return_type;
+    if (ctx->loop_depth == 0) {
+        error_report_at(ctx->errors, node->pos,
+                        ctx->defer_depth > 0
+                            ? MESSAGE_CHECKER_DEFER_EXIT
+                            : is_break ? MESSAGE_CHECKER_BREAK_OUTSIDE_LOOP
+                                       : MESSAGE_CHECKER_CONTINUE_OUTSIDE_LOOP);
+        return false;
+    }
+    typed = new_node(is_break ? TYPED_BREAK : TYPED_CONTINUE,
+                           TYPED_NO_NODE, node->pos, TYPED_NO_NODE,
+                           TYPED_NO_NODE);
+    return emit_node(ctx, &typed, ast_index, out);
+}
+
+typedef bool (*StatementCheck)(CheckContext *ctx, const AstNode *node,
+                               size_t ast_index, size_t return_type,
+                               size_t *out);
+
+static const struct {
+    AstNodeKind kind;
+    StatementCheck check;
+} statement_checks[] = {
+    {AST_RETURN, statement_return},
+    {AST_IF, statement_if},
+    {AST_MATCH, statement_match},
+    {AST_SCOPE, statement_scope},
+    {AST_PARALLEL, statement_parallel},
+    {AST_WHEN, statement_when},
+    {AST_DEFER, statement_defer},
+    {AST_WHILE, statement_while},
+    {AST_DECLARATION, statement_declaration},
+    {AST_FOR, statement_for},
+    {AST_ASSIGNMENT, statement_assignment},
+    {AST_INDEX_ASSIGNMENT, statement_index_assignment},
+    {AST_MEMBER_ASSIGNMENT, statement_member_assignment},
+    {AST_EXPRESSION_STATEMENT, statement_expression},
+    {AST_BREAK, statement_jump},
+    {AST_CONTINUE, statement_jump},
+};
+
+static bool check_new_node(CheckContext *ctx, size_t ast_index,
+                                 size_t return_type, size_t *out_typed)
+{
+    const AstNode *node = ast_get_node(ctx->ast, ast_index);
+    size_t i;
+
     if (node == NULL) {
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
         return false;
     }
-
-    if (node->kind == AST_RETURN) {
-        size_t expression;
-        const TypedNode *expression_node;
-        const TypedType *result = typed_program_type(ctx->program, return_type);
-
-        size_t coerced;
-
-        if (result != NULL && result->kind == NIPPY_TYPE_NIL) {
-            TypedNode unit = {0};
-
-            if (node->left_child != AST_NO_NODE) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_VOID_RETURN);
-                return false;
-            }
-            unit.kind = TYPED_NIL_LITERAL;
-            unit.type_index = return_type;
-            unit.pos = node->pos;
-            unit.name_index = TYPED_NO_NODE;
-            unit.left_child = TYPED_NO_NODE;
-            unit.right_child = TYPED_NO_NODE;
-            if (!typed_program_push(ctx->program, &unit, &expression)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                return false;
-            }
-            typed.kind = TYPED_RETURN;
-            typed.type_index = return_type;
-            typed.pos = node->pos;
-            typed.left_child = expression;
-            typed.right_child = TYPED_NO_NODE;
-            return emit_node(ctx, &typed, ast_index, out_typed);
-        }
-        if (!check_statement_step(node, ctx, return_type, &expression, &expression_node, &coerced)) {
-        return false;
-    }
-        expression = coerced;
-        typed.kind = TYPED_RETURN;
-        typed.type_index = return_type;
-        typed.pos = node->pos;
-        typed.left_child = expression;
-        typed.right_child = TYPED_NO_NODE;
-        return emit_node(ctx, &typed, ast_index, out_typed);
-    }
-
-    if (node->kind == AST_IF) {
-        size_t condition;
-        size_t then_block;
-        size_t else_block = TYPED_NO_NODE;
-        size_t children_start;
-        bool then_ok;
-        Checkpoint checkpoint;
-
-        if (!check_statement_narrowing_count(ctx, node, &condition, &checkpoint, &then_ok, return_type, &then_block, &else_block, &children_start)) {
-        return false;
-    }
-
-        typed.kind = TYPED_IF;
-        typed.type_index = TYPED_NO_NODE;
-        typed.pos = node->pos;
-        typed.left_child = condition;
-        typed.right_child = TYPED_NO_NODE;
-        typed.children_start = children_start;
-        typed.children_count = node->children_count > 1 ? 2 : 1;
-        return emit_node(ctx, &typed, ast_index, out_typed);
-    }
-
-    if (node->kind == AST_MATCH) {
-        return check_match(ctx, node, ast_index, false, return_type,
-                           out_typed);
-    }
-
-    if (node->kind == AST_SCOPE) {
-        const char *name = ast_symbol_text(ctx->ast, node->name_index);
-        size_t capacity, int32_type, store_type, body;
-        if (!check_statement_entry(ctx, name, node, &int32_type, &capacity, &store_type, return_type, &body)) {
-        return false;
-    }
-        typed.kind = TYPED_SCOPE;
-        typed.type_index = store_type;
-        typed.pos = node->pos;
-        typed.name_index = typed_program_copy_symbol(ctx->program, name, strlen(name));
-        if (typed.name_index == TYPED_NO_NODE) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-            return false;
-        }
-        typed.left_child = capacity;
-        typed.right_child = body;
-        typed.store_id = TYPED_NO_NODE;
-        return emit_node(ctx, &typed, ast_index, out_typed);
-    }
-
-    if (node->kind == AST_WHILE) {
-        size_t condition;
-        size_t body;
-
-        if (!check_condition(ctx, node->left_child, &condition)) {
-            return false;
-        }
-        ctx->loop_depth++;
-        if (!check_block(ctx, node->right_child, return_type, &body)) {
-            ctx->loop_depth--;
-            return false;
-        }
-        ctx->loop_depth--;
-
-        typed.kind = TYPED_WHILE;
-        typed.type_index = TYPED_NO_NODE;
-        typed.pos = node->pos;
-        typed.left_child = condition;
-        typed.right_child = body;
-        return emit_node(ctx, &typed, ast_index, out_typed);
-    }
-
-    {
-        bool outcome;
-
-        if (check_statement_local_declaration(node, ctx, ast_index, out_typed, return_type, &typed, &outcome)) {
-            return outcome;
+    for (i = 0; i < NYX_COUNT_OF(statement_checks); i++) {
+        if (statement_checks[i].kind == node->kind) {
+            return statement_checks[i].check(ctx, node, ast_index, return_type,
+                                             out_typed);
         }
     }
-
     error_report_at(ctx->errors, node->pos,
                     MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
     return false;
+}
+
+/* Both entry points refuse to start after a failed allocation and report
+   failure if one happened inside, so the inconsistent state a failed
+   allocation leaves is never read by the caller. */
+bool check_statement(CheckContext *ctx, size_t ast_index, size_t return_type,
+                     size_t *out_typed)
+{
+    return !ctx->errors->fatal &&
+           check_new_node(ctx, ast_index, return_type, out_typed) &&
+           !ctx->errors->fatal;
 }
 
 
@@ -689,8 +936,10 @@ bool check_statement(CheckContext *ctx, size_t ast_index,
 bool emit_node(CheckContext *ctx, const TypedNode *node,
                       size_t ast_index, size_t *out_index)
 {
-    if (!typed_program_push(ctx->program, node, out_index)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    /* Every typed node is built here, so a node that follows a failed
+       allocation is where the check stops. */
+    if (ctx->errors->fatal ||
+        !checker_push_node(ctx, node, out_index, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
         return false;
     }
     *mapping_slot(ctx->mapping, ast_index) = *out_index;
@@ -710,783 +959,410 @@ bool push_injection(CheckContext *ctx, size_t value, size_t target,
     inject.name_index = TYPED_NO_NODE;
     inject.left_child = value;
     inject.right_child = TYPED_NO_NODE;
-    if (!typed_program_push(ctx->program, &inject, out_value)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    if (!checker_push_node(ctx, &inject, out_value, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
         return false;
     }
     return true;
 }
 
 
-/* A string literal takes the type its context gives it. The result of
-   base64() has its type fixed and must stay a Text. */
-static bool is_contextual_string(const CheckContext *ctx,
-                                 const TypedNode *node)
-{
-    (void)ctx;
-    return node->kind == TYPED_STRING_LITERAL && !node->fixed_type;
-}
 
 
-static bool inject_into_fitting_step(size_t fitting_count, CheckContext *ctx, TypedNode *value_node, bool *outcome, size_t value, size_t fitting, NippyType fitting_kind, const TypedType **target_type, size_t target, size_t *tag, size_t *out_value, NippyType first_kind, NumericConstant *constant)
-{
-    if (fitting_count > 1) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_NUMERIC_AMBIGUOUS);
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (fitting_count == 1) {
-        if (!numeric_constant_retype(ctx, value, fitting,
-                                     fitting_kind)) {
-            do { *outcome = (false); return false; } while (0);
-        }
-        /* Retyping can add a type, which may move the type array. */
-        (*target_type) = typed_program_type(ctx->program, target);
-        if ((*target_type) == NULL ||
-            !union_has_alternative(ctx->program, (*target_type), fitting,
-                                   tag)) {
-            do { *outcome = (false); return false; } while (0);
-        }
-        do { *outcome = (push_injection(ctx, value, target, (*tag), out_value)); return false; } while (0);
-    }
-    if (first_kind != NIPPY_TYPE_UNKNOWN) {
-        (void)numeric_constant_check_range(ctx, value_node->pos,
-                                           constant, first_kind);
-        do { *outcome = (false); return false; } while (0);
-    }
-    return true;
-}
+/* The lists a check owns. They live in one table so opening and closing them
+   are loops, and a new list is one enum value and one element size. */
+typedef enum {
+    CL_MAPPING,
+    CL_TYPES,
+    CL_FUNCTIONS,
+    CL_GLOBALS,
+    CL_LOCALS,
+    CL_STRUCT_INSTANTIATIONS,
+    CL_FUNCTION_INSTANTIATIONS,
+    CL_NARROWINGS,
+    CL_LAYOUT_CACHE,
+    CL_STORES,
+    CL_ATOMICS,
+    CL_CHANNELS,
+    CL_INVALID_ROOTS,
+    CL_FOLD_MEMO,
+    CL_COUNT
+} CheckList;
 
-static bool inject_into_fitting(CheckContext *ctx, size_t value, NumericConstant *constant, const TypedType **target_type, TypedNode *value_node, size_t target, size_t *tag, size_t *out_value, bool *outcome)
-{
-    if (numeric_constant_read(ctx->program, value, false, constant)) {
-        size_t fitting = TYPED_NO_NODE;
-        size_t fitting_count = 0;
-        NippyType fitting_kind = NIPPY_TYPE_UNKNOWN;
-        NippyType first_kind = NIPPY_TYPE_UNKNOWN;
-        size_t i;
+static const size_t check_list_sizes[CL_COUNT] = {
+    [CL_MAPPING] = sizeof(size_t),
+    [CL_TYPES] = sizeof(TypeEntry),
+    [CL_FUNCTIONS] = sizeof(FunctionEntry),
+    [CL_GLOBALS] = sizeof(VariableEntry),
+    [CL_LOCALS] = sizeof(VariableEntry),
+    [CL_STRUCT_INSTANTIATIONS] = sizeof(StructInstantiation),
+    [CL_FUNCTION_INSTANTIATIONS] = sizeof(FunctionInstantiation),
+    [CL_NARROWINGS] = sizeof(Narrowing),
+    [CL_LAYOUT_CACHE] = sizeof(ValueLayoutCache),
+    [CL_STORES] = sizeof(StoreEntry),
+    [CL_ATOMICS] = sizeof(AtomicEntry),
+    [CL_CHANNELS] = sizeof(ChannelEntry),
+    [CL_INVALID_ROOTS] = sizeof(bool),
+    [CL_FOLD_MEMO] = sizeof(FoldMemo),
+};
 
-        for (i = 0; i < (*target_type)->child_count; i++) {
-            size_t alternative = *(const size_t *)list_get(
-                &ctx->program->type_children,
-                (*target_type)->first_child + i);
-            const TypedType *alternative_type = typed_program_type(
-                ctx->program, alternative);
-
-            if (alternative_type == NULL ||
-                !nippy_type_is_numeric(alternative_type->kind) ||
-                (*constant).is_float !=
-                    nippy_type_is_float(alternative_type->kind)) {
-                continue;
-            }
-            if (first_kind == NIPPY_TYPE_UNKNOWN) {
-                first_kind = alternative_type->kind;
-            }
-            if ((*constant).is_float
-                    ? float_constant_fits(alternative_type->kind,
-                                          (*constant).real)
-                    : integer_constant_fits(alternative_type->kind,
-                                            (*constant).negative,
-                                            (*constant).magnitude)) {
-                fitting = alternative;
-                fitting_kind = alternative_type->kind;
-                fitting_count++;
-            }
-        }
-        if (!inject_into_fitting_step(fitting_count, ctx, value_node, outcome, value, fitting, fitting_kind, target_type, target, tag, out_value, first_kind, constant)) {
-        return true;
-    }
-    }
-    return false;
-}
-
-static bool inject_into_step_fitting(const TypedType *target_type, CheckContext *ctx, TypedNode *value_node, bool *outcome2, size_t *tag, size_t value, size_t target, size_t *out_value, size_t *first_string, size_t *first_capacity)
-{
-    size_t fitting = TYPED_NO_NODE;
-    size_t fitting_count = 0;
-    (*first_string) = TYPED_NO_NODE;
-    (*first_capacity) = 0;
-    size_t i;
-
-    for (i = 0; i < target_type->child_count; i++) {
-        size_t alternative = *(const size_t *)list_get(
-            &ctx->program->type_children,
-            target_type->first_child + i);
-        const TypedType *alternative_type = typed_program_type(
-            ctx->program, alternative);
-
-        if (alternative_type == NULL) {
-            continue;
-        }
-        if (alternative_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-            fitting = alternative;
-            fitting_count++;
-            continue;
-        }
-        if (alternative_type->kind != NIPPY_TYPE_STRING) {
-            continue;
-        }
-        if ((*first_string) == TYPED_NO_NODE) {
-            (*first_string) = alternative;
-            (*first_capacity) = alternative_type->fixed_length;
-        }
-        if (value_node->string_length <= alternative_type->fixed_length) {
-            fitting = alternative;
-            fitting_count++;
-        }
-    }
-    if (fitting_count > 1) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_STRING_AMBIGUOUS);
-        do { *outcome2 = (false); return false; } while (0);
-    }
-    if (fitting_count == 1) {
-        value_node->type_index = fitting;
-        if (!union_has_alternative(ctx->program, target_type, fitting,
-                                   tag)) {
-            do { *outcome2 = (false); return false; } while (0);
-        }
-        do { *outcome2 = (push_injection(ctx, value, target, (*tag), out_value)); return false; } while (0);
-    }
-    return true;
-}
-
-static bool inject_into_step(const TypedType *target_type, CheckContext *ctx, TypedNode *value_node, size_t *tag, size_t value, size_t target, size_t *out_value, bool *outcome2)
-{
-    if (target_type->kind != NIPPY_TYPE_UNION) {
-        do { *outcome2 = (false); return true; } while (0);
-    }
-    if (is_contextual_string(ctx, value_node)) {
-        size_t first_string = {0};
-        size_t first_capacity = {0};
-        if (!inject_into_step_fitting(target_type, ctx, value_node, outcome2, tag, value, target, out_value, &first_string, &first_capacity)) {
-        return true;
-    }
-        if (first_string != TYPED_NO_NODE) {
-            error_report_at(ctx->errors, value_node->pos,
-                            MESSAGE_CHECKER_STRING_TOO_LONG,
-                            value_node->string_length, (int)first_capacity);
-            do { *outcome2 = (false); return true; } while (0);
-        }
-    }
-    if (union_has_alternative(ctx->program, target_type,
-                              value_node->type_index, tag)) {
-        do { *outcome2 = (push_injection(ctx, value, target, (*tag), out_value)); return true; } while (0);
-    }
-    return false;
-}
-
-static bool inject_into_same_constant(const TypedType *target_type, CheckContext *ctx, size_t value, bool *outcome3, TypedNode *value_node, size_t target, size_t *out_value)
-{
-    if (nippy_type_is_numeric(target_type->kind)) {
-        NumericConstant constant;
-
-        if (!numeric_constant_read(ctx->program, value, false, &constant) ||
-            constant.is_float != nippy_type_is_float(target_type->kind)) {
-            do { *outcome3 = (false); return false; } while (0);
-        }
-        if (!numeric_constant_check_range(ctx, value_node->pos, &constant,
-                                          target_type->kind) ||
-            !numeric_constant_retype(ctx, value, target, target_type->kind)) {
-            do { *outcome3 = (false); return false; } while (0);
-        }
-        *out_value = value;
-        do { *outcome3 = (true); return false; } while (0);
-    }
-
-    if (target_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        if (!is_contextual_string(ctx, value_node)) {
-            do { *outcome3 = (false); return false; } while (0);
-        }
-        value_node->type_index = target;
-        *out_value = value;
-        do { *outcome3 = (true); return false; } while (0);
-    }
-    return true;
-}
-
-static bool inject_into_same(CheckContext *ctx, TypedNode *value_node, size_t target, size_t *out_value, size_t value, const TypedType *target_type, size_t *tag, bool *outcome3)
-{
-    if (same_type(ctx->program, value_node->type_index, target)) {
-        *out_value = value;
-        do { *outcome3 = (true); return true; } while (0);
-    }
-
-    /* A literal, or a negated literal, takes the numeric type it is assigned
-       to. This is literal typing, not a conversion: the result of an explicit
-       conversion keeps the type it was given. */
-    if (!inject_into_same_constant(target_type, ctx, value, outcome3, value_node, target, out_value)) {
-        return true;
-    }
-
-    if (target_type->kind == NIPPY_TYPE_STRING) {
-        if (!is_contextual_string(ctx, value_node)) {
-            do { *outcome3 = (false); return true; } while (0);
-        }
-        if (value_node->string_length > target_type->fixed_length) {
-            error_report_at(ctx->errors, value_node->pos,
-                            MESSAGE_CHECKER_STRING_TOO_LONG,
-                            value_node->string_length,
-                            (int)target_type->fixed_length);
-            do { *outcome3 = (false); return true; } while (0);
-        }
-        value_node->type_index = target;
-        *out_value = value;
-        do { *outcome3 = (true); return true; } while (0);
-    }
-
-    {
-        bool outcome2;
-
-        if (inject_into_step(target_type, ctx, value_node, tag, value, target, out_value, &outcome2)) {
-            do { *outcome3 = (outcome2); return true; } while (0);
-        }
-    }
-    return false;
-}
-
-bool inject_into(CheckContext *ctx, size_t value, size_t target, size_t *out_value);
-
-static bool inject_into_key(CheckContext *ctx, size_t key, size_t key_type, size_t *coerced_key, size_t item, size_t value_type, size_t *coerced_value, List *values)
-{
-    const TypedNode *key_node;
-    size_t j;
-
-    if (!inject_into(ctx, key, key_type, coerced_key) ||
-        !inject_into(ctx, item, value_type, coerced_value)) {
-        list_free(values);
-        return false;
-    }
-    key_node = typed_program_node(ctx->program, (*coerced_key));
-    if (key_node == NULL ||
-        key_node->string_offset + key_node->string_length >
-            ctx->program->bytes.length) {
-        list_free(values);
-        return false;
-    }
-    for (j = 0; j < (*values).length; j += 2) {
-        size_t previous = *(const size_t *)list_get(values, j);
-        const TypedNode *previous_node = typed_program_node(
-            ctx->program, previous);
-
-        if (previous_node != NULL &&
-            previous_node->string_length == key_node->string_length &&
-            memcmp((const unsigned char *)ctx->program->bytes.items +
-                       previous_node->string_offset,
-                   (const unsigned char *)ctx->program->bytes.items +
-                       key_node->string_offset,
-                   key_node->string_length) == 0) {
-            error_report_at(ctx->errors, key_node->pos,
-                            MESSAGE_CHECKER_RECORD_DUPLICATE_KEY);
-            list_free(values);
-            return false;
-        }
-    }
-    if (!list_push(values, coerced_key) ||
-        !list_push(values, coerced_value)) {
-        list_free(values);
-        return false;
-    }
-    return true;
-}
-
-bool inject_into(CheckContext *ctx, size_t value, size_t target, size_t *out_value);
-
-static bool inject_into_i(const TypedType *fixed, size_t element_count, CheckContext *ctx, TypedNode *value_node, size_t *element_type, size_t literal_start)
+static void checker_open(CheckContext *ctx, List *lists, const Ast *ast,
+                         TypedProgram *program, ErrorState *errors,
+                         const TypeEnv *empty_env)
 {
     size_t i;
 
-    if (fixed->child_count != 1) {
-        return false;
+    for (i = 0; i < CL_COUNT; i++) {
+        list_init(&lists[i], check_list_sizes[i]);
     }
-    if (element_count > fixed->fixed_length) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_LIST_LITERAL_LENGTH,
-                        element_count, (int)fixed->fixed_length);
-        return false;
-    }
-    (*element_type) = *(const size_t *)list_get(
-        &ctx->program->type_children, fixed->first_child);
-    for (i = 0; i < element_count; i++) {
-        size_t child = *(const size_t *)list_get(
-            &ctx->program->children, literal_start + i);
-        size_t coerced;
+    *ctx = (CheckContext){
+        .ast = ast,
+        .program = program,
+        .errors = errors,
+        .mapping = &lists[CL_MAPPING],
+        .types = &lists[CL_TYPES],
+        .functions = &lists[CL_FUNCTIONS],
+        .globals = &lists[CL_GLOBALS],
+        .locals = &lists[CL_LOCALS],
+        .struct_instantiations = &lists[CL_STRUCT_INSTANTIATIONS],
+        .function_instantiations = &lists[CL_FUNCTION_INSTANTIATIONS],
+        .narrowings = &lists[CL_NARROWINGS],
+        .layout_cache = &lists[CL_LAYOUT_CACHE],
+        .stores = &lists[CL_STORES],
+        .atomics = &lists[CL_ATOMICS],
+        .channels = &lists[CL_CHANNELS],
+        .fold_memo = &lists[CL_FOLD_MEMO],
+        .fold_epoch = 1,
+        .statement_call_ast = AST_NO_NODE,
+        .expected_ast = AST_NO_NODE,
+        .expected_type = TYPED_NO_NODE,
+        .assignment_target_ast = AST_NO_NODE,
+        .env = empty_env,
+    };
+    name_index_init(&ctx->function_index);
+}
 
-        if (!inject_into(ctx, child, (*element_type), &coerced) ||
-            !typed_program_push_child(ctx->program, coerced)) {
-            if (!ctx->errors->reported) {
-                error_report(ctx->errors,
-                             MESSAGE_CHECKER_LIST_VALUE);
-            }
+static void checker_close(CheckContext *ctx, List *lists)
+{
+    size_t i;
+
+    for (i = 0; i < CL_COUNT; i++) {
+        list_free(&lists[i]);
+    }
+    name_index_free(&ctx->function_index);
+}
+
+/* The two per-root and per-node lists must be complete before anything reads
+   them, so these loops stop at the first failed push and the check ends. */
+static bool checker_seed_roots(CheckContext *ctx, List *invalid_roots)
+{
+    size_t none = TYPED_NO_NODE;
+    bool valid = false;
+    size_t i;
+
+    checker_ok(ctx->errors, list_push(&ctx->program->match_scopes, &none),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    for (i = 0; i < ctx->ast->roots.length && !ctx->errors->fatal; i++) {
+        checker_ok(ctx->errors, list_push(invalid_roots, &valid),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    return !ctx->errors->fatal;
+}
+
+static bool checker_seed_nodes(CheckContext *ctx)
+{
+    size_t none = TYPED_NO_NODE;
+    FoldMemo unfolded = {0};
+    size_t i;
+
+    for (i = 0; i < ctx->ast->nodes.length && !ctx->errors->fatal; i++) {
+        checker_ok(ctx->errors, list_push(ctx->mapping, &none),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        checker_ok(ctx->errors, list_push(ctx->fold_memo, &unfolded),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    return !ctx->errors->fatal;
+}
+
+/* Declare every type before any body is checked. Returns false when the
+   check cannot go on. */
+static bool checker_predeclare_types(CheckContext *ctx, List *invalid_roots,
+                                     bool *had_errors)
+{
+    size_t i;
+
+    ctx->predeclaring_types = true;
+    for (i = 0; i < ctx->ast->roots.length; i++) {
+        size_t root = *(const size_t *)list_get(&ctx->ast->roots, i);
+        const AstNode *node = ast_get_node(ctx->ast, root);
+        size_t before = ctx->types->length;
+        bool declares = node != NULL && (node->kind == AST_TYPE_DECLARATION ||
+                                         node->kind == AST_TYPE_ALIAS);
+
+        if (!declares || *(const bool *)list_get(invalid_roots, i)) {
+            continue;
+        }
+        ctx->errors->reported = false;
+        if (check_type_declaration(ctx, node, root)) {
+            continue;
+        }
+        if (checker_cannot_recover(ctx->errors)) {
+            return false;
+        }
+        ctx->types->length = before;
+        *(bool *)list_get(invalid_roots, i) = true;
+        *had_errors = true;
+    }
+    ctx->predeclaring_types = false;
+    return true;
+}
+
+static bool root_type(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    const char *name = ast_symbol_text(ctx->ast, node->name_index);
+    size_t index = find_type_index(ctx->types, name);
+    TypeEntry *entry = (TypeEntry *)list_get(ctx->types, index);
+    size_t resolved;
+    bool checked;
+
+    (void)root;
+    if (entry == NULL || entry->parameter_count != 0) {
+        return entry != NULL;
+    }
+    checked = entry->kind == TYPE_ENTRY_ALIAS
+                  ? expand_alias(ctx, entry, NULL, 0, &resolved)
+                  : instantiate_struct(ctx, index, NULL, 0, &resolved);
+    checked = checked && check_type_value_size(ctx, resolved, node->pos);
+    if (checked) {
+        entry->type_index = resolved;
+    }
+    return checked;
+}
+
+static bool root_expression(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    (void)node;
+    return check_expression_statement(ctx, root, &(size_t){0});
+}
+
+static bool root_statement(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    (void)node;
+    return check_statement(ctx, root, TYPED_NO_NODE, &(size_t){0});
+}
+
+static bool root_defer(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    (void)root;
+    error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_DEFER_TOP_LEVEL);
+    return false;
+}
+
+static bool root_for(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    return check_for(ctx, node, root, TYPED_NO_NODE, &(size_t){0});
+}
+
+static bool root_assignment(CheckContext *ctx, const AstNode *node, size_t root)
+{
+    return check_assignment(ctx, node, root, &(size_t){0});
+}
+
+static bool root_index_assignment(CheckContext *ctx, const AstNode *node,
+                                  size_t root)
+{
+    return check_index_assignment(ctx, node, root, &(size_t){0});
+}
+
+static bool root_member_assignment(CheckContext *ctx, const AstNode *node,
+                                   size_t root)
+{
+    return check_member_assignment(ctx, node, root, &(size_t){0});
+}
+
+static const struct {
+    AstNodeKind kind;
+    NodeCheck check;
+} root_checks[] = {
+    {AST_DECLARATION, check_var_declaration},
+    {AST_TYPE_DECLARATION, root_type},
+    {AST_TYPE_ALIAS, root_type},
+    {AST_FUNCTION_DECLARATION, check_function_declaration},
+    {AST_EXPRESSION_STATEMENT, root_expression},
+    {AST_IF, root_statement},
+    {AST_MATCH, root_statement},
+    {AST_SCOPE, root_statement},
+    {AST_WHILE, root_statement},
+    {AST_PARALLEL, root_statement},
+    {AST_WHEN, root_statement},
+    {AST_DEFER, root_defer},
+    {AST_FOR, root_for},
+    {AST_ASSIGNMENT, root_assignment},
+    {AST_INDEX_ASSIGNMENT, root_index_assignment},
+    {AST_MEMBER_ASSIGNMENT, root_member_assignment},
+};
+
+static NodeCheck root_check_for(AstNodeKind kind)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(root_checks); i++) {
+        if (root_checks[i].kind == kind) {
+            return root_checks[i].check;
+        }
+    }
+    return NULL;
+}
+
+/* A checked root that is a function body or a statement joins the program's
+   roots. A generic function is only a template: its instantiations add their
+   own concrete roots when called. */
+static void checker_publish_root(CheckContext *ctx, const AstNode *node,
+                                 size_t root)
+{
+    size_t typed_root = *mapping_slot(ctx->mapping, root);
+    bool declares = node->kind == AST_TYPE_DECLARATION ||
+                    node->kind == AST_TYPE_ALIAS;
+
+    if (declares || typed_root == TYPED_NO_NODE) {
+        return;
+    }
+    checker_ok(ctx->errors, list_push(&ctx->program->roots, &typed_root),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+/* Check one root. Returns false when the whole check must stop. */
+static bool checker_check_root(CheckContext *ctx, List *invalid_roots, size_t i,
+                               bool *had_errors)
+{
+    size_t root = *(const size_t *)list_get(&ctx->ast->roots, i);
+    const AstNode *node = ast_get_node(ctx->ast, root);
+    Checkpoint checkpoint = checker_checkpoint(ctx);
+    NodeCheck check;
+
+    if (*(const bool *)list_get(invalid_roots, i)) {
+        return true;
+    }
+    ctx->errors->reported = false;
+    if (node == NULL) {
+        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, root);
+        return false;
+    }
+    check = root_check_for(node->kind);
+    if (check == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return false;
+    }
+    if (check(ctx, node, root)) {
+        checker_publish_root(ctx, node, root);
+        return !ctx->errors->fatal;
+    }
+    if (!ctx->errors->reported) {
+        error_unknown_if_none(ctx->errors);
+    }
+    if (checker_cannot_recover(ctx->errors)) {
+        return false;
+    }
+    checker_restore(ctx, checkpoint);
+    *had_errors = true;
+    return true;
+}
+
+/* Whole-program rules that need every type: a Handle's payload must not be a
+   fixed-size value, and no by-value type may exceed the size cap. */
+static bool checker_check_type(CheckContext *ctx, size_t index, bool *failed)
+{
+    const TypedProgram *program = ctx->program;
+    const TypedType *type = typed_program_type(program, index);
+    const TypedNode *declaration;
+    SourcePos pos = {0, 1, 1};
+    size_t element;
+    bool valid = true;
+
+    if (type == NULL) {
+        return true;
+    }
+    if (type->kind == NYX_TYPE_HANDLE && type->child_count == 1) {
+        element = *(const size_t *)list_get(&program->type_children,
+                                            type->first_child);
+        if (!check_handle_payload(ctx, element, &valid)) {
+            return false;
+        }
+        if (!valid) {
+            error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+            *failed = true;
+            return true;
+        }
+    }
+    if (!is_sized_type(program, index)) {
+        return true;
+    }
+    declaration = type->kind == NYX_TYPE_STRUCT
+                      ? typed_program_node(program, type->declaration_node)
+                      : NULL;
+    pos = declaration == NULL ? pos : declaration->pos;
+    *failed = !check_type_value_size(ctx, index, pos);
+    return true;
+}
+
+/* Returns false when the check cannot go on; `failed` reports a rejected
+   program. */
+static bool checker_check_types(CheckContext *ctx, bool *failed)
+{
+    size_t i;
+
+    for (i = 0; i < ctx->program->types.length && !*failed; i++) {
+        if (!checker_check_type(ctx, i, failed)) {
             return false;
         }
     }
     return true;
 }
 
-static bool inject_into_record(const TypedType *target_type, TypedNode *value_node, CheckContext *ctx, const TypedType **record, size_t *entries, size_t *literal_start)
+static bool checker_check_roots(CheckContext *ctx, List *invalid_roots,
+                                bool *had_errors)
 {
-    (*record) = target_type;
-    
-    
-    (*entries) = value_node->children_count / 2;
-    (*literal_start) = value_node->children_start;
-    
-    
-    
+    size_t i;
 
-    if ((*record)->kind != NIPPY_TYPE_RECORD || (*record)->child_count != 2) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_RECORD_LITERAL_CONTEXT);
+    for (i = 0; i < ctx->ast->roots.length; i++) {
+        if (!checker_check_root(ctx, invalid_roots, i, had_errors)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool checker_run(CheckContext *ctx, List *invalid_roots)
+{
+    bool had_errors = false;
+
+    if (!checker_seed_roots(ctx, invalid_roots)) {
         return false;
     }
-    if (value_node->children_count % 2 != 0 ||
-        (*entries) > (*record)->fixed_length) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_RECORD_CAPACITY);
+    had_errors = !validate_source_types(ctx, invalid_roots);
+    if (!checker_seed_nodes(ctx) ||
+        !checker_predeclare_types(ctx, invalid_roots, &had_errors) ||
+        !checker_check_roots(ctx, invalid_roots, &had_errors) ||
+        (!had_errors && !checker_check_types(ctx, &had_errors))) {
         return false;
     }
-    return true;
-}
-
-static bool inject_into_value_step(const TypedType *target_type, CheckContext *ctx, TypedNode *value_node, bool *outcome2)
-{
-    if (target_type->kind == NIPPY_TYPE_LIST) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_LIST_LITERAL_CONTEXT);
-        do { *outcome2 = (false); return false; } while (0);
-    }
-    if (target_type->kind != NIPPY_TYPE_FIXED_LIST) {
-        error_report_at(ctx->errors, value_node->pos,
-                        MESSAGE_CHECKER_LIST_LITERAL_CONTEXT);
-        do { *outcome2 = (false); return false; } while (0);
-    }
-    return true;
-}
-
-static bool inject_into_value_child(size_t *i, List *values, CheckContext *ctx, bool *outcome2, TypedNode **value_node, size_t value, size_t target, size_t children_start, size_t *out_value)
-{
-    for ((*i) = 0; (*i) < (*values).length; (*i)++) {
-        size_t child = *(const size_t *)list_get(values, (*i));
-
-        if (!typed_program_push_child(ctx->program, child)) {
-            list_free(values);
-            error_report_fatal(ctx->errors,
-                         MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            do { *outcome2 = (false); return false; } while (0);
-        }
-    }
-    (*value_node) = (TypedNode *)typed_program_node(ctx->program, value);
-    (*value_node)->type_index = target;
-    (*value_node)->children_start = children_start;
-    (*value_node)->children_count = (*values).length;
-    list_free(values);
-    *out_value = value;
-    do { *outcome2 = (true); return false; } while (0);
-    return true;
-}
-
-static bool inject_into_value_tag(TypedNode *value_node, const TypedType *target_type, bool *outcome2)
-{
-    if (value_node == NULL || target_type == NULL) {
-        do { *outcome2 = (false); return false; } while (0);
-    }
-    return true;
-}
-
-static bool inject_into_value_element_count(TypedNode **value_node, CheckContext *ctx, const TypedType *fixed, size_t *element_type, bool *outcome2, size_t value, size_t target, size_t *out_value)
-{
-    size_t element_count = (*value_node)->children_count;
-    size_t literal_start = (*value_node)->children_start;
-    size_t children_start = ctx->program->children.length;
-    if (!inject_into_i(fixed, element_count, ctx, (*value_node), element_type, literal_start)) {
-do { *outcome2 = (false); return false; } while (0);
-    }
-    (*value_node) = (TypedNode *)typed_program_node(ctx->program, value);
-    (*value_node)->type_index = target;
-    (*value_node)->children_start = children_start;
-    *out_value = value;
-    do { *outcome2 = (true); return false; } while (0);
-    return true;
-}
-
-static bool inject_into_value(CheckContext *ctx, size_t value, size_t target, size_t *out_value, bool *outcome2)
-{
-    TypedNode *value_node =
-        (TypedNode *)typed_program_node(ctx->program, value);
-    const TypedType *target_type = typed_program_type(ctx->program, target);
-    size_t tag = {0};
-    if (!inject_into_value_tag(value_node, target_type, outcome2)) {
-        return true;
-    }
-    if (value_node->kind == TYPED_RECORD_LITERAL) {
-        size_t key_type = {0};
-        const TypedType *record = {0};
-        size_t value_type = {0};
-        size_t children_start = {0};
-        List values = {0};
-        size_t i = {0};
-        size_t entries = {0};
-        size_t literal_start = {0};
-        if (!inject_into_record(target_type, value_node, ctx, &record, &entries, &literal_start)) {
-        do { *outcome2 = (false); return true; } while (0);
-    }
-        key_type = *(const size_t *)list_get(&ctx->program->type_children,
-                                             record->first_child);
-        value_type = *(const size_t *)list_get(
-            &ctx->program->type_children, record->first_child + 1);
-        children_start = ctx->program->children.length;
-        list_init(&values, sizeof(size_t));
-        for (i = 0; i < entries; i++) {
-            size_t key = *(const size_t *)list_get(
-                &ctx->program->children, literal_start + i * 2);
-            size_t item = *(const size_t *)list_get(
-                &ctx->program->children, literal_start + i * 2 + 1);
-            size_t coerced_key;
-            size_t coerced_value;
-            if (!inject_into_key(ctx, key, key_type, &coerced_key, item, value_type, &coerced_value, &values)) {
-        do { *outcome2 = (false); return true; } while (0);
-    }
-        }
-        if (!inject_into_value_child(&i, &values, ctx, outcome2, &value_node, value, target, children_start, out_value)) {
-        return true;
-    }
-    }
-    if (value_node->kind == TYPED_LIST_LITERAL) {
-        if (!inject_into_value_step(target_type, ctx, value_node, outcome2)) {
-        return true;
-    }
-        {
-            const TypedType *fixed = target_type;
-            size_t element_type;
-            if (!inject_into_value_element_count(&value_node, ctx, fixed, &element_type, outcome2, value, target, out_value)) {
-        return true;
-    }
-        }
-    }
-    {
-        bool outcome3;
-
-        if (inject_into_same(ctx, value_node, target, out_value, value, target_type, &tag, &outcome3)) {
-            do { *outcome2 = (outcome3); return true; } while (0);
-        }
-    }
-    {
-        /* A numeric literal in a union goes to the one alternative that can
-           hold it. Two fitting alternatives are ambiguous, as for strings; an
-           alternative of the right kind that is too small reports its range. */
-        NumericConstant constant;
-
-        {
-        bool outcome;
-
-        if (inject_into_fitting(ctx, value, &constant, &target_type, value_node, target, &tag, out_value, &outcome)) {
-            do { *outcome2 = (outcome); return true; } while (0);
-        }
-    }
-    }
-    return false;
-}
-
-/* A pointer into the typed program (a node or a type) is only valid until the
-   next thing is added to it: the array can move. Everything below that calls
-   something that adds nodes or types (inject_into itself, push_injection,
-   builtin_type, numeric_constant_retype) therefore reads what it needs first
-   and fetches the pointers again afterwards. `make test-poison` finds a
-   mistake here at once. */
-bool inject_into(CheckContext *ctx, size_t value, size_t target,
-                        size_t *out_value)
-{
-    {
-        bool outcome2;
-
-        if (inject_into_value(ctx, value, target, out_value, &outcome2)) {
-            return outcome2;
-        }
-    }
-    return false;
-}
-
-
-static bool checker_check_step(CheckContext *ctx, size_t *i, const Ast *ast, List *types, List *invalid_roots, ErrorState *errors, bool *had_errors)
-{
-    (*ctx).predeclaring_types = true;
-    for ((*i) = 0; (*i) < ast->roots.length; (*i)++) {
-        size_t root = *(const size_t *)list_get(&ast->roots, (*i));
-        const AstNode *node = ast_get_node(ast, root);
-        size_t before = (*types).length;
-        if (*(const bool *)list_get(invalid_roots, (*i)) || node == NULL ||
-            (node->kind != AST_TYPE_DECLARATION && node->kind != AST_TYPE_ALIAS))
-            continue;
-        errors->reported = false;
-        if (!check_type_declaration(ctx, node, root)) {
-            if (errors->fatal ||
-                errors->length >= ERROR_MESSAGE_CAPACITY - 1) return true;
-            (*types).length = before;
-            *(bool *)list_get(invalid_roots, (*i)) = true;
-            (*had_errors) = true;
-        }
-    }
-    return false;
-}
-
-static bool checker_check_error_unknown_if_none(ErrorState *errors)
-{
-    if (!errors->reported) {
-        error_unknown_if_none(errors);
-    }
-    /* Allocation failure leaves no reliable state for recovery. */
-    if (errors->fatal ||
-        errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
-        return true;
-    }
-    return false;
-}
-
-static void checker_check_expand_alias(const TypeEntry *entry, bool *checked, CheckContext *ctx, size_t *resolved, size_t index, const AstNode *node, List *types)
-{
-    if (entry->kind == TYPE_ENTRY_ALIAS)
-        (*checked) = expand_alias(ctx, entry, NULL, 0, resolved);
-    else
-        (*checked) = instantiate_struct(ctx, index, NULL, 0, resolved);
-    if ((*checked))
-        (*checked) = check_type_value_size(ctx, (*resolved), node->pos);
-    if ((*checked))
-        ((TypeEntry *)list_get(types, index))->type_index = (*resolved);
+    ctx->errors->reported = ctx->errors->reported || had_errors;
+    return !had_errors && !ctx->errors->fatal;
 }
 
 bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors)
 {
-    CheckContext ctx = {0};
+    CheckContext ctx;
     TypeEnv empty_env = {0};
-    List mapping;
-    List types;
-    List functions;
-    List globals;
-    List locals;
-    List struct_instantiations;
-    List function_instantiations;
-    List narrowings;
-    List layout_cache;
-    List stores;
-    List invalid_roots;
-    size_t i;
-    bool ok = false;
-    bool had_errors = false;
+    List lists[CL_COUNT];
+    bool ok;
 
     if (ast->roots.length == 0) {
         error_report(errors, MESSAGE_CHECKER_MISSING_AST_ROOT);
         return false;
     }
-
-    list_init(&mapping, sizeof(size_t));
-    list_init(&types, sizeof(TypeEntry));
-    list_init(&functions, sizeof(FunctionEntry));
-    list_init(&globals, sizeof(VariableEntry));
-    list_init(&locals, sizeof(VariableEntry));
-    list_init(&struct_instantiations, sizeof(StructInstantiation));
-    list_init(&function_instantiations, sizeof(FunctionInstantiation));
-    list_init(&narrowings, sizeof(Narrowing));
-    list_init(&layout_cache, sizeof(ValueLayoutCache));
-    list_init(&stores, sizeof(StoreEntry));
-    list_init(&invalid_roots, sizeof(bool));
-
-    ctx.ast = ast;
-    ctx.program = program;
-    ctx.errors = errors;
-    ctx.mapping = &mapping;
-    ctx.types = &types;
-    ctx.functions = &functions;
-    name_index_init(&ctx.function_index);
-    ctx.globals = &globals;
-    ctx.locals = &locals;
-    ctx.struct_instantiations = &struct_instantiations;
-    ctx.function_instantiations = &function_instantiations;
-    ctx.narrowings = &narrowings;
-    ctx.layout_cache = &layout_cache;
-    ctx.stores = &stores;
-    ctx.in_function = false;
-    ctx.predeclaring_types = false;
-    ctx.in_expression_statement = false;
-    ctx.statement_call_ast = AST_NO_NODE;
-    ctx.loop_depth = 0;
-    ctx.function_name = NULL;
-    ctx.depth = 0;
-    ctx.handle_depth = 0;
-    ctx.struct_depth = 0;
-    ctx.generated_names = 0;
-    ctx.expected_ast = AST_NO_NODE;
-    ctx.expected_type = TYPED_NO_NODE;
-    ctx.assignment_target_ast = AST_NO_NODE;
-    ctx.match_scope = 0;
-    ctx.env = &empty_env;
-
-    {
-        size_t empty_scope = TYPED_NO_NODE;
-        if (!list_push(&program->match_scopes, &empty_scope)) {
-            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-            goto done;
-        }
-    }
-
-    for (i = 0; i < ast->roots.length; i++) {
-        bool valid = false;
-        if (!list_push(&invalid_roots, &valid)) {
-            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            goto done;
-        }
-    }
-    if (!validate_source_types(&ctx, &invalid_roots)) had_errors = true;
-
-    for (i = 0; i < ast->nodes.length; i++) {
-        size_t none = TYPED_NO_NODE;
-
-        if (!list_push(&mapping, &none)) {
-            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            goto done;
-        }
-    }
-
-    if (checker_check_step(&ctx, &i, ast, &types, &invalid_roots, errors, &had_errors)) {
-        goto done;
-    }
-    ctx.predeclaring_types = false;
-
-    for (i = 0; i < ast->roots.length; i++) {
-        size_t ast_root = *(const size_t *)list_get(&ast->roots, i);
-        const AstNode *node = ast_get_node(ast, ast_root);
-        size_t typed_root;
-        bool checked = false;
-        Checkpoint checkpoint = checker_checkpoint(&ctx);
-
-        if (*(const bool *)list_get(&invalid_roots, i)) continue;
-
-        errors->reported = false;
-
-        if (node == NULL) {
-            error_report(errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_root);
-            goto done;
-        }
-
-        switch (node->kind) {
-        case AST_DECLARATION:
-            checked = check_var_declaration(&ctx, node, ast_root);
-            break;
-        case AST_TYPE_DECLARATION:
-        case AST_TYPE_ALIAS: {
-            const char *name = ast_symbol_text(ast, node->name_index);
-            size_t index = find_type_index(&types, name);
-            const TypeEntry *entry = list_get(&types, index);
-            if (entry != NULL && entry->parameter_count == 0) {
-                size_t resolved;
-                checker_check_expand_alias(entry, &checked, &ctx, &resolved, index, node, &types);
-            } else {
-                checked = entry != NULL;
-            }
-            break;
-        }
-        case AST_FUNCTION_DECLARATION:
-            checked = check_function_declaration(&ctx, node, ast_root);
-            break;
-        case AST_EXPRESSION_STATEMENT:
-            checked = check_expression_statement(&ctx, ast_root,
-                                                 &(size_t){0});
-            break;
-        case AST_IF:
-        case AST_MATCH:
-        case AST_SCOPE:
-        case AST_WHILE:
-            checked = check_statement(&ctx, ast_root, TYPED_NO_NODE,
-                                      &(size_t){0});
-            break;
-        case AST_FOR:
-            checked = check_for(&ctx, node, ast_root, TYPED_NO_NODE,
-                                &(size_t){0});
-            break;
-        case AST_ASSIGNMENT:
-            checked = check_assignment(&ctx, node, ast_root, &(size_t){0});
-            break;
-        case AST_INDEX_ASSIGNMENT:
-            checked = check_index_assignment(&ctx, node, ast_root,
-                                             &(size_t){0});
-            break;
-        case AST_MEMBER_ASSIGNMENT:
-            checked = check_member_assignment(&ctx, node, ast_root,
-                                              &(size_t){0});
-            break;
-        default:
-            error_report_at(errors, node->pos,
-                            MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-            goto done;
-        }
-        if (!checked) {
-            if (checker_check_error_unknown_if_none(errors)) {
-        goto done;
-    }
-            checker_restore(&ctx, checkpoint);
-            had_errors = true;
-            continue;
-        }
-        if (node->kind == AST_TYPE_DECLARATION ||
-            node->kind == AST_TYPE_ALIAS) {
-            continue;
-        }
-
-        typed_root = *mapping_slot(&mapping, ast_root);
-        if (typed_root == TYPED_NO_NODE) {
-            /* A generic function is a template; its instantiations add their
-               own concrete roots when called. */
-            continue;
-        }
-        if (!list_push(&program->roots, &typed_root)) {
-            error_report_fatal(errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            goto done;
-        }
-    }
-    if (!had_errors) {
-        for (i = 0; i < program->types.length; i++) {
-            const TypedType *type = typed_program_type(program, i);
-            if (type != NULL && type->kind == NIPPY_TYPE_HANDLE &&
-                type->child_count == 1) {
-                size_t element = *(const size_t *)list_get(&program->type_children,
-                                                            type->first_child);
-                bool valid;
-                if (!check_handle_payload(&ctx, element, &valid)) goto done;
-                if (!valid) {
-                    error_report(errors, MESSAGE_CHECKER_HANDLE_FIXED);
-                    had_errors = true;
-                    break;
-                }
-            }
-            if (type != NULL && is_sized_type(program, i)) {
-                const TypedNode *declaration = type->kind == NIPPY_TYPE_STRUCT
-                    ? typed_program_node(program, type->declaration_node) : NULL;
-                SourcePos pos = declaration == NULL ? (SourcePos){0, 1, 1}
-                                                    : declaration->pos;
-                if (!check_type_value_size(&ctx, i, pos)) {
-                    had_errors = true;
-                    break;
-                }
-            }
-        }
-    }
-    ok = !had_errors;
-    if (had_errors) {
-        errors->reported = true;
-    }
-
-done:
-    list_free(&mapping);
-    list_free(&types);
-    list_free(&functions);
-    name_index_free(&ctx.function_index);
-    list_free(&globals);
-    list_free(&locals);
-    list_free(&struct_instantiations);
-    list_free(&function_instantiations);
-    list_free(&narrowings);
-    list_free(&layout_cache);
-    list_free(&stores);
-    list_free(&invalid_roots);
+    checker_open(&ctx, lists, ast, program, errors, &empty_env);
+    ok = checker_run(&ctx, &lists[CL_INVALID_ROOTS]);
+    checker_close(&ctx, lists);
     return ok;
 }

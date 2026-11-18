@@ -16,7 +16,7 @@ TEST("dynamic negative list capacity diagnostic")
         "var n: Int32 = -1\nvar xs = s.list<Int32>(n)\n",
         MESSAGE_RUNTIME_NEGATIVE_CAPACITY + 7, "negative list capacity");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:3:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:3:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -55,7 +55,7 @@ TEST("dynamic list access reports its source location")
         "print(xs[i])\n",
         MESSAGE_RUNTIME_LIST_BOUNDS + 7, "dynamic list bounds location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -68,7 +68,7 @@ TEST("stale dynamic list access reports its source location")
         "print(xs[0])\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list access location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -98,7 +98,7 @@ TEST("stale list")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale dynamic list");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:7:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:7:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -111,7 +111,7 @@ TEST("stale list length reports its source location")
         "print(xs.len())\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list length location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -124,7 +124,7 @@ TEST("stale list pop and optional get report their source locations")
         "print(xs.pop())\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list pop location");
     if (result != TEST_PASS ||
-        !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
+        !file_contains(test_path("runtime.log"), "nyx: test.nip:4:"))
         return TEST_FAIL;
     result = run_escaped_failure(
         "global keep: Store = Store(64)\n"
@@ -133,7 +133,7 @@ TEST("stale list pop and optional get report their source locations")
         "print(xs.get(0))\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale list get location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -214,6 +214,56 @@ TEST("list pop value")
         "var n: Int32 = pop_value([1, 2, 3])\n";
 
     return run_generated(source, "3\n", "list pop value");
+}
+
+TEST("list pop of a union element")
+{
+    const char *source =
+        "fun show(v: Int32 | Bool | Nil)\n"
+        "  if typeof v is Int32 then\n"
+        "    print(\"int\")\n"
+        "  elseif typeof v is Bool then\n"
+        "    print(\"bool\")\n"
+        "  else\n"
+        "    print(\"nil\")\n"
+        "  end\n"
+        "end\n"
+        "fun run(xs: Array<Int32 | Bool, 3>)\n"
+        "  show(xs.pop())\n"
+        "  show(xs.pop())\n"
+        "  show(xs.pop())\n"
+        "end\n"
+        "var items: Array<Int32 | Bool, 3> = []\n"
+        "items.push(1)\n"
+        "items.push(true)\n"
+        "run(items)\n";
+
+    return run_generated(source, "bool\nint\nnil\n",
+                         "a pop that widens a union element with Nil");
+}
+
+TEST("list get of a union element")
+{
+    const char *source =
+        "global arena: Store = Store(256)\n"
+        "fun show(v: Int32 | Bool | Nil)\n"
+        "  if typeof v is Int32 then\n"
+        "    print(\"int\")\n"
+        "  elseif typeof v is Bool then\n"
+        "    print(\"bool\")\n"
+        "  else\n"
+        "    print(\"nil\")\n"
+        "  end\n"
+        "end\n"
+        "var xs: List<Int32 | Bool> = arena.list<Int32 | Bool>(2)\n"
+        "xs.push(1)\n"
+        "xs.push(true)\n"
+        "show(xs.get(0))\n"
+        "show(xs.get(1))\n"
+        "show(xs.get(5))\n";
+
+    return run_generated(source, "int\nbool\nnil\n",
+                         "a get that widens a union element with Nil");
 }
 
 TEST("empty list pop")
@@ -337,7 +387,7 @@ TEST("stale slice")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale slice");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:10:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:10:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -445,7 +495,7 @@ TEST("Record full")
     TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_RECORD_FULL + 7,
                                               "Record full");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:2:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -463,7 +513,7 @@ TEST("Record missing key reports its location")
         "print(x[\"b\"])\n",
         MESSAGE_RUNTIME_MAP_MISSING + 7, "Record missing key");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:2:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -478,7 +528,7 @@ TEST("Table missing")
     TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_MAP_MISSING + 7,
                                               "Table missing key");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:3:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:3:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -496,7 +546,7 @@ TEST("Table stale")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale Table");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:6:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:6:")
                ? TEST_PASS : TEST_FAIL;
 }
 

@@ -6,12 +6,12 @@ lives in the documents listed under [Documentation map](#documentation-map).
 
 ## What this is
 
-**Nippy** is a small compiler for a language of the same name. It is intended to
+**Nyx** is a small compiler for a language of the same name. It is intended to
 be a **simple, minimalistic "better C"**: one obvious way to express things, no
 undefined behaviour waiting in the corners, and a pointer model that is explicit
 about ownership instead of trusting the programmer to remember it.
 
-The compiler is written in **C11** and translates Nippy source into **C11**
+The compiler is written in **C11** and translates Nyx source into **C11**
 source, then invokes the system C compiler to produce a native binary. There is
 no interpreter, no VM, and no runtime library. The repository is a prototype:
 the language is being designed and implemented at the same time.
@@ -85,8 +85,8 @@ numbered rules are the concrete consequences.
 1. There should only be one obvious way to do things.
 2. The language surface must remain small and clean.
 3. Prioritise simplicity, elegance, expressiveness, and composability.
-4. Nippy is a high-level systems programming language with a low-level core.
-   Users should be able to do everything with Nippy that they can do with C.
+4. Nyx is a high-level systems programming language with a low-level core.
+   Users should be able to do everything with Nyx that they can do with C.
 5. Static typing.
 6. Compiles to C11. The generated C is internal IR: it is not required to be
    human-readable or formatted.
@@ -97,7 +97,7 @@ numbered rules are the concrete consequences.
 11. Low ceremony: minimise boilerplate and syntactic noise.
 12. Promote readability over compactness and complicated instructions.
 13. Lowest possible runtime overhead.
-14. No undefined behaviour. Nippy must solve for C's shortcomings here.
+14. No undefined behaviour. Nyx must solve for C's shortcomings here.
 15. The compiler should catch every memory error that a local analysis can
     decide, without adding a language concept or disproportionate checker
     complexity.
@@ -118,9 +118,18 @@ the goal.
 
 | Goal | Current state |
 |---|---|
-| Rule 8 — incremental compilation | Absent for Nippy programs: every compile regenerates all the C. The repository's own build is incremental (one object per source, headers tracked). |
-| Rule 10 — concurrency | Absent, and no design recorded yet. |
-| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB; the analyser validates typed-program links and, for programs using `scope`, rejects any value that could outlive the scoped Store it came from (conservative, local, no heap points-to). There is no per-object ownership analysis. |
+| Rule 8 — incremental compilation | Absent for Nyx programs: every compile regenerates all the C. The repository's own build is incremental (one object per source, headers tracked). |
+| Rule 10 — concurrency | Mostly present. `parallel` blocks run arms on POSIX threads with a shared fixed-capacity pool Store, global `Atomic` cells give counters and flags, and global channels (with timers, `when`, and a deadlock report) let long-running arms exchange plain values. Channels can also be made in a parallel pool, and arms run on reused workers. Messages are limited to plain values within the by-value cap (64 KiB by default, configurable), and there is no way yet to share a large object between threads while they run. |
+| Rule 14/15 — no UB, locally checked memory errors | Stores provide checked arena allocation and generation-checked handles; fixed strings, dynamic-string descriptors, builders, arrays, lists, slices, records, and tables are runtime-checked for bounds and staleness; direct recursion has a runtime depth guard; by-value types are capped at 64 KiB by default (configurable); the analyser validates typed-program links and, for programs using `scope`, rejects any value that could outlive the scoped Store it came from (conservative, local, no heap points-to). There is no per-object ownership analysis. |
+
+### Compiler goals
+
+1. Fail scoped
+2. Forward execution only
+3. Data driven and declarative
+4. CRAP score of < 10
+5. All compiler messages in a single file/module
+6. Each compiler phase does a single pass over its input
 
 ## Documentation map
 
@@ -129,7 +138,7 @@ the goal.
 | `README.md` | What works today, for a new user |
 | `ARCH.md` | Pipeline, stage ownership, data structures, failure behaviour, known gaps |
 | `API.md` | What callers of `include/` may rely on: signatures, ownership, failure contracts |
-| `SEMANTICS.md` | What a Nippy program means and which programs are accepted |
+| `SEMANTICS.md` | What a Nyx program means and which programs are accepted |
 | `GRAMMAR.ebnf` | The accepted source grammar in EBNF |
 | `BUILD.md` | Build targets, flags, test harness, allocation-failure testing, tooling |
 
@@ -179,7 +188,7 @@ personal preference.
 - **Braces:** opening brace on its own line for function definitions, on the
   same line for `if`/`for`/`while`/`switch`. `case` labels sit at the
   `switch`'s indentation level.
-- **Headers:** guarded as `NIPPY_<FILE>_H`. Public modules get a header in
+- **Headers:** guarded as `NYX_<FILE>_H`. Public modules get a header in
   `include/` and a `COMPILER_SOURCES` entry. Internal helpers shared by several
   modules in one stage get a private `compiler/<stage>/<stage>_internal.h`;
   they are not part of the public API. Every new `.c` file needs a

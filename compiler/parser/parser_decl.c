@@ -9,7 +9,7 @@ static bool parse_default_literal(const TokenList *tokens, const List *string_by
         return false;
     value = ast_get_node(ast, *out);
     if (value != NULL && value->kind == AST_UNARY &&
-        value->op == NIPPY_OPERATOR_NEG) {
+        value->op == NYX_OPERATOR_NEG) {
         value = ast_get_node(ast, value->left_child);
         if (value != NULL && (value->kind == AST_INTEGER_LITERAL ||
                               value->kind == AST_FLOAT_LITERAL)) return true;

@@ -93,11 +93,11 @@ int file_equals(const char *path, const char *expected)
 }
 
 
-const char *nippy_binary(void)
+const char *nyx_binary(void)
 {
-    const char *override = getenv("NIPPY_BIN");
+    const char *override = getenv("NYX_BIN");
 
-    return override != NULL && override[0] != '\0' ? override : "./bin/nippy";
+    return override != NULL && override[0] != '\0' ? override : "./bin/nyx";
 }
 
 
@@ -105,7 +105,7 @@ int run_compiler(const char *source_path, const char *binary, const char *log)
 {
     char command[1536];
 
-    snprintf(command, sizeof(command), "%s %s %s > %s 2>&1", nippy_binary(),
+    snprintf(command, sizeof(command), "%s %s %s > %s 2>&1", nyx_binary(),
              source_path, binary, log);
     return system(command);
 }
@@ -134,8 +134,8 @@ int run_with_alloc_failure(size_t index, const char *source_path,
         dup2(descriptor, STDERR_FILENO);
         close(descriptor);
         snprintf(value, sizeof(value), "%zu", index);
-        setenv("NIPPY_FAIL_ALLOC_AFTER", value, 1);
-        execl(nippy_binary(), nippy_binary(), source_path, binary, (char *)NULL);
+        setenv("NYX_FAIL_ALLOC_AFTER", value, 1);
+        execl(nyx_binary(), nyx_binary(), source_path, binary, (char *)NULL);
         _exit(127);
     }
     if (waitpid(pid, &status, 0) < 0) {
@@ -171,13 +171,18 @@ typedef enum {
 /* Compiles `source`, builds the generated C (optionally with a separate
    driver), runs it, and checks the outcome. This is the one place that knows
    how a generated program is built, so the public helpers below stay thin. */
-static TestResult build_and_run(const char *source, const char *driver,
-                                Expectation expectation, const char *expected,
-                                const char *what, bool skip_escape_analysis)
+static TestResult build_and_run_limit(const char *source, const char *driver,
+                                      Expectation expectation,
+                                      const char *expected, const char *what,
+                                      bool skip_escape_analysis,
+                                      int max_value_bytes)
 {
     CompilerConfig config = {.header_name = "runtime.h",
                              .source_name = "test.nip",
-                             .skip_escape_analysis = skip_escape_analysis};
+                             .skip_escape_analysis = skip_escape_analysis,
+                             .max_value_bytes = max_value_bytes,
+                             .max_list_capacity = max_value_bytes > 0
+                                                      ? max_value_bytes : 0};
     CompilerResult compiled = compiler_compile(source, &config);
     TestResult result = TEST_ERROR;
     char header[1024];
@@ -217,7 +222,7 @@ static TestResult build_and_run(const char *source, const char *driver,
             goto finished;
         }
         /* The generated translation unit always defines main; rename it so
-           the driver's main can call the Nippy functions. */
+           the driver's main can call the Nyx functions. */
         snprintf(command, sizeof(command),
                  "cc -std=c11 -Wall -Wextra -Wpedantic -Werror "
                  "-Dmain=nyx_generated_main -c %s -o %s",
@@ -275,6 +280,23 @@ finished:
 }
 
 
+static TestResult build_and_run(const char *source, const char *driver,
+                                Expectation expectation, const char *expected,
+                                const char *what, bool skip_escape_analysis)
+{
+    return build_and_run_limit(source, driver, expectation, expected, what,
+                               skip_escape_analysis, 0);
+}
+
+
+TestResult run_generated_limit(const char *source, int max_value_bytes,
+                               const char *expected, const char *what)
+{
+    return build_and_run_limit(source, NULL, EXPECT_OUTPUT, expected, what,
+                               false, max_value_bytes);
+}
+
+
 TestResult run_generated(const char *source, const char *expected,
                          const char *what)
 {
@@ -286,6 +308,31 @@ TestResult run_generated_driver(const char *source, const char *driver,
                                 const char *expected, const char *what)
 {
     return build_and_run(source, driver, EXPECT_OUTPUT, expected, what, false);
+}
+
+
+TestResult run_generated_driver_failure(const char *source, const char *driver,
+                                        const char *log_needle,
+                                        const char *what)
+{
+    return build_and_run(source, driver, EXPECT_FAILURE, log_needle, what,
+                         false);
+}
+
+
+TestResult run_generated_failure_lacking(const char *source,
+                                         const char *log_needle,
+                                         const char *absent, const char *what)
+{
+    TestResult result = build_and_run(source, NULL, EXPECT_FAILURE, log_needle,
+                                      what, false);
+
+    if (result == TEST_PASS &&
+        file_contains(test_path("runtime.log"), absent)) {
+        fprintf(stderr, "  %s: the output contains \"%s\"\n", what, absent);
+        return TEST_FAIL;
+    }
+    return result;
 }
 
 

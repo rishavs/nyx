@@ -1,208 +1,563 @@
 #include "generator_internal.h"
 
-static void emit_numeric_equality_nippy_type_is_signed_integer(const TypedType *a, const TypedType *b, bool *signed_unsigned, bool *signed_float, bool *unsigned_float)
-{
-    if ((nippy_type_is_signed_integer(a->kind) &&
-         nippy_type_is_unsigned_integer(b->kind)) ||
-        (nippy_type_is_unsigned_integer(a->kind) &&
-         nippy_type_is_signed_integer(b->kind))) {
-        (*signed_unsigned) = true;
-    }
-    if ((nippy_type_is_signed_integer(a->kind) && nippy_type_is_float(b->kind)) ||
-         (nippy_type_is_float(a->kind) && nippy_type_is_signed_integer(b->kind))) {
-        (*signed_float) = true;
-    }
-    if ((nippy_type_is_unsigned_integer(a->kind) && nippy_type_is_float(b->kind)) ||
-         (nippy_type_is_float(a->kind) && nippy_type_is_unsigned_integer(b->kind))) {
-        (*unsigned_float) = true;
-    }
-}
+/* What a root node of the typed program becomes in the generated C. */
+typedef enum {
+    ROOT_UNSUPPORTED,
+    ROOT_NONE,       /* declared elsewhere: types, Stores, atomics, channels */
+    ROOT_VARIABLE,   /* a program-level variable, initialised in main */
+    ROOT_EXPRESSION, /* an expression statement */
+    ROOT_STATEMENT,  /* a statement that runs in main */
+    ROOT_FUNCTION
+} RootKind;
 
-static bool emit_numeric_equality_unsigned_float(const TypedProgram *program, bool *signed_unsigned, bool *signed_float, TextBuffer *source)
+static const struct {
+    TypedNodeKind node;
+    RootKind root;
+} root_kinds[] = {
+    {TYPED_TYPE_DECLARATION, ROOT_NONE},
+    {TYPED_STORE_DECLARATION, ROOT_NONE},
+    {TYPED_ATOMIC_DECLARATION, ROOT_NONE},
+    {TYPED_CHANNEL_DECLARATION, ROOT_NONE},
+    {TYPED_DECLARATION, ROOT_VARIABLE},
+    {TYPED_EXPRESSION_STATEMENT, ROOT_EXPRESSION},
+    {TYPED_SCOPE, ROOT_STATEMENT},
+    {TYPED_PARALLEL, ROOT_STATEMENT},
+    {TYPED_WHEN, ROOT_STATEMENT},
+    {TYPED_ASSIGNMENT, ROOT_STATEMENT},
+    {TYPED_LIST_SET, ROOT_STATEMENT},
+    {TYPED_MEMBER_WRITE, ROOT_STATEMENT},
+    {TYPED_RECORD_SET, ROOT_STATEMENT},
+    {TYPED_TABLE_SET, ROOT_STATEMENT},
+    {TYPED_FOR, ROOT_STATEMENT},
+    {TYPED_WHILE, ROOT_STATEMENT},
+    {TYPED_MATCH_BIND_STATEMENT, ROOT_STATEMENT},
+    {TYPED_IF, ROOT_STATEMENT},
+    {TYPED_FUNCTION_DECLARATION, ROOT_FUNCTION}
+};
+
+static RootKind root_kind(TypedNodeKind kind)
 {
-    bool unsigned_float = false;
     size_t i;
 
-    for (i = 0; i < program->nodes.length; i++) {
-        const TypedNode *node = typed_program_node(program, i);
-        const TypedNode *left;
-        const TypedNode *right;
-        const TypedType *a;
-        const TypedType *b;
-
-        if (node == NULL || node->kind != TYPED_BINARY ||
-            (node->op != NIPPY_OPERATOR_EQ && node->op != NIPPY_OPERATOR_NE)) {
-            continue;
-        }
-        left = typed_program_node(program, node->left_child);
-        right = typed_program_node(program, node->right_child);
-        a = left == NULL ? NULL : typed_program_type(program, left->type_index);
-        b = right == NULL ? NULL : typed_program_type(program, right->type_index);
-        if (a == NULL || b == NULL) {
-            continue;
-        }
-        emit_numeric_equality_nippy_type_is_signed_integer(a, b, signed_unsigned, signed_float, &unsigned_float);
+    for (i = 0; i < NYX_COUNT_OF(root_kinds); i++) {
+        if (root_kinds[i].node == kind) return root_kinds[i].root;
     }
-    if ((*signed_unsigned) && !buffer_append(source,
-        "static inline bool nyx_eq_su(int64_t s, uint64_t u)\n"
-        "{ return s >= 0 && (uint64_t)s == u; }\n"
-        "static inline bool nyx_eq_us(uint64_t u, int64_t s)\n"
-        "{ return nyx_eq_su(s, u); }\n\n")) {
-        return true;
-    }
-    if ((unsigned_float || (*signed_float)) && !buffer_append(source,
-        "static inline bool nyx_eq_uf(uint64_t u, double f)\n"
-        "{\n"
-        "    if (!(f >= 0.0 && f < 18446744073709551616.0)) return false;\n"
-        "    return (uint64_t)f == u && (double)u == f;\n"
-        "}\n"
-        "static inline bool nyx_eq_fu(double f, uint64_t u)\n"
-        "{ return nyx_eq_uf(u, f); }\n\n")) {
-        return true;
-    }
-    return false;
+    return ROOT_UNSUPPORTED;
 }
 
-/* Emit only the mixed-domain helpers needed by numeric equality. */
-static bool emit_numeric_equality(const TypedProgram *program,
-                                  TextBuffer *source, ErrorState *errors)
+/* What the roots say about the program as a whole. A program that is a single
+   Int32 or Int64 variable and nothing else is printed by nyx_program_value. */
+typedef struct {
+    size_t variables;
+    const TypedNode *single_variable;
+    bool has_expression_statement;
+    /* single_variable when it is the whole program and an Int32 or Int64. */
+    const TypedNode *program_value;
+} RootSummary;
+
+static bool type_has_kind(const TypedProgram *program, size_t type_index,
+                          NyxType kind)
 {
-    bool signed_unsigned = false;
-    bool signed_float = false;
-    if (emit_numeric_equality_unsigned_float(program, &signed_unsigned, &signed_float, source)) {
-        goto fail;
+    const TypedType *type = typed_program_type(program, type_index);
+
+    return type != NULL && type->kind == kind;
+}
+
+static bool is_program_value_type(const TypedProgram *program,
+                                 const TypedNode *variable)
+{
+    return type_has_kind(program, variable->type_index, NYX_TYPE_INT32) ||
+           type_has_kind(program, variable->type_index, NYX_TYPE_INT64);
+}
+
+static bool summarise_roots(const TypedProgram *program, RootSummary *summary,
+                            ErrorState *errors)
+{
+    size_t i;
+
+    memset(summary, 0, sizeof(*summary));
+    for (i = 0; i < program->roots.length; i++) {
+        const TypedNode *node = typed_program_node(
+            program, *(const size_t *)list_get(&program->roots, i));
+        RootKind kind = root_kind(node->kind);
+
+        if (kind == ROOT_UNSUPPORTED) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
+            return false;
+        }
+        if (kind == ROOT_VARIABLE) {
+            summary->variables++;
+            summary->single_variable = node;
+        }
+        summary->has_expression_statement |= kind == ROOT_EXPRESSION;
     }
-    if (signed_float && !buffer_append(source,
-        "static inline bool nyx_eq_sf(int64_t s, double f)\n"
-        "{\n"
-        "    if (s < 0) return f < 0.0 && nyx_eq_uf((uint64_t)(-(s + 1)) + 1, -f);\n"
-        "    return nyx_eq_uf((uint64_t)s, f);\n"
-        "}\n"
-        "static inline bool nyx_eq_fs(double f, int64_t s)\n"
-        "{ return nyx_eq_sf(s, f); }\n\n")) {
-        goto fail;
+    if (!summary->has_expression_statement && summary->variables == 1 &&
+        is_program_value_type(program, summary->single_variable)) {
+        summary->program_value = summary->single_variable;
     }
     return true;
-
-fail:
-    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-    return false;
 }
 
-
-static bool generator_generate_root(const TypedProgram *program, size_t i, const char *effective_source, TextBuffer *source, ErrorState *errors)
+/* One root that runs in main: a variable, or a statement. */
+static bool emit_root(const TypedProgram *program, GeneratorContext *gen,
+                      size_t position, const char *effective_source,
+                      TextBuffer *source, ErrorState *errors)
 {
-    size_t root = *(const size_t *)list_get(&program->roots, i);
+    size_t root = *(const size_t *)list_get(&program->roots, position);
     const TypedNode *node = typed_program_node(program, root);
+    RootKind kind = root_kind(node->kind);
 
-    if (node->kind == TYPED_DECLARATION &&
-        !emit_var_to_main(program, node, effective_source, source,
-                          errors)) {
-        return true;
+    if (kind == ROOT_VARIABLE) {
+        return emit_var_to_main(program, node, effective_source, source, errors);
     }
-    if ((node->kind == TYPED_EXPRESSION_STATEMENT ||
-         node->kind == TYPED_SCOPE ||
-         node->kind == TYPED_ASSIGNMENT ||
-         node->kind == TYPED_LIST_SET ||
-         node->kind == TYPED_MEMBER_WRITE ||
-         node->kind == TYPED_RECORD_SET ||
-         node->kind == TYPED_TABLE_SET ||
-         node->kind == TYPED_FOR ||
-         node->kind == TYPED_WHILE ||
-         node->kind == TYPED_MATCH_BIND_STATEMENT ||
-         node->kind == TYPED_IF) &&
-        !emit_statement(program, root, 1, effective_source, source,
-                        errors)) {
-        return true;
-    }
-    return false;
+    return (kind != ROOT_EXPRESSION && kind != ROOT_STATEMENT) ||
+           emit_statement(program, gen, root, 1, effective_source, source,
+                          errors);
 }
 
-static bool generator_generate_append_print_program(bool print_program, const TypedProgram *program, const TypedNode *single_var, size_t store_count, const char *effective_source, TextBuffer *source, ErrorState *errors, size_t *i)
+/* A program that is more than one value: `main` runs the roots in order. */
+static bool emit_main_program(const TypedProgram *program, GeneratorContext *gen,
+                              size_t store_count, const char *effective_source,
+                              TextBuffer *source, ErrorState *errors)
 {
-    if (print_program) {
-        if (!append_print_program(program, single_var, store_count,
-                                  effective_source, source, errors)) {
-            return true;
+    size_t i;
+    bool ok = emit_program_trampolines(program, gen, source, errors);
+
+    buffer_append(source, "int main(void)\n{\n");
+    ok = ok && emit_match_temporaries(program, 0, source, errors) &&
+         emit_scope_frame_declaration(program, gen, NO_ROOT_POSITION, source) &&
+         emit_store_inits(program, store_count, effective_source, source,
+                          errors) &&
+         emit_program_scope_frames(program, gen, source);
+    for (i = 0; ok && i < program->roots.length; i++) {
+        ok = emit_root(program, gen, i, effective_source, source, errors);
+    }
+    emit_store_frees(store_count, source);
+    buffer_append(source, "    return 0;\n}\n");
+    return ok;
+}
+
+static bool emit_functions(const TypedProgram *program, GeneratorContext *gen,
+                           const char *effective_source, TextBuffer *source,
+                           ErrorState *errors)
+{
+    size_t i;
+
+    for (i = 0; i < program->roots.length; i++) {
+        const TypedNode *node = typed_program_node(
+            program, *(const size_t *)list_get(&program->roots, i));
+
+        if (node->kind == TYPED_FUNCTION_DECLARATION &&
+            !emit_function(program, gen, node, i, effective_source, source,
+                           errors)) {
+            return false;
         }
-    } else {
-        if (!buffer_append(source, "int main(void)\n{\n") ||
-            !emit_match_temporaries(program, 0, source, errors) ||
-            !emit_scope_frame_declaration(program, TYPED_NO_NODE, source, errors) ||
-            !emit_store_inits(program, store_count, effective_source, source, errors)) {
+    }
+    return true;
+}
+
+
+/* The generated program is assembled from pieces. Each is fixed C text, or a
+   function that writes C, together with the facts that decide whether the
+   program gets it: it is emitted when any of `any_of` holds (or `any_of` is
+   zero), all of `all_of` hold, and none of `none_of` do. The tables below are
+   the whole story of what a program's header and source contain and in what
+   order, so adding a runtime feature is a row here and a bit in analysis.h. */
+typedef bool (*PieceEmit)(const TypedProgram *program, GeneratorContext *gen,
+                          TextBuffer *out, ErrorState *errors);
+
+typedef struct {
+    uint32_t any_of;
+    uint32_t all_of;
+    uint32_t none_of;
+    const char *text;
+    PieceEmit emit;
+} Piece;
+
+static bool piece_applies(const Piece *piece, const Analysis *analysis)
+{
+    uint32_t have = analysis->features;
+
+    return (piece->any_of == 0 || (have & piece->any_of) != 0) &&
+           (have & piece->all_of) == piece->all_of &&
+           (have & piece->none_of) == 0;
+}
+
+static bool emit_pieces(const Piece *pieces, size_t count,
+                        const TypedProgram *program, GeneratorContext *gen,
+                        TextBuffer *out, ErrorState *errors)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        bool ok;
+
+        if (!piece_applies(&pieces[i], gen->analysis)) continue;
+        ok = pieces[i].text != NULL
+                 ? buffer_append(out, pieces[i].text)
+                 : pieces[i].emit(program, gen, out, errors);
+        if (!ok || out->failed) {
             if (!errors->reported) {
                 error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             }
-            return true;
-        }
-        for ((*i) = 0; (*i) < program->roots.length; (*i)++) {
-            if (!emit_scope_frames(program,
-                                   *(const size_t *)list_get(&program->roots, (*i)),
-                                   source, errors)) {
-                return true;
-            }
-        }
-        for ((*i) = 0; (*i) < program->roots.length; (*i)++) {
-            if (generator_generate_root(program, (*i), effective_source, source, errors)) {
-        return true;
-    }
-        }
-        if (!emit_store_frees(store_count, source, errors) ||
-            !buffer_append(source, "    return 0;\n}\n")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            return true;
+            return false;
         }
     }
-    return false;
+    return true;
 }
 
-static void generator_generate_program_uses_binary_operator(bool *uses_arith_helpers, const TypedProgram *program, bool *uses_map, bool *uses_table, bool *uses_range, bool *uses_store_or_handle, bool uses_dynamic_string, bool uses_dynamic_list, bool uses_slice)
+#define ANALYSIS_NEEDS_SIZE_T                                                 \
+    (ANALYSIS_STORE_OR_HANDLE | ANALYSIS_DYNAMIC_STRING | ANALYSIS_LIST |     \
+     ANALYSIS_SLICE)
+#define ANALYSIS_NEEDS_UNUSED_MACRO                                           \
+    (ANALYSIS_NEEDS_SIZE_T | ANALYSIS_CHECKED_ARITHMETIC | ANALYSIS_CONVERSION)
+
+/* Everything that makes the program include the C library at all. */
+#define ANALYSIS_NEEDS_LIBC                                                   \
+    (ANALYSIS_STORE_OR_HANDLE | ANALYSIS_STRING | ANALYSIS_DYNAMIC_STRING |   \
+     ANALYSIS_LIST | ANALYSIS_SLICE | ANALYSIS_PRINT | ANALYSIS_RECORD |      \
+     ANALYSIS_TABLE | ANALYSIS_CHECKED_ARITHMETIC | ANALYSIS_RECURSION |      \
+     ANALYSIS_CONVERSION | ANALYSIS_RANGE | ANALYSIS_NOW | ANALYSIS_SLEEP |   \
+     ANALYSIS_ATOMICS | ANALYSIS_PARALLEL | ANALYSIS_CORES |                  \
+     ANALYSIS_CHANNELS)
+
+static bool piece_type_definitions(const TypedProgram *program,
+                                   GeneratorContext *gen, TextBuffer *out,
+                                   ErrorState *errors)
 {
-    (*uses_arith_helpers) =
-        program_uses_binary_operator(program, NIPPY_OPERATOR_DIV) ||
-        program_uses_binary_operator(program, NIPPY_OPERATOR_MOD) ||
-        program_uses_binary_operator(program, NIPPY_OPERATOR_SHL) ||
-        program_uses_binary_operator(program, NIPPY_OPERATOR_SHR);
-    (*uses_map) = false;
-    (*uses_table) = false;
-    {
-        size_t type_i;
-
-        for (type_i = 0; type_i < program->types.length; type_i++) {
-            const TypedType *type = typed_program_type(program, type_i);
-            if (type != NULL && type->kind == NIPPY_TYPE_RANGE) (*uses_range) = true;
-
-            if (type != NULL && type->kind == NIPPY_TYPE_RECORD) {
-                (*uses_map) = true;
-            }
-            if (type != NULL && type->kind == NIPPY_TYPE_TABLE) {
-                (*uses_map) = true;
-                (*uses_table) = true;
-            }
-        }
-    }
-
-    (*uses_store_or_handle) = (*uses_store_or_handle) || uses_dynamic_string ||
-                           uses_dynamic_list || uses_slice || (*uses_table);
+    return emit_type_definitions(program, gen->analysis, gen->source_name, out,
+                                 errors);
 }
 
-static bool generator_generate_arithmetic_runtime(bool uses_arith_helpers, bool uses_conversion, TextBuffer *source, ErrorState *errors, bool uses_store_or_handle, size_t store_count, bool uses_dynamic_string, bool uses_dynamic_list, bool uses_table, const TypedProgram *program)
+static bool piece_function_typedefs(const TypedProgram *program,
+                                    GeneratorContext *gen, TextBuffer *out,
+                                    ErrorState *errors)
 {
-    if ((uses_arith_helpers || uses_conversion) &&
-        !emit_arithmetic_runtime(source, errors)) {
+    (void)gen;
+    return emit_function_typedefs(program, out, errors);
+}
+
+/* A program that is one integer variable has a function that returns it. */
+static bool piece_program_value_declaration(const TypedProgram *program,
+                                            GeneratorContext *gen,
+                                            TextBuffer *out,
+                                            ErrorState *errors)
+{
+    (void)errors;
+    const TypedType *type;
+
+    if (gen->program_value == NULL) {
         return true;
     }
-    if (uses_conversion && !emit_conversion_runtime(source, errors)) {
+    type = typed_program_type(program, gen->program_value->type_index);
+    buffer_appendf(out, "%s nyx_program_value(void);\n\n",
+                    type->kind == NYX_TYPE_INT64 ? "int64_t" : "int32_t");
+    return true;
+}
+
+static const Piece header_pieces[] = {
+    {.text = "#ifndef NYX_GENERATED_H\n"
+             "#define NYX_GENERATED_H\n\n"
+             "#include <stdbool.h>\n"
+             "#include <stdint.h>\n"},
+    {.any_of = ANALYSIS_NEEDS_SIZE_T | ANALYSIS_STRING,
+     .text = "#include <stddef.h>\n"},
+    {.text = "\n"},
+    {.any_of = ANALYSIS_RECORD | ANALYSIS_TABLE, .text = "#include <stddef.h>\n"},
+    {.any_of = ANALYSIS_NEEDS_SIZE_T | ANALYSIS_TABLE,
+     .text = "typedef struct nyx_store nyx_store;\n\n"},
+    {.any_of = ANALYSIS_STORE_OR_HANDLE, .all_of = ANALYSIS_POOL,
+     .text = "#include <stdatomic.h>\n\n"},
+    {.any_of = ANALYSIS_STORE_OR_HANDLE,
+     .text = "typedef struct {\n"
+             "    nyx_store *store;\n"
+             "    size_t offset;\n"
+             "    uint64_t generation;\n"
+             "} nyx_handle;\n\n"
+             "struct nyx_store {\n"
+             "    unsigned char *data;\n"
+             "    size_t used;\n"
+             "    size_t capacity;\n"
+             "    uint64_t generation;\n"},
+    {.any_of = ANALYSIS_STORE_OR_HANDLE, .all_of = ANALYSIS_POOL,
+     .text = "    int pool;              /* a parallel block's fixed-capacity store */\n"
+             "    _Atomic size_t cursor; /* where the next allocation starts */\n"},
+    {.any_of = ANALYSIS_STORE_OR_HANDLE, .text = "};\n\n"},
+    {.emit = piece_type_definitions},
+    {.emit = piece_function_typedefs},
+    {.emit = piece_program_value_declaration},
+    {.text = "#endif\n"}
+};
+
+static bool piece_arithmetic(const TypedProgram *program, GeneratorContext *gen,
+                             TextBuffer *out, ErrorState *errors)
+{
+    (void)program;
+    (void)gen;
+    return emit_arithmetic_runtime(out, errors);
+}
+
+static bool piece_conversion(const TypedProgram *program, GeneratorContext *gen,
+                             TextBuffer *out, ErrorState *errors)
+{
+    (void)program;
+    (void)gen;
+    return emit_conversion_runtime(out, errors);
+}
+
+static bool piece_store(const TypedProgram *program, GeneratorContext *gen,
+                        TextBuffer *out, ErrorState *errors)
+{
+    const Analysis *analysis = gen->analysis;
+
+    (void)program;
+    return emit_store_runtime(
+        gen, out, analysis->store_count,
+        analysis_has(analysis, ANALYSIS_DYNAMIC_STRING),
+        analysis_has(analysis, ANALYSIS_DYNAMIC_LIST) ||
+            analysis_has(analysis, ANALYSIS_TABLE),
+        analysis_has(analysis, ANALYSIS_POOL), errors);
+}
+
+static bool piece_string(const TypedProgram *program, GeneratorContext *gen,
+                         TextBuffer *out, ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    emit_string_runtime(program, gen, out);
+    return true;
+}
+
+static bool piece_dynamic_string(const TypedProgram *program,
+                                 GeneratorContext *gen, TextBuffer *out,
+                                 ErrorState *errors)
+{
+    return emit_dynamic_string_runtime(program, gen, out, errors);
+}
+
+static bool piece_dynamic_literals(const TypedProgram *program,
+                                   GeneratorContext *gen, TextBuffer *out,
+                                   ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    return emit_dynamic_string_literals(program, gen, out);
+}
+
+static bool piece_builder(const TypedProgram *program, GeneratorContext *gen,
+                          TextBuffer *out, ErrorState *errors)
+{
+    (void)program;
+    return emit_builder_runtime(gen, out, errors);
+}
+
+static bool piece_list(const TypedProgram *program, GeneratorContext *gen,
+                       TextBuffer *out, ErrorState *errors)
+{
+    return emit_list_runtime(program, gen, out, errors);
+}
+
+static bool piece_slice(const TypedProgram *program, GeneratorContext *gen,
+                        TextBuffer *out, ErrorState *errors)
+{
+    return emit_slice_runtime(program, gen, out, errors);
+}
+
+static bool piece_map(const TypedProgram *program, GeneratorContext *gen,
+                      TextBuffer *out, ErrorState *errors)
+{
+    return emit_map_runtime(program, gen, gen->analysis->store_count, out,
+                            errors);
+}
+
+static bool piece_equality(const TypedProgram *program, GeneratorContext *gen,
+                           TextBuffer *out, ErrorState *errors)
+{
+    (void)gen;
+    return emit_equality_helpers(program, gen, out, errors);
+}
+
+static bool piece_print(const TypedProgram *program, GeneratorContext *gen,
+                        TextBuffer *out, ErrorState *errors)
+{
+    return emit_print_helpers(program, gen, out, errors);
+}
+
+static bool piece_atomics(const TypedProgram *program, GeneratorContext *gen,
+                          TextBuffer *out, ErrorState *errors)
+{
+    (void)gen;
+    return emit_atomic_declarations(program, out, errors);
+}
+
+static bool piece_channels(const TypedProgram *program, GeneratorContext *gen,
+                           TextBuffer *out, ErrorState *errors)
+{
+    return emit_channel_runtime(program, gen, out, errors);
+}
+
+static bool piece_workers(const TypedProgram *program, GeneratorContext *gen,
+                          TextBuffer *out, ErrorState *errors)
+{
+    (void)program;
+    return emit_worker_runtime(gen, out, errors);
+}
+
+/* What follows `#include` of the program's own header, in order. */
+static bool piece_include_own_header(const TypedProgram *program,
+                                     GeneratorContext *gen, TextBuffer *out,
+                                     ErrorState *errors)
+{
+    (void)errors;
+    (void)program;
+    buffer_appendf(out, "#include \"%s\"\n\n", gen->header_name);
+    return true;
+}
+
+/* A program that is one integer variable still needs stdio to print it, even
+   when it uses nothing else from the C library. */
+static bool piece_stdio_for_program_value(const TypedProgram *program,
+                                          GeneratorContext *gen,
+                                          TextBuffer *out, ErrorState *errors)
+{
+    (void)errors;
+    (void)program;
+    if (gen->program_value == NULL ||
+        (gen->analysis->features & ANALYSIS_NEEDS_LIBC) != 0) {
         return true;
     }
-    if (uses_store_or_handle &&
-        !emit_store_runtime(source, store_count, uses_dynamic_string,
-                            uses_dynamic_list || uses_table, errors)) {
-        return true;
-    }
-    if (program_uses_scope(program) && !buffer_append(source,
+    buffer_append(out, "#include <stdio.h>\n\n");
+    return true;
+}
+
+static const Piece source_pieces[] = {
+    /* clock_gettime and nanosleep are POSIX, and the driver builds with
+       -std=c11, so the feature macro must precede the first system include. */
+    {.any_of = ANALYSIS_POSIX_FEATURES,
+     .text = "#define _POSIX_C_SOURCE 200809L\n\n"},
+    {.emit = piece_include_own_header},
+    {.emit = piece_stdio_for_program_value},
+    /* system headers and the helpers that stand in for them */
+    {.any_of = ANALYSIS_NEEDS_LIBC,
+     .text = "#include <stdio.h>\n"
+             "#include <stdlib.h>\n"
+             "#include <string.h>\n\n"},
+    {.any_of = ANALYSIS_CONVERSION, .text = "#include <float.h>\n\n"},
+    {.any_of = ANALYSIS_NOW | ANALYSIS_SLEEP | ANALYSIS_PARALLEL |
+               ANALYSIS_CHANNELS,
+     .text = "#include <errno.h>\n"
+             "#include <time.h>\n\n"},
+    /* The wrappers are the one place the memory-order policy is written down:
+       every atomic operation is sequentially consistent. */
+    {.any_of = ANALYSIS_ATOMICS | ANALYSIS_PARALLEL,
+     .text =
+                       "#include <stdatomic.h>\n"
+                       "#ifdef __STDC_NO_ATOMICS__\n"
+                       "#error \"this program needs C11 atomics\"\n"
+                       "#endif\n"
+                       "#define nyx_atomic_load(cell) atomic_load_explicit((cell), memory_order_seq_cst)\n"
+                       "#define nyx_atomic_store(cell, value) atomic_store_explicit((cell), (value), memory_order_seq_cst)\n"
+                       "#define nyx_atomic_add(cell, value) atomic_fetch_add_explicit((cell), (value), memory_order_seq_cst)\n\n"},
+    {.any_of = ANALYSIS_PARALLEL | ANALYSIS_CORES,
+     .text = "#include <unistd.h>\n\n"},
+    {.any_of = ANALYSIS_PARALLEL | ANALYSIS_CHANNELS,
+     .text = "#include <pthread.h>\n\n"},
+    /* Two threads can trap together, and calling exit twice is undefined. The
+       first caller exits; any other waits for the process to end. The macro
+       goes after every system include so the generated traps reach it. */
+    {.any_of = ANALYSIS_PARALLEL,
+     .text =
+                       "static atomic_flag nyx_exiting = ATOMIC_FLAG_INIT;\n"
+                       "static void nyx_exit_once(int status) {\n"
+                       "    if (atomic_flag_test_and_set(&nyx_exiting)) {\n"
+                       "        for (;;) { struct timespec ts = {1, 0}; nanosleep(&ts, NULL); }\n"
+                       "    }\n"
+                       "    (exit)(status);\n"
+                       "}\n"
+                       "#define exit(status) nyx_exit_once(status)\n\n"},
+    {.any_of = ANALYSIS_CORES,
+     .text =
+                       "static inline int32_t nyx_cores(void) {\n"
+                       "    long n = sysconf(_SC_NPROCESSORS_ONLN);\n"
+                       "    return n < 1 ? 1 : n > INT32_MAX ? INT32_MAX : (int32_t)n;\n"
+                       "}\n\n"},
+    /* small runtime functions */
+    {.any_of = ANALYSIS_RANGE,
+     .text =
+        "static inline int64_t nyx_range_step(int64_t step, const char *file, "
+        "size_t line, size_t col, size_t pos) {\n"
+        "    if (step == 0) { fflush(stdout); "
+        "fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", "
+        "file, line, col, pos, \"" MESSAGE_RUNTIME_RANGE_ZERO_STEP "\"); exit(1); }\n"
+        "    return step;\n}\n\n"},
+    {.any_of = ANALYSIS_NOW,
+     .text =
+        "static inline int64_t nyx_clock_now(const char *file, size_t line, "
+        "size_t col, size_t pos) {\n"
+        "    struct timespec ts;\n"
+        "    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) { fflush(stdout); "
+        "fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", "
+        "file, line, col, pos, \"" MESSAGE_RUNTIME_CLOCK_UNAVAILABLE "\"); "
+        "exit(1); }\n"
+        "    return (int64_t)ts.tv_sec * INT64_C(1000) + "
+        "(int64_t)(ts.tv_nsec / 1000000);\n}\n\n"},
+    /* Separate from now(): sleep returns Nil, and a program that only reads the
+       clock has no Nil typedef for it to name. */
+    {.any_of = ANALYSIS_SLEEP,
+     .text =
+        "static inline nyx_nil nyx_sleep(int64_t ms, const char *file, "
+        "size_t line, size_t col, size_t pos) {\n"
+        "    struct timespec ts;\n"
+        "    if (ms < 0) { fflush(stdout); "
+        "fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", "
+        "file, line, col, pos, \"" MESSAGE_RUNTIME_SLEEP_NEGATIVE "\"); "
+        "exit(1); }\n"
+        "    ts.tv_sec = (time_t)(ms / 1000);\n"
+        "    ts.tv_nsec = (long)(ms % 1000) * 1000000L;\n"
+        "    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}\n"
+        "    return (nyx_nil)0;\n}\n\n"},
+    {.any_of = ANALYSIS_RECURSION,
+     .text = "#define NYX_RECURSION_LIMIT " NYX_STRINGIFY(
+                 NYX_RUNTIME_RECURSION_LIMIT) "\n\n"},
+    {.any_of = ANALYSIS_NEEDS_UNUSED_MACRO,
+     .text =
+                           "#if defined(__GNUC__) || defined(__clang__)\n"
+                           "#define NYX_UNUSED __attribute__((unused))\n"
+                           "#else\n"
+                           "#define NYX_UNUSED\n"
+                           "#endif\n\n"},
+    /* exact comparison of numbers of different domains */
+    {.any_of = ANALYSIS_EQUALITY_SIGNED_UNSIGNED,
+     .text =
+     "static inline bool nyx_eq_su(int64_t s, uint64_t u)\n"
+     "{ return s >= 0 && (uint64_t)s == u; }\n"
+     "static inline bool nyx_eq_us(uint64_t u, int64_t s)\n"
+     "{ return nyx_eq_su(s, u); }\n\n"},
+    {.any_of = ANALYSIS_EQUALITY_UNSIGNED_FLOAT | ANALYSIS_EQUALITY_SIGNED_FLOAT,
+     .text =
+     "static inline bool nyx_eq_uf(uint64_t u, double f)\n"
+     "{\n"
+     "    if (!(f >= 0.0 && f < 18446744073709551616.0)) return false;\n"
+     "    return (uint64_t)f == u && (double)u == f;\n"
+     "}\n"
+     "static inline bool nyx_eq_fu(double f, uint64_t u)\n"
+     "{ return nyx_eq_uf(u, f); }\n\n"},
+    {.any_of = ANALYSIS_EQUALITY_SIGNED_FLOAT,
+     .text =
+     "static inline bool nyx_eq_sf(int64_t s, double f)\n"
+     "{\n"
+     "    if (s < 0) return f < 0.0 && nyx_eq_uf((uint64_t)(-(s + 1)) + 1, -f);\n"
+     "    return nyx_eq_uf((uint64_t)s, f);\n"
+     "}\n"
+     "static inline bool nyx_eq_fs(double f, int64_t s)\n"
+     "{ return nyx_eq_sf(s, f); }\n\n"},
+    /* arithmetic, conversions, and the Store runtime everything allocates in */
+    {.any_of = ANALYSIS_CHECKED_ARITHMETIC | ANALYSIS_CONVERSION,
+     .emit = piece_arithmetic},
+    {.any_of = ANALYSIS_CONVERSION, .emit = piece_conversion},
+    {.any_of = ANALYSIS_STORE_OR_HANDLE, .emit = piece_store},
+    {.any_of = ANALYSIS_SCOPE,
+     .text =
         "typedef struct nyx_scope_frame {\n"
         "    nyx_store store;\n"
         "    struct nyx_scope_frame *previous; /* entered scopes, innermost first */\n"
@@ -210,9 +565,14 @@ static bool generator_generate_arithmetic_runtime(bool uses_arith_helpers, bool 
         "    int recycled;\n"
         "} nyx_scope_frame;\n"
         "/* Every entered scope gets a generation no other Store has had, so a\n"
-        "   handle kept past its scope cannot match a later one. */\n"
-        "static uint64_t nyx_scope_generation = 1;\n"
-        "static NIPPY_UNUSED void nyx_scope_enter(nyx_scope_frame **top, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
+        "   handle kept past its scope cannot match a later one. */\n"},
+    {.all_of = ANALYSIS_SCOPE | ANALYSIS_PARALLEL,
+     .text = "static _Atomic uint64_t nyx_scope_generation = 1;\n"},
+    {.all_of = ANALYSIS_SCOPE, .none_of = ANALYSIS_PARALLEL,
+     .text = "static uint64_t nyx_scope_generation = 1;\n"},
+    {.any_of = ANALYSIS_SCOPE,
+     .text =
+        "static NYX_UNUSED void nyx_scope_enter(nyx_scope_frame **top, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
         "    if (capacity < 0) nyx_panic_at(\"" MESSAGE_RUNTIME_NEGATIVE_CAPACITY "\", file, line, column, pos);\n"
         "    nyx_store_init_at(&frame->store, (size_t)capacity, file, line, column, pos);\n"
         "    frame->store.generation = ++nyx_scope_generation;\n"
@@ -221,7 +581,7 @@ static bool generator_generate_arithmetic_runtime(bool uses_arith_helpers, bool 
         "}\n"
         "/* Inside a loop: the first entry allocates and the loop keeps the buffer\n"
         "   until it ends; later entries start it empty again. */\n"
-        "static NIPPY_UNUSED void nyx_scope_enter_cached(nyx_scope_frame **top, nyx_scope_frame **cache, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
+        "static NYX_UNUSED void nyx_scope_enter_cached(nyx_scope_frame **top, nyx_scope_frame **cache, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
         "    if (capacity < 0) nyx_panic_at(\"" MESSAGE_RUNTIME_NEGATIVE_CAPACITY "\", file, line, column, pos);\n"
         "    if (frame->store.data == NULL) {\n"
         "        nyx_store_init_at(&frame->store, (size_t)capacity, file, line, column, pos);\n"
@@ -233,398 +593,190 @@ static bool generator_generate_arithmetic_runtime(bool uses_arith_helpers, bool 
         "    frame->recycled = 1;\n"
         "    frame->previous = *top; *top = frame;\n"
         "}\n"
-        "static NIPPY_UNUSED void nyx_scope_cleanup(nyx_scope_frame **top, nyx_scope_frame *mark) {\n"
+        "static NYX_UNUSED void nyx_scope_cleanup(nyx_scope_frame **top, nyx_scope_frame *mark) {\n"
         "    while (*top != mark) {\n"
         "        nyx_scope_frame *frame = *top; *top = frame->previous;\n"
         "        if (frame->recycled) { frame->store.used = 0; frame->store.generation = 0; }\n"
         "        else nyx_store_free(&frame->store);\n"
         "    }\n"
         "}\n"
-        "static NIPPY_UNUSED void nyx_scope_release(nyx_scope_frame **cache, nyx_scope_frame *mark) {\n"
+        "static NYX_UNUSED void nyx_scope_release(nyx_scope_frame **cache, nyx_scope_frame *mark) {\n"
         "    while (*cache != mark) { nyx_scope_frame *frame = *cache; *cache = frame->cached; nyx_store_free(&frame->store); }\n"
-        "}\n\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
+        "}\n\n"},
+    /* The store of a parallel block. Its capacity is fixed, so its buffer never
+       moves while threads allocate from it, and `used` is set to the whole
+       capacity so bounds checks never read a counter another thread writes. */
+    {.any_of = ANALYSIS_POOL,
+     .text =
+        "static NYX_UNUSED void nyx_pool_enter(nyx_scope_frame **top, nyx_scope_frame *frame, int32_t capacity, const char *file, size_t line, size_t column, size_t pos) {\n"
+        "    if (capacity < 0) nyx_panic_at(\"" MESSAGE_RUNTIME_NEGATIVE_CAPACITY "\", file, line, column, pos);\n"
+        "    nyx_store_init_at(&frame->store, (size_t)capacity, file, line, column, pos);\n"
+        "    frame->store.generation = ++nyx_scope_generation;\n"
+        "    frame->store.pool = 1;\n"
+        "    atomic_store_explicit(&frame->store.cursor, 0, memory_order_seq_cst);\n"
+        "    frame->store.used = frame->store.capacity;\n"
+        "    frame->recycled = 0;\n"
+        "    frame->previous = *top; *top = frame;\n"
+        "}\n\n"},
+    /* strings, collections, and what they need */
+    {.any_of = ANALYSIS_STRING, .emit = piece_string},
+    {.any_of = ANALYSIS_DYNAMIC_STRING, .emit = piece_dynamic_string},
+    {.any_of = ANALYSIS_DYNAMIC_STRING, .emit = piece_dynamic_literals},
+    {.any_of = ANALYSIS_STRING_BUILDER, .emit = piece_builder},
+    {.any_of = ANALYSIS_LIST, .emit = piece_list},
+    {.all_of = ANALYSIS_SLICE | ANALYSIS_DYNAMIC_LIST, .emit = piece_slice},
+    {.any_of = ANALYSIS_RECORD | ANALYSIS_TABLE, .emit = piece_map},
+    {.emit = piece_equality},
+    /* printing floats: the shortest text that reads back as the same number */
+    {.any_of = ANALYSIS_PRINT_FLOAT,
+     .text =
+        "#include <math.h>\n"
+        "static void nyx_print_float(double value, int single)\n"
+        "{\n"
+        "    char buf[128], digits[32], candidate[64];\n"
+        "    unsigned long long n = 0, chosen = 0;\n"
+        "    int exponent = 0, decimal_power = 0, precision, i, count;\n"
+        "    if (isnan(value)) { fputs(\"nan\", stdout); return; }\n"
+        "    if (signbit(value)) { fputc('-', stdout); value = -value; }\n"
+        "    if (isinf(value)) { fputs(\"inf\", stdout); return; }\n"
+        "    if (value == 0.0) { fputs(\"0.0\", stdout); return; }\n"
+        "    for (precision = 1; precision <= (single ? 9 : 17); precision++) {\n"
+        "        char *ep;\n"
+        "        snprintf(buf, sizeof(buf), \"%.*e\", precision - 1, value);\n"
+        "        ep = strchr(buf, 'e');\n"
+        "        exponent = (int)strtol(ep + 1, NULL, 10);\n"
+        "        n = 0;\n"
+        "        for (char *p = buf; p < ep; p++)\n"
+        "            if (*p >= '0' && *p <= '9') n = n * 10 + (unsigned)(*p - '0');\n"
+        "        decimal_power = exponent - (precision - 1);\n"
+        "        for (i = 0; i < 3; i++) {\n"
+        "            unsigned long long trial = i == 0 ? n : (i == 1 ? n - 1 : n + 1);\n"
+        "            if (trial == 0) continue;\n"
+        "            snprintf(candidate, sizeof(candidate), \"%llue%d\", trial, decimal_power);\n"
+        "            if (single ? (double)strtof(candidate, NULL) == value\n"
+        "                       : strtod(candidate, NULL) == value) {\n"
+        "                chosen = trial;\n"
+        "                break;\n"
+        "            }\n"
+        "        }\n"
+        "        if (chosen != 0) break;\n"
+        "    }\n"
+        "    while (chosen % 10 == 0) { chosen /= 10; decimal_power++; }\n"
+        "    snprintf(digits, sizeof(digits), \"%llu\", chosen);\n"
+        "    count = (int)strlen(digits);\n"
+        "    exponent = decimal_power + count - 1;\n"
+        "    if (exponent >= -6 && exponent <= 15) {\n"
+        "        int point = count + decimal_power;\n"
+        "        if (point <= 0) {\n"
+        "            fputs(\"0.\", stdout);\n"
+        "            for (i = 0; i < -point; i++) fputc('0', stdout);\n"
+        "            fputs(digits, stdout);\n"
+        "        } else if (point >= count) {\n"
+        "            fputs(digits, stdout);\n"
+        "            for (i = count; i < point; i++) fputc('0', stdout);\n"
+        "            fputs(\".0\", stdout);\n"
+        "        } else {\n"
+        "            for (i = 0; i < count; i++) {\n"
+        "                if (i == point) fputc('.', stdout);\n"
+        "                fputc(digits[i], stdout);\n"
+        "            }\n"
+        "        }\n"
+        "    } else {\n"
+        "        fputc(digits[0], stdout);\n"
+        "        if (count > 1) { fputc('.', stdout); fputs(digits + 1, stdout); }\n"
+        "        fprintf(stdout, \"e%+d\", exponent);\n"
+        "    }\n"
+        "}\n"},
+    {.any_of = ANALYSIS_PRINT, .emit = piece_print},
+    /* concurrency */
+    {.any_of = ANALYSIS_ATOMICS, .emit = piece_atomics},
+    {.any_of = ANALYSIS_CHANNELS, .emit = piece_channels},
+    {.emit = piece_workers}
+};
+
+/* Every piece of the program, in order. */
+static bool emit_program(const TypedProgram *program, GeneratorContext *gen,
+                         const Analysis *analysis, const char *effective_source,
+                         TextBuffer *header, TextBuffer *source,
+                         ErrorState *errors)
+{
+    RootSummary roots;
+
+    if (!summarise_roots(program, &roots, errors)) {
+        return false;
     }
-    if (program_uses_string(program) &&
-        !emit_string_runtime(program, source, errors)) {
-        return true;
-    }
-    if (uses_dynamic_string &&
-        !emit_dynamic_string_runtime(program, source, errors)) {
-        return true;
-    }
-    return false;
+    gen->program_value = roots.program_value;
+    return emit_pieces(header_pieces, NYX_COUNT_OF(header_pieces), program, gen,
+                       header, errors) &&
+           emit_pieces(source_pieces, NYX_COUNT_OF(source_pieces), program, gen,
+                       source, errors) &&
+           emit_functions(program, gen, effective_source, source, errors) &&
+           (roots.program_value != NULL
+                ? append_print_program(program, gen, roots.single_variable,
+                                       analysis->store_count, effective_source,
+                                       source, errors)
+                : emit_main_program(program, gen, analysis->store_count,
+                                    effective_source, source, errors));
 }
 
-static bool generator_generate_dynamic_string_literals(bool uses_dynamic_string, const TypedProgram *program, TextBuffer *source, ErrorState *errors, bool uses_string_builder, bool uses_list, bool uses_slice, bool uses_dynamic_list, bool uses_map, size_t store_count, bool uses_print)
+/* The names the output refers to must be safe to write into C. */
+static bool names_are_valid(const char *header_name, const char *source_name,
+                            ErrorState *errors)
 {
-    if (uses_dynamic_string &&
-        !emit_dynamic_string_literals(program, source, errors)) {
-        return true;
-    }
-    if (uses_string_builder &&
-        !emit_builder_runtime(source, errors)) {
-        return true;
-    }
-    if (uses_list && !emit_list_runtime(program, source,
-                                        errors)) {
-        return true;
-    }
-    if (uses_slice && uses_dynamic_list &&
-        !emit_slice_runtime(program, source, errors)) {
-        return true;
-    }
-    if (uses_map && !emit_map_runtime(program, store_count, source, errors)) {
-        return true;
-    }
-    if (!emit_equality_helpers(program, source, errors)) {
-        return true;
-    }
-    if (uses_print && !emit_print_helpers(program, source, errors)) {
-        return true;
-    }
-    return false;
-}
+    bool header = valid_header_name(header_name);
+    bool line = valid_line_name(source_name);
 
-static bool generator_generate_buffer_append(bool uses_range, TextBuffer *source, ErrorState *errors, bool uses_recursion, bool uses_store_or_handle, bool uses_dynamic_string, bool uses_list, bool uses_slice, bool uses_arith_helpers, bool uses_conversion, const TypedProgram *program, size_t store_count, bool uses_dynamic_list, bool uses_table)
-{
-    if (uses_range && !buffer_append(source,
-        "static inline int64_t nyx_range_step(int64_t step, const char *file, "
-        "size_t line, size_t col, size_t pos) {\n"
-        "    if (step == 0) { fflush(stdout); "
-        "fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION "\\n\", "
-        "file, line, col, pos, \"" MESSAGE_RUNTIME_RANGE_ZERO_STEP "\"); exit(1); }\n"
-        "    return step;\n}\n\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    if (uses_recursion &&
-        !buffer_appendf(source, "#define NIPPY_RECURSION_LIMIT %d\n\n",
-                        NIPPY_RUNTIME_RECURSION_LIMIT)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    if (uses_store_or_handle || uses_dynamic_string || uses_list || uses_slice ||
-        uses_arith_helpers || uses_conversion) {
-        if (!buffer_append(source,
-                           "#if defined(__GNUC__) || defined(__clang__)\n"
-                           "#define NIPPY_UNUSED __attribute__((unused))\n"
-                           "#else\n"
-                           "#define NIPPY_UNUSED\n"
-                           "#endif\n\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return true;
-        }
-    }
-    if (!emit_numeric_equality(program, source, errors)) {
-        return true;
-    }
-    if (generator_generate_arithmetic_runtime(uses_arith_helpers, uses_conversion, source, errors, uses_store_or_handle, store_count, uses_dynamic_string, uses_dynamic_list, uses_table, program)) {
-        return true;
-    }
-    return false;
-}
-
-static bool generator_generate_buffer_append9(TextBuffer *header, ErrorState *errors, bool uses_map, bool uses_store_or_handle, bool uses_dynamic_string, bool uses_list, bool uses_slice, bool uses_table, const TypedProgram *program, const char *effective_source)
-{
-    if (!buffer_append(header, "\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    if (uses_map && !buffer_append(header, "#include <stddef.h>\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-
-    if (uses_store_or_handle || uses_dynamic_string || uses_list || uses_slice || uses_table) {
-        if (!buffer_append(header, "typedef struct nyx_store nyx_store;\n\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return true;
-        }
-    }
-    if (uses_store_or_handle) {
-        if (!buffer_append(
-                header,
-                "typedef struct {\n"
-                "    nyx_store *store;\n"
-                "    size_t offset;\n"
-                "    uint64_t generation;\n"
-                "} nyx_handle;\n\n"
-                "struct nyx_store {\n"
-                "    unsigned char *data;\n"
-                "    size_t used;\n"
-                "    size_t capacity;\n"
-                "    uint64_t generation;\n"
-                "};\n\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return true;
-        }
-    }
-
-    if (!emit_type_definitions(program, effective_source, header, errors)) {
-        return true;
-    }
-    return false;
-}
-
-static bool generator_generate_function_typedefs(const TypedProgram *program, TextBuffer *header, ErrorState *errors, bool has_expression_statement, size_t var_count, const TypedNode *single_var, bool *print_program, TextBuffer *source, const char *effective_header)
-{
-    if (!emit_function_typedefs(program, header, errors)) {
-        return true;
-    }
-
-    if (!has_expression_statement && var_count == 1 &&
-        typed_program_type(program, single_var->type_index) != NULL &&
-        (typed_program_type(program, single_var->type_index)->kind ==
-             NIPPY_TYPE_INT32 ||
-         typed_program_type(program, single_var->type_index)->kind ==
-             NIPPY_TYPE_INT64)) {
-        (*print_program) = true;
-    }
-
-    if ((*print_program) &&
-        !buffer_appendf(header, "%s nyx_program_value(void);\n\n",
-                        typed_program_type(program, single_var->type_index)->kind ==
-                                NIPPY_TYPE_INT64 ? "int64_t" : "int32_t")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    if (!buffer_append(header, "#endif\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-
-    if (!buffer_appendf(source, "#include \"%s\"\n\n", effective_header)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    return false;
-}
-
-static bool generator_generate_buffer_append12(TextBuffer *header, ErrorState *errors, bool uses_store_or_handle, bool uses_dynamic_string, bool uses_list, bool uses_slice, const TypedProgram *program, bool uses_map, bool uses_table, const char *effective_source)
-{
-    if (!buffer_append(header,
-                       "#ifndef NIPPY_GENERATED_H\n"
-                       "#define NIPPY_GENERATED_H\n\n"
-                       "#include <stdbool.h>\n"
-                       "#include <stdint.h>\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    if (uses_store_or_handle || uses_dynamic_string || uses_list ||
-        uses_slice || program_uses_string(program)) {
-        if (!buffer_append(header, "#include <stddef.h>\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return true;
-        }
-    }
-    if (generator_generate_buffer_append9(header, errors, uses_map, uses_store_or_handle, uses_dynamic_string, uses_list, uses_slice, uses_table, program, effective_source)) {
-        return true;
-    }
-    return false;
-}
-
-static int generator_generate_valid_header_name(const char *effective_header, ErrorState *errors, const char *effective_source, TextBuffer *header, TextBuffer *source, size_t *store_count, const TypedProgram *program, bool *uses_store_or_handle, bool *uses_string_builder, bool *uses_dynamic_string)
-{
-    if (!valid_header_name(effective_header)) {
+    if (!header) {
         error_report(errors, MESSAGE_GENERATOR_INVALID_HEADER_NAME);
-        return 2;
-    }
-    if (!valid_line_name(effective_source)) {
+    } else if (!line) {
         error_report(errors, MESSAGE_GENERATOR_INVALID_LINE_NAME);
-        return 2;
     }
-
-    buffer_init(header);
-    buffer_init(source);
-
-    (*store_count) = count_store_declarations(program);
-    if (!validate_store_declarations(program, (*store_count), errors)) {
-        return 1;
-    }
-    (*uses_store_or_handle) =
-        (*store_count) > 0 || program_uses_handle_or_store_type(program);
-    (*uses_string_builder) = program_uses_string_builder(program);
-    (*uses_dynamic_string) =
-        program_uses_dynamic_string(program) || (*uses_string_builder);
-    return 0;
+    return header && line;
 }
 
-static bool generator_generate_root15(size_t *i, const TypedProgram *program, const char *effective_source, TextBuffer *source, ErrorState *errors, bool print_program, const TypedNode *single_var, size_t store_count)
+/* A stage that fails has said why; if nothing else did, it ran out of memory. */
+static void hand_over(bool ok, TextBuffer *header, TextBuffer *source,
+                      char **h_source, char **c_source, ErrorState *errors)
 {
-    for ((*i) = 0; (*i) < program->roots.length; (*i)++) {
-        size_t root = *(const size_t *)list_get(&program->roots, (*i));
-        const TypedNode *node = typed_program_node(program, root);
-
-        if (node->kind == TYPED_FUNCTION_DECLARATION &&
-            !emit_function(program, node, effective_source, source, errors)) {
-            return true;
-        }
-    }
-
-    if (generator_generate_append_print_program(print_program, program, single_var, store_count, effective_source, source, errors, i)) {
-        return true;
-    }
-    return false;
-}
-
-static bool generator_generate_buffer_append17(TextBuffer *source, ErrorState *errors, bool uses_conversion)
-{
-    if (!buffer_append(source,
-                       "#include <stdio.h>\n"
-                       "#include <stdlib.h>\n"
-                       "#include <string.h>\n\n")) {
+    if (!ok) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
+        return;
     }
-    if (uses_conversion &&
-        !buffer_append(source, "#include <float.h>\n\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    return false;
+    *h_source = header->text;
+    header->text = NULL;
+    *c_source = source->text;
+    source->text = NULL;
 }
 
-static bool generator_generate_program_uses_string(bool uses_store_or_handle, const TypedProgram *program, bool uses_dynamic_string, bool uses_list, bool uses_slice, bool uses_print, bool uses_map, bool uses_arith_helpers, bool uses_recursion, bool uses_conversion, bool uses_range, TextBuffer *source, ErrorState *errors, bool print_program)
+bool generator_generate(const TypedProgram *program, const Analysis *analysis,
+                        const char *header_name, const char *source_name,
+                        char **c_source, char **h_source, ErrorState *errors)
 {
-    if (uses_store_or_handle || program_uses_string(program) ||
-        uses_dynamic_string || uses_list || uses_slice || uses_print ||
-        uses_map || uses_arith_helpers || uses_recursion ||
-        uses_conversion || uses_range) {
-        if (generator_generate_buffer_append17(source, errors, uses_conversion)) {
-        return true;
-    }
-    } else if (print_program &&
-               !buffer_append(source, "#include <stdio.h>\n\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return true;
-    }
-    return false;
-}
-
-bool generator_generate(const TypedProgram *program, const char *header_name,
-                        const char *source_name, char **c_source,
-                        char **h_source, ErrorState *errors)
-{
-    const char *effective_header = header_name == NULL ? "nippy.h" : header_name;
-    const char *effective_source = source_name == NULL ? "nippy.nip" : source_name;
+    GeneratorContext context;
+    const char *effective_header = header_name == NULL ? "nyx.h" : header_name;
+    const char *effective_source = source_name == NULL ? "nyx.nip" : source_name;
     TextBuffer header;
     TextBuffer source;
-    size_t var_count = 0;
-    const TypedNode *single_var = NULL;
-    bool print_program = false;
-    bool has_expression_statement = false;
-    bool uses_store_or_handle;
-    bool uses_dynamic_string;
-    bool uses_string_builder;
-    bool uses_list;
-    bool uses_dynamic_list;
-    bool uses_slice;
-    bool uses_print;
-    bool uses_recursion;
-    bool uses_conversion;
-    bool uses_range = false;
-    bool uses_map;
-    bool uses_table;
-    bool uses_arith_helpers;
-    size_t store_count;
-    size_t i;
-    bool ok = false;
+    bool ok;
 
     *c_source = NULL;
     *h_source = NULL;
-
-    {
-        int status = generator_generate_valid_header_name(effective_header, errors, effective_source, &header, &source, &store_count, program, &uses_store_or_handle, &uses_string_builder, &uses_dynamic_string);
-
-        if (status == 1) {
-            goto done;
-        }
-        if (status == 2) {
-            return false;
-        }
+    generator_context_init(&context, analysis, effective_source, effective_header);
+    if (!names_are_valid(effective_header, effective_source, errors)) {
+        return false;
     }
-    uses_list = program_uses_list(program);
-    uses_dynamic_list = program_uses_dynamic_list(program);
-    uses_slice = program_uses_slice(program);
-    uses_print = program_uses_print(program);
-    uses_recursion = program_uses_recursion(program);
-    uses_conversion = program_uses_numeric_conversion(program);
-    generator_generate_program_uses_binary_operator(&uses_arith_helpers, program, &uses_map, &uses_table, &uses_range, &uses_store_or_handle, uses_dynamic_string, uses_dynamic_list, uses_slice);
-
-    if (generator_generate_buffer_append12(&header, errors, uses_store_or_handle, uses_dynamic_string, uses_list, uses_slice, program, uses_map, uses_table, effective_source)) {
-        goto done;
+    buffer_init(&header);
+    buffer_init(&source);
+    ok = emit_program(program, &context, analysis, effective_source, &header,
+                      &source, errors) &&
+         !header.failed && !source.failed;
+    if (ok || !errors->reported) {
+        hand_over(ok, &header, &source, h_source, c_source, errors);
     }
-
-    for (i = 0; i < program->roots.length; i++) {
-        size_t root = *(const size_t *)list_get(&program->roots, i);
-        const TypedNode *node = typed_program_node(program, root);
-
-        if (node == NULL) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
-            goto done;
-        }
-        if (node->kind == TYPED_TYPE_DECLARATION) {
-            /* Struct and union definitions come from program->types so that
-               instantiations that have no root are emitted too. */
-            continue;
-        } else if (node->kind == TYPED_STORE_DECLARATION) {
-            /* Store roots become table entries and main() init calls, never
-               C locals. */
-            continue;
-        } else if (node->kind == TYPED_DECLARATION) {
-            var_count++;
-            single_var = node;
-        } else if (node->kind == TYPED_EXPRESSION_STATEMENT) {
-            has_expression_statement = true;
-        } else if (node->kind == TYPED_SCOPE ||
-                   node->kind == TYPED_ASSIGNMENT ||
-                   node->kind == TYPED_LIST_SET ||
-                   node->kind == TYPED_MEMBER_WRITE ||
-                   node->kind == TYPED_RECORD_SET ||
-                   node->kind == TYPED_TABLE_SET ||
-                   node->kind == TYPED_FOR ||
-                   node->kind == TYPED_WHILE ||
-                   node->kind == TYPED_MATCH_BIND_STATEMENT ||
-                   node->kind == TYPED_IF) {
-            /* An assignment changes the printed value instead of replacing the
-               program-value entry point. */
-        } else if (node->kind != TYPED_FUNCTION_DECLARATION) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
-            goto done;
-        }
-    }
-
-    if (generator_generate_function_typedefs(program, &header, errors, has_expression_statement, var_count, single_var, &print_program, &source, effective_header)) {
-        goto done;
-    }
-    if (generator_generate_program_uses_string(uses_store_or_handle, program, uses_dynamic_string, uses_list, uses_slice, uses_print, uses_map, uses_arith_helpers, uses_recursion, uses_conversion, uses_range, &source, errors, print_program)) {
-        goto done;
-    }
-    if (generator_generate_buffer_append(uses_range, &source, errors, uses_recursion, uses_store_or_handle, uses_dynamic_string, uses_list, uses_slice, uses_arith_helpers, uses_conversion, program, store_count, uses_dynamic_list, uses_table)) {
-        goto done;
-    }
-    if (generator_generate_dynamic_string_literals(uses_dynamic_string, program, &source, errors, uses_string_builder, uses_list, uses_slice, uses_dynamic_list, uses_map, store_count, uses_print)) {
-        goto done;
-    }
-
-    if (generator_generate_root15(&i, program, effective_source, &source, errors, print_program, single_var, store_count)) {
-        goto done;
-    }
-
-    *h_source = header.text;
-    header.text = NULL;
-    *c_source = source.text;
-    source.text = NULL;
-    ok = true;
-
-done:
     buffer_free(&header);
     buffer_free(&source);
     return ok;
 }
-
 
 bool emit_var_to_main(const TypedProgram *program, const TypedNode *node,
                              const char *effective_source, TextBuffer *source,
@@ -633,7 +785,7 @@ bool emit_var_to_main(const TypedProgram *program, const TypedNode *node,
     char name_text[USER_NAME_CAPACITY];
     const char *name = user_c_name(program, node->name_index,
                                   name_text, sizeof(name_text));
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
+    char type_name[NYX_IDENTIFIER_MAX + 32];
 
     if (!valid_identifier(name) ||
         !format_c_type(program, node->type_index, type_name,
@@ -643,106 +795,88 @@ bool emit_var_to_main(const TypedProgram *program, const TypedNode *node,
         }
         return false;
     }
-    if (!buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
-                        effective_source) ||
-        !buffer_appendf(source, "    %s %s = ", type_name, name) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") ||
-        !buffer_appendf(source, "    (void)%s;\n", name)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
+                    effective_source);
+    buffer_appendf(source, "    %s %s = ", type_name, name);
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, ";\n");
+    buffer_appendf(source, "    (void)%s;\n", name);
     return true;
 }
 
 
-static bool append_print_program_i(const TypedProgram *program, const char *effective_source, TextBuffer *source, ErrorState *errors)
+/* The statements among the roots, in order. */
+static bool emit_root_statements(const TypedProgram *program,
+                                 GeneratorContext *gen,
+                                 const char *effective_source,
+                                 TextBuffer *source, ErrorState *errors)
 {
-    {
-        size_t i;
+    size_t i;
 
-        for (i = 0; i < program->roots.length; i++) {
-            size_t root = *(const size_t *)list_get(&program->roots, i);
-            const TypedNode *node = typed_program_node(program, root);
+    for (i = 0; i < program->roots.length; i++) {
+        size_t root = *(const size_t *)list_get(&program->roots, i);
 
-            if (node != NULL &&
-                (node->kind == TYPED_SCOPE ||
-                 node->kind == TYPED_ASSIGNMENT ||
-                 node->kind == TYPED_LIST_SET ||
-                 node->kind == TYPED_MEMBER_WRITE ||
-                 node->kind == TYPED_RECORD_SET ||
-                 node->kind == TYPED_TABLE_SET ||
-                 node->kind == TYPED_FOR || node->kind == TYPED_WHILE ||
-                 node->kind == TYPED_IF ||
-                 node->kind == TYPED_MATCH_BIND_STATEMENT) &&
-                !emit_statement(program, root, 1, effective_source, source,
-                                errors)) {
-                return false;
-            }
+        if (root_kind(typed_program_node(program, root)->kind) ==
+                ROOT_STATEMENT &&
+            !emit_statement(program, gen, root, 1, effective_source, source,
+                            errors)) {
+            return false;
         }
     }
     return true;
 }
 
-static bool append_print_program_name(const TypedProgram *program, const TypedNode *var, char (*name_text)[48], ErrorState *errors, TextBuffer *source, const char *effective_source, const char **name, bool *wide)
+/* nyx_program_value(): the one variable's value, after the statements. */
+static bool emit_program_value_function(const TypedProgram *program,
+                                        GeneratorContext *gen,
+                                        const TypedNode *var, const char *name,
+                                        const char *c_type,
+                                        const char *effective_source,
+                                        TextBuffer *source, ErrorState *errors)
 {
-    (*name) = user_c_name(program, var->name_index,
-                                  (*name_text), sizeof((*name_text)));
-    const TypedType *type = typed_program_type(program, var->type_index);
-    (*wide) = type != NULL && type->kind == NIPPY_TYPE_INT64;
+    bool ok = emit_program_trampolines(program, gen, source, errors);
 
-    if (!valid_identifier((*name))) {
-        error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-        return false;
-    }
-
-    if (!buffer_appendf(source, "%s nyx_program_value(void)\n{\n",
-                        (*wide) ? "int64_t" : "int32_t") ||
-        !emit_match_temporaries(program, 0, source, errors) ||
-        !emit_scope_frame_declaration(program, TYPED_NO_NODE, source, errors) ||
-        !buffer_appendf(source, "#line %zu \"%s\"\n", var->pos.line,
-                        effective_source) ||
-        !buffer_appendf(source, "    %s %s = ",
-                        (*wide) ? "int64_t" : "int32_t", (*name)) ||
-        !emit_expression(program, var->left_child, source, errors) ||
-        !buffer_append(source, ";\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    if (!append_print_program_i(program, effective_source, source, errors)) {
-        return false;
-    }
-    return true;
+    buffer_appendf(source, "%s nyx_program_value(void)\n{\n", c_type);
+    ok = ok && emit_match_temporaries(program, 0, source, errors) &&
+         emit_scope_frame_declaration(program, gen, NO_ROOT_POSITION, source) &&
+         emit_program_scope_frames(program, gen, source);
+    buffer_appendf(source, "#line %zu \"%s\"\n", var->pos.line,
+                   effective_source);
+    buffer_appendf(source, "    %s %s = ", c_type, name);
+    ok = ok && emit_expression(program, var->left_child, source, errors);
+    buffer_append(source, ";\n");
+    return ok && emit_root_statements(program, gen, effective_source, source,
+                                      errors);
 }
 
-bool append_print_program(const TypedProgram *program,
+bool append_print_program(const TypedProgram *program, GeneratorContext *gen,
                                  const TypedNode *var, size_t store_count,
                                  const char *effective_source,
                                  TextBuffer *source, ErrorState *errors)
 {
     char name_text[USER_NAME_CAPACITY];
-    const char *name = {0};
-    bool wide = {0};
-    if (!append_print_program_name(program, var, &name_text, errors, source, effective_source, &name, &wide)) {
+    const char *name = checked_user_name(program, var->name_index, name_text,
+                                         sizeof(name_text), errors);
+    bool wide = type_has_kind(program, var->type_index, NYX_TYPE_INT64);
+
+    if (name == NULL ||
+        !emit_program_value_function(program, gen, var, name,
+                                     wide ? "int64_t" : "int32_t",
+                                     effective_source, source, errors)) {
         return false;
     }
-    if (!buffer_appendf(source, "    return %s;\n", name) ||
-        !buffer_append(source, "}\n\nint main(void)\n{\n") ||
-        !emit_store_inits(program, store_count, effective_source, source, errors) ||
-        !buffer_append(source, wide
-            ? "    printf(\"%lld\\n\", (long long)nyx_program_value());\n"
-            : "    printf(\"%d\\n\", (int)nyx_program_value());\n") ||
-        !emit_store_frees(store_count, source, errors) ||
-        !buffer_append(source, "    return 0;\n}\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    buffer_appendf(source, "    return %s;\n", name);
+    buffer_append(source, "}\n\nint main(void)\n{\n");
+    if (!emit_store_inits(program, store_count, effective_source, source, errors)) {
         return false;
     }
+    buffer_append(source, wide
+        ? "    printf(\"%lld\\n\", (long long)nyx_program_value());\n"
+        : "    printf(\"%d\\n\", (int)nyx_program_value());\n");
+    emit_store_frees(store_count, source);
+    buffer_append(source, "    return 0;\n}\n");
     return true;
 }
 
@@ -763,31 +897,23 @@ bool emit_store_inits(const TypedProgram *program, size_t store_count,
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT);
             return false;
         }
-        if (!buffer_appendf(source, "#line %zu \"%s\"\n",
-                            declaration->pos.line, effective_source) ||
-            !buffer_appendf(source,
-                            "    nyx_store_init_at(&nyx_stores[%zu], %d, __FILE__, %zu, %zu, %zu);\n",
-                            id, declaration->integer_value, declaration->pos.line,
-                            declaration->pos.column, declaration->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(source, "#line %zu \"%s\"\n",
+                        declaration->pos.line, effective_source);
+        buffer_appendf(source,
+                        "    nyx_store_init_at(&nyx_stores[%zu], %d, __FILE__, %zu, %zu, %zu);\n",
+                        id, declaration->integer_value, declaration->pos.line,
+                        declaration->pos.column, declaration->pos.offset);
     }
     return true;
 }
 
 
-bool emit_store_frees(size_t store_count, TextBuffer *source,
-                             ErrorState *errors)
+void emit_store_frees(size_t store_count, TextBuffer *source)
 {
     size_t id;
 
     for (id = 0; id < store_count; id++) {
-        if (!buffer_appendf(source, "    nyx_store_free(&nyx_stores[%zu]);\n",
-                            id)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(source, "    nyx_store_free(&nyx_stores[%zu]);\n",
+                        id);
     }
-    return true;
 }

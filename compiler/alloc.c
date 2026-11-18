@@ -8,27 +8,27 @@ static size_t allocations_remaining = (size_t)-1;
 static size_t allocation_attempts;
 static int count_allocations;
 
-void nippy_alloc_fail_after(size_t successful_allocations)
+void nyx_alloc_fail_after(size_t successful_allocations)
 {
     allocations_remaining = successful_allocations;
     allocation_attempts = 0;
     count_allocations = 0;
 }
 
-void nippy_alloc_reset(void)
+void nyx_alloc_reset(void)
 {
     allocations_remaining = (size_t)-1;
     allocation_attempts = 0;
     count_allocations = 0;
 }
 
-void nippy_alloc_begin_counting(void)
+void nyx_alloc_begin_counting(void)
 {
     allocation_attempts = 0;
     count_allocations = 1;
 }
 
-size_t nippy_alloc_attempts(void)
+size_t nyx_alloc_attempts(void)
 {
     return allocation_attempts;
 }
@@ -51,7 +51,7 @@ static int allocation_should_fail(void)
     return 0;
 }
 
-void *nippy_malloc(size_t size)
+void *nyx_malloc(size_t size)
 {
     if (allocation_should_fail()) {
         return NULL;
@@ -59,7 +59,7 @@ void *nippy_malloc(size_t size)
     return malloc(size);
 }
 
-void *nippy_realloc(void *pointer, size_t size)
+void *nyx_realloc(void *pointer, size_t size)
 {
     if (allocation_should_fail()) {
         return NULL;
@@ -67,7 +67,7 @@ void *nippy_realloc(void *pointer, size_t size)
     return realloc(pointer, size);
 }
 
-char *nippy_strdup(const char *text)
+char *nyx_strdup(const char *text)
 {
     size_t length;
     char *copy;
@@ -76,7 +76,7 @@ char *nippy_strdup(const char *text)
         return NULL;
     }
     length = strlen(text) + 1;
-    copy = nippy_malloc(length);
+    copy = nyx_malloc(length);
     if (copy != NULL) {
         memcpy(copy, text, length);
     }

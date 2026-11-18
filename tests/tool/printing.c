@@ -15,7 +15,7 @@ TEST("printing stale values reports the print location")
         "scope arena = Store(64) do s = arena.copy(\"\") end\nprint(s)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale empty text");
     if (result != TEST_PASS ||
-        !file_contains(test_path("runtime.log"), "nippy: test.nip:4:"))
+        !file_contains(test_path("runtime.log"), "nyx: test.nip:4:"))
         return TEST_FAIL;
     result = run_escaped_failure(
         "global keep: Store = Store(64)\n"
@@ -23,7 +23,7 @@ TEST("printing stale values reports the print location")
         "scope arena = Store(64) do b = arena.builder(4) end\nprint(b)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "printing stale builder");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -114,4 +114,21 @@ TEST("print nested")
         "[Item { name: ada, n: 3 }]\n";
 
     return run_generated(source, expected, "nested print");
+}
+
+TEST("a function and a handle print as placeholders")
+{
+    char expected[160];
+
+    snprintf(expected, sizeof(expected),
+             MESSAGE_RUNTIME_PRINT_FUNCTION "\n" MESSAGE_RUNTIME_PRINT_HANDLE
+             "\n",
+             (size_t)0, (size_t)0, 1ULL);
+    return run_generated(
+        "global root: Store = Store(64)\n"
+        "fun f(): Int32\n  return 1\nend\n"
+        "var g: Fun<(): Int32> = f\n"
+        "var h: Handle<Int32> = root.alloc<Int32>(1)\n"
+        "print(g)\nprint(h)\n",
+        expected, "function and handle placeholders");
 }

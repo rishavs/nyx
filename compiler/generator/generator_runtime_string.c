@@ -1,25 +1,28 @@
 #include "generator_internal.h"
 
 
-bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
-                                ErrorState *errors)
+void emit_string_runtime(const TypedProgram *program, GeneratorContext *gen, TextBuffer *source)
 {
     bool emitted_bounds = false;
-    size_t i;
+    size_t i, k, count;
+    const size_t *strings = analysis_types(gen->analysis, NYX_TYPE_STRING,
+                                           &count);
 
-    for (i = 0; i < program->types.length; i++) {
-        const TypedType *type = typed_program_type(program, i);
+    for (k = 0; k < count; k++) {
+        const TypedType *type;
         bool already = false;
         size_t j;
 
-        if (type == NULL || type->kind != NIPPY_TYPE_STRING) {
+        i = strings[k];
+        type = typed_program_type(program, i);
+        if (type == NULL) {
             continue;
         }
-        for (j = 0; j < i; j++) {
-            const TypedType *earlier = typed_program_type(program, j);
+        /* One helper per capacity: skip a capacity an earlier type had. */
+        for (j = 0; j < k; j++) {
+            const TypedType *earlier = typed_program_type(program, strings[j]);
 
-            if (earlier != NULL && earlier->kind == NIPPY_TYPE_STRING &&
-                earlier->fixed_length == type->fixed_length) {
+            if (earlier != NULL && earlier->fixed_length == type->fixed_length) {
                 already = true;
                 break;
             }
@@ -28,62 +31,55 @@ bool emit_string_runtime(const TypedProgram *program, TextBuffer *source,
             continue;
         }
         if (!emitted_bounds) {
-            if (!buffer_append(
-                    source,
-                    "static inline void nyx_string_bounds(const char *file, size_t line, size_t column, size_t offset)\n"
-                    "{\n"
-                    "    fflush(stdout);\n"
-                    "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION
-                    "\\n\", file, line, column, offset, \""
-                    MESSAGE_RUNTIME_STRING_BOUNDS "\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
-                    "    exit(1);\n"
-                    "}\n\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
+            buffer_append(
+                source,
+                "static inline void nyx_string_bounds(const char *file, size_t line, size_t column, size_t offset)\n"
+                "{\n"
+                "    fflush(stdout);\n"
+                "    fprintf(stderr, \"" MESSAGE_RUNTIME_POSITION
+                "\\n\", file, line, column, offset, \""
+                MESSAGE_RUNTIME_STRING_BOUNDS "\" + sizeof(\"" MESSAGE_RUNTIME_PREFIX "\") - 1);\n"
+                "    exit(1);\n"
+                "}\n\n");
             emitted_bounds = true;
         }
-        if (!buffer_appendf(
-                source,
-                "static inline uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
-                "int32_t i, const char *file, size_t line, size_t column, size_t offset)\n"
-                "{\n"
-                "    if (i < 0 || (uint32_t)i >= s.length) {\n"
-                "        nyx_string_bounds(file, line, column, offset);\n"
-                "    }\n"
-                "    return s.data[i];\n"
-                "}\n\n"
-                "static inline bool nyx_string_%zu_equal(nyx_string_%zu a, "
-                "nyx_string_%zu b)\n"
-                "{\n"
-                "    return a.length == b.length &&\n"
-                "           memcmp(a.data, b.data, a.length) == 0;\n"
-                "}\n\n",
-                type->fixed_length, type->fixed_length, type->fixed_length,
-                type->fixed_length, type->fixed_length)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(
+            source,
+            "static inline uint8_t nyx_string_%zu_at(nyx_string_%zu s, "
+            "int32_t i, const char *file, size_t line, size_t column, size_t offset)\n"
+            "{\n"
+            "    if (i < 0 || (uint32_t)i >= s.length) {\n"
+            "        nyx_string_bounds(file, line, column, offset);\n"
+            "    }\n"
+            "    return s.data[i];\n"
+            "}\n\n"
+            "static inline bool nyx_string_%zu_equal(nyx_string_%zu a, "
+            "nyx_string_%zu b)\n"
+            "{\n"
+            "    return a.length == b.length &&\n"
+            "           memcmp(a.data, b.data, a.length) == 0;\n"
+            "}\n\n",
+            type->fixed_length, type->fixed_length, type->fixed_length,
+            type->fixed_length, type->fixed_length);
     }
-    return true;
 }
 
 
-bool emit_dynamic_string_runtime(const TypedProgram *program,
+bool emit_dynamic_string_runtime(const TypedProgram *program, GeneratorContext *gen,
                                          TextBuffer *source,
                                          ErrorState *errors)
 {
     bool ok = true;
 
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nyx_string_fail(const char *message)\n"
+                   "static NYX_UNUSED void nyx_string_fail(const char *message)\n"
                    "{\n"
                    "    fflush(stdout);\n"
                    "    fprintf(stderr, \"%s\\n\", message);\n"
                    "    exit(1);\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nyx_string_fail_at(const char *message, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "static NYX_UNUSED void nyx_string_fail_at(const char *message, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    if (file == NULL) nyx_string_fail(message);\n"
                    "    fflush(stdout);\n"
@@ -91,9 +87,9 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "    exit(1);\n"
                    "}\n\n");
     {
-        ok = ok && buffer_append(
+        buffer_append(
                        source,
-                       "static NIPPY_UNUSED const uint8_t *"
+                       "static NYX_UNUSED const uint8_t *"
                        "nyx_string_data_at(nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
                        "    nyx_store *store;\n\n"
@@ -105,10 +101,11 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "\", file, line, column, pos);\n"
                        "    }\n"
                        "    store = s.store;\n"
-                       "    if (store->generation != s.generation) {\n"
-                       "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
-                       "\", file, line, column, pos);\n"
-                       "    }\n"
+                       );
+        append_generation_check(source, gen, "store->generation",
+                                     "s.generation", "nyx_string_fail_at");
+        buffer_append(
+                       source,
                        "    if (s.offset > store->used ||\n"
                        "        s.length > store->used - s.offset ||\n"
                        "        s.length > (size_t)-1 - s.offset - 1 ||\n"
@@ -119,16 +116,16 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    return store->data + s.offset;\n"
                        "}\n\n");
     }
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED const uint8_t *nyx_string_data(nyx_string s)\n"
+                   "static NYX_UNUSED const uint8_t *nyx_string_data(nyx_string s)\n"
                    "{ return nyx_string_data_at(s, NULL, 0, 0, 0); }\n\n"
-                   "static NIPPY_UNUSED int32_t nyx_string_len_at(nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
+                   "static NYX_UNUSED int32_t nyx_string_len_at(nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    (void)nyx_string_data_at(s, file, line, column, pos);\n"
                    "    return (int32_t)s.length;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED uint8_t nyx_string_byte_at(nyx_string s, "
+                   "static NYX_UNUSED uint8_t nyx_string_byte_at(nyx_string s, "
                    "int32_t i, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    if (i < 0 || (size_t)i >= s.length) {\n"
@@ -137,7 +134,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "    }\n"
                    "    return nyx_string_data_at(s, file, line, column, pos)[i];\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nyx_string "
+                   "static NYX_UNUSED nyx_string "
                    "nyx_string_slice(nyx_string s, "
                    "int32_t start, int32_t length, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
@@ -158,21 +155,21 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                    "    result.length = (size_t)length;\n"
                    "    return result;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED bool nyx_string_equal_at(nyx_string a, "
+                   "static NYX_UNUSED bool nyx_string_equal_at(nyx_string a, "
                    "nyx_string b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    const uint8_t *a_data = nyx_string_data_at(a, file, line, column, pos);\n"
                    "    const uint8_t *b_data = nyx_string_data_at(b, file, line, column, pos);\n"
                    "    return a.length == b.length && memcmp(a_data, b_data, a.length) == 0;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED bool nyx_string_equal(nyx_string a, nyx_string b)\n"
+                   "static NYX_UNUSED bool nyx_string_equal(nyx_string a, nyx_string b)\n"
                    "{\n"
                    "    return nyx_string_equal_at(a, b, NULL, 0, 0, 0);\n"
                    "}\n\n");
     {
-        ok = ok && buffer_append(
+        buffer_append(
                        source,
-                       "static NIPPY_UNUSED nyx_string nyx_string_from_bytes("
+                       "static NYX_UNUSED nyx_string nyx_string_from_bytes("
                        "nyx_store *store,\n"
                        "                                             "
                        "const uint8_t *bytes, size_t length, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -194,7 +191,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED nyx_string nyx_string_concat("
+                       "static NYX_UNUSED nyx_string nyx_string_concat("
                        "nyx_store *store,\n"
                        "                                        "
                        "nyx_string a, nyx_string b, const char *file, size_t line, size_t column, size_t pos)\n"
@@ -225,7 +222,7 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    result.generation = store->generation;\n"
                        "    return result;\n"
                        "}\n\n"
-                       "static NIPPY_UNUSED nyx_string nyx_string_copy("
+                       "static NYX_UNUSED nyx_string nyx_string_copy("
                        "nyx_store *store,\n"
                        "                                      nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
                        "{\n"
@@ -249,21 +246,25 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                        "    return result;\n"
                        "}\n\n");
         {
-            size_t i;
+            size_t i, k, count;
+            const size_t *strings = analysis_types(gen->analysis,
+                                                   NYX_TYPE_STRING, &count);
 
-            for (i = 0; i < program->types.length; i++) {
-                const TypedType *type = typed_program_type(program, i);
+            for (k = 0; k < count; k++) {
+                const TypedType *type;
                 bool already = false;
                 size_t j;
 
-                if (type == NULL || type->kind != NIPPY_TYPE_STRING) {
+                i = strings[k];
+                type = typed_program_type(program, i);
+                if (type == NULL) {
                     continue;
                 }
-                for (j = 0; j < i; j++) {
-                    const TypedType *earlier = typed_program_type(program, j);
+                for (j = 0; j < k; j++) {
+                    const TypedType *earlier = typed_program_type(program,
+                                                                  strings[j]);
 
                     if (earlier != NULL &&
-                        earlier->kind == NIPPY_TYPE_STRING &&
                         earlier->fixed_length == type->fixed_length) {
                         already = true;
                         break;
@@ -272,9 +273,9 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
                 if (already) {
                     continue;
                 }
-                ok = ok && buffer_appendf(
+                buffer_appendf(
                                source,
-                               "static NIPPY_UNUSED nyx_string "
+                               "static NYX_UNUSED nyx_string "
                                "nyx_string_from_fixed_%zu("
                                "nyx_store *store,\n"
                                "                                             "
@@ -295,74 +296,67 @@ bool emit_dynamic_string_runtime(const TypedProgram *program,
 }
 
 
-bool emit_dynamic_string_literals(const TypedProgram *program,
-                                         TextBuffer *source,
-                                         ErrorState *errors)
+bool emit_dynamic_string_literals(const TypedProgram *program, GeneratorContext *gen,
+                                         TextBuffer *source)
 {
-    size_t i;
+    size_t count, k;
+    const size_t *literals = analysis_nodes(gen->analysis, TYPED_STRING_LITERAL,
+                                            &count);
 
-    for (i = 0; i < program->nodes.length; i++) {
+    for (k = 0; k < count; k++) {
+        size_t i = literals[k];
         const TypedNode *node = typed_program_node(program, i);
         const TypedType *type;
         size_t j;
 
-        if (node == NULL || node->kind != TYPED_STRING_LITERAL) {
-            continue;
-        }
         type = typed_program_type(program, node->type_index);
-        if (type == NULL || type->kind != NIPPY_TYPE_DYNAMIC_STRING) {
+        if (type == NULL || type->kind != NYX_TYPE_DYNAMIC_STRING) {
             continue;
         }
-        if (!buffer_appendf(source,
-                            "static const uint8_t nyx_dyn_str_%zu[] = { ",
-                            i)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(source,
+                        "static const uint8_t nyx_dyn_str_%zu[] = { ",
+                        i);
         for (j = 0; j < node->string_length; j++) {
             const unsigned char *byte = list_get(&program->bytes,
                                                  node->string_offset + j);
 
-            if (byte == NULL ||
-                !buffer_appendf(source, "%u, ", (unsigned)*byte)) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+            if (byte == NULL) {
                 return false;
             }
+            buffer_appendf(source, "%u, ", (unsigned)*byte);
         }
-        if (!buffer_append(source, "0 };\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_append(source, "0 };\n");
     }
     return true;
 }
 
 
-bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
+bool emit_builder_runtime(GeneratorContext *gen, TextBuffer *source, ErrorState *errors)
 {
     bool ok = true;
 
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
                    "typedef struct {\n"
                    "    size_t offset;\n"
                    "    size_t length;\n"
                    "    size_t capacity;\n"
                    "} nyx_builder_state;\n\n"
-                   "static NIPPY_UNUSED nyx_store *nyx_builder_store("
+                   "static NYX_UNUSED nyx_store *nyx_builder_store("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    if (b.store == NULL) {\n"
                    "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STORE_RANGE
                    "\", file, line, column, pos);\n"
                    "    }\n"
-                   "    if (b.store->generation != b.generation) {\n"
-                   "        nyx_string_fail_at(\"" MESSAGE_RUNTIME_STALE_HANDLE
-                   "\", file, line, column, pos);\n"
-                   "    }\n"
+                   );
+    append_generation_check(source, gen, "b.store->generation",
+                                 "b.generation", "nyx_string_fail_at");
+    buffer_append(
+                   source,
                    "    return b.store;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nyx_builder_state *nyx_builder_get_state("
+                   "static NYX_UNUSED nyx_builder_state *nyx_builder_get_state("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_store *store = nyx_builder_store(b, file, line, column, pos);\n\n"
@@ -374,9 +368,9 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    return (nyx_builder_state *)(void *)(store->data + "
                    "b.offset);\n"
                    "}\n\n");
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED nyx_builder nyx_builder_create("
+                   "static NYX_UNUSED nyx_builder nyx_builder_create("
                    "nyx_store *store, int32_t capacity, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_builder_state state;\n"
@@ -405,7 +399,7 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    builder.generation = handle.generation;\n"
                    "    return builder;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nyx_builder_reserve("
+                   "static NYX_UNUSED void nyx_builder_reserve("
                    "nyx_builder b, size_t needed, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_store *store = nyx_builder_store(b, file, line, column, pos);\n"
@@ -437,9 +431,9 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    state->length = old_length;\n"
                    "    store->data[offset + old_length] = 0;\n"
                    "}\n\n");
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED void nyx_builder_append("
+                   "static NYX_UNUSED void nyx_builder_append("
                    "nyx_builder b, nyx_string s, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_builder_state *state = nyx_builder_get_state(b, file, line, column, pos);\n"
@@ -460,7 +454,7 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    state->length = needed;\n"
                    "    store->data[state->offset + needed] = 0;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED void nyx_builder_append_byte("
+                   "static NYX_UNUSED void nyx_builder_append_byte("
                    "nyx_builder b, uint8_t byte, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_builder_state *state = nyx_builder_get_state(b, file, line, column, pos);\n"
@@ -478,14 +472,14 @@ bool emit_builder_runtime(TextBuffer *source, ErrorState *errors)
                    "    state->length = needed;\n"
                    "    store->data[state->offset + needed] = 0;\n"
                    "}\n\n");
-    ok = ok && buffer_append(
+    buffer_append(
                    source,
-                   "static NIPPY_UNUSED int32_t nyx_builder_len("
+                   "static NYX_UNUSED int32_t nyx_builder_len("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    return (int32_t)nyx_builder_get_state(b, file, line, column, pos)->length;\n"
                    "}\n\n"
-                   "static NIPPY_UNUSED nyx_string nyx_builder_finish("
+                   "static NYX_UNUSED nyx_string nyx_builder_finish("
                    "nyx_builder b, const char *file, size_t line, size_t column, size_t pos)\n"
                    "{\n"
                    "    nyx_builder_state *state = nyx_builder_get_state(b, file, line, column, pos);\n"

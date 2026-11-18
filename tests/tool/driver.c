@@ -1,4 +1,4 @@
-/* The nippy command line: file I/O, the cc invocation, and allocation failure. */
+/* The nyx command line: file I/O, the cc invocation, and allocation failure. */
 
 #include "tool_support.h"
 
@@ -56,7 +56,7 @@ TEST("paths with spaces")
     snprintf(log, sizeof(log), "%s", test_path("compiler.log"));
     if (!write_text(source, "print(3)\n")) return TEST_ERROR;
     snprintf(command, sizeof(command), "%s '%s' '%s' > '%s' 2>&1",
-             nippy_binary(), source, output, log);
+             nyx_binary(), source, output, log);
     if (system(command) != 0) {
         fprintf(stderr, "  source or output path with spaces failed\n");
         return TEST_FAIL;
@@ -98,7 +98,7 @@ finished:
 
 TEST("source too large")
 {
-    const size_t size = NIPPY_DEFAULT_MAX_SOURCE_BYTES + 1;
+    const size_t size = NYX_DEFAULT_MAX_SOURCE_BYTES + 1;
     unsigned char *big = malloc(size);
     char expected[256];
     TestResult result = TEST_ERROR;
@@ -120,7 +120,7 @@ TEST("source too large")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_DRIVER_SOURCE_TOO_LARGE, test_path("source.nip"),
-                   NIPPY_DEFAULT_MAX_SOURCE_BYTES);
+                   NYX_DEFAULT_MAX_SOURCE_BYTES);
     if (!file_contains(test_path("log"), expected)) {
         fprintf(stderr, "  missing \"source is larger than\" diagnostic\n");
         result = TEST_FAIL;
@@ -151,7 +151,7 @@ TEST("source limit can be changed")
         goto finished;
     }
     /* 5000 bytes is over the old 4096-byte default and under the current one. */
-    snprintf(command, sizeof(command), "%s %s %s > %s 2>&1", nippy_binary(),
+    snprintf(command, sizeof(command), "%s %s %s > %s 2>&1", nyx_binary(),
              test_path("source.nip"), test_path("bin"), test_path("log"));
     status = system(command);
     if (status != 0) {
@@ -161,7 +161,7 @@ TEST("source limit can be changed")
     }
     snprintf(command, sizeof(command),
              "%s --max-source-bytes 4096 %s %s > %s 2>&1",
-             nippy_binary(), test_path("source.nip"), test_path("bin"),
+             nyx_binary(), test_path("source.nip"), test_path("bin"),
              test_path("log"));
     status = system(command);
     if (status == 0) {
@@ -184,7 +184,7 @@ TEST("invalid source limit")
 
     snprintf(command, sizeof(command),
              "%s --max-source-bytes nope source.nip bin/test > %s 2>&1",
-             nippy_binary(), test_path("log"));
+             nyx_binary(), test_path("log"));
     status = system(command);
     if (status == 0) {
         fprintf(stderr, "  invalid source limit was accepted\n");
@@ -267,14 +267,14 @@ TEST("usage")
     TestResult result = TEST_ERROR;
     int status;
 
-    status = run_command(nippy_binary(), test_path("log"));
+    status = run_command(nyx_binary(), test_path("log"));
     if (status == 0) {
         fprintf(stderr, "  no-argument invocation unexpectedly succeeded\n");
         result = TEST_FAIL;
         goto finished;
     }
     expect_message(expected, sizeof(expected), MESSAGE_DRIVER_USAGE,
-                   nippy_binary());
+                   nyx_binary());
     if (!file_contains(test_path("log"), expected)) {
         fprintf(stderr, "  missing usage diagnostic\n");
         result = TEST_FAIL;
@@ -395,7 +395,7 @@ TEST("allocation failure messages")
        poisoned build allocates on every list push, so the compiler makes tens
        of thousands of allocations and the messages sit far beyond the sweep's
        range: the test measures something the poisoned build changes. */
-    if (getenv("NIPPY_POISON_BUILD") != NULL) {
+    if (getenv("NYX_POISON_BUILD") != NULL) {
         fprintf(stderr, "  skipped: allocation counts differ in the poisoned "
                         "build\n");
         return TEST_TODO;
@@ -486,8 +486,8 @@ TEST("publication failures restore all previous outputs")
             !write_text(test_path("bin.c"), "previous source\n") ||
             !write_text(test_path("bin"), "previous executable\n")) return TEST_ERROR;
         snprintf(command, sizeof(command),
-                 "NIPPY_FAIL_RENAME_AFTER=%zu %s %s %s > %s 2>&1", i,
-                 nippy_binary(), test_path("source.nip"), test_path("bin"),
+                 "NYX_FAIL_RENAME_AFTER=%zu %s %s %s > %s 2>&1", i,
+                 nyx_binary(), test_path("source.nip"), test_path("bin"),
                  test_path("log"));
         if (system(command) == 0 ||
             !file_equals(test_path("bin.h"), "previous header\n") ||
@@ -518,7 +518,7 @@ TEST("C compiler failures")
         char command[2048];
 
         snprintf(command, sizeof(command),
-                 "PATH=/nonexistent %s %s %s > %s 2>&1", nippy_binary(),
+                 "PATH=/nonexistent %s %s %s > %s 2>&1", nyx_binary(),
                  test_path("source.nip"), test_path("bin"), test_path("log"));
         status = system(command);
     }
@@ -544,7 +544,7 @@ finished:
 
 TEST("the output may not overwrite the source")
 {
-    /* `nippy x.nip x.nip` once replaced the source with the binary. Any of
+    /* `nyx x.nip x.nip` once replaced the source with the binary. Any of
        the three files the compiler writes (`out`, `out.c`, `out.h`) being the
        source is refused before anything is written. */
     static const char *const sources[] = {"same", "same.c", "same.h"};
@@ -617,7 +617,7 @@ TEST("the driver accepts a source file that starts with a byte order mark")
     if (!write_bytes(test_path("source.nip"), source, sizeof(source) - 1)) {
         return TEST_ERROR;
     }
-    snprintf(command, sizeof(command), "%s %s %s", nippy_binary(),
+    snprintf(command, sizeof(command), "%s %s %s", nyx_binary(),
              test_path("source.nip"), test_path("bin"));
     if (run_command(command, test_path("log")) != 0) {
         fprintf(stderr, "  a BOM-prefixed source did not compile\n");

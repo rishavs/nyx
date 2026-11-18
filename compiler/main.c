@@ -51,7 +51,7 @@ static char *read_source(const char *path, size_t max_source_size,
         return NULL;
     }
 
-    source = nippy_malloc(max_source_size + 1);
+    source = nyx_malloc(max_source_size + 1);
     if (source == NULL) {
         error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_BUFFER);
         fclose(file);
@@ -105,7 +105,7 @@ static char *append_suffix(const char *path, const char *suffix)
 
     if (suffix_length == SIZE_MAX || path_length > SIZE_MAX - suffix_length - 1)
         return NULL;
-    result = nippy_malloc(path_length + suffix_length + 1);
+    result = nyx_malloc(path_length + suffix_length + 1);
 
     if (result != NULL) {
         memcpy(result, path, path_length);
@@ -126,16 +126,16 @@ typedef struct {
 } StagedOutput;
 
 /* One-shot test hook for exercising publication rollback. */
-static size_t rename_fail_after = NIPPY_ALLOC_NEVER;
+static size_t rename_fail_after = NYX_ALLOC_NEVER;
 
 static int publish_rename(const char *from, const char *to)
 {
     if (rename_fail_after == 0) {
-        rename_fail_after = NIPPY_ALLOC_NEVER;
+        rename_fail_after = NYX_ALLOC_NEVER;
         errno = EIO;
         return -1;
     }
-    if (rename_fail_after != NIPPY_ALLOC_NEVER) rename_fail_after--;
+    if (rename_fail_after != NYX_ALLOC_NEVER) rename_fail_after--;
     return rename(from, to);
 }
 
@@ -170,13 +170,13 @@ static bool create_staged_output(const char *output, const char *h_path,
     if (*base == '\0' || base_length > SIZE_MAX - 32 ||
         dir_length > SIZE_MAX - base_length - 32 || dir_length > INT_MAX) goto fail;
     size = dir_length + 24;
-    stage->directory = nippy_malloc(size);
+    stage->directory = nyx_malloc(size);
     if (stage->directory == NULL) goto oom;
-    snprintf(stage->directory, size, "%.*s/.nippy-XXXXXX", (int)dir_length, dir);
+    snprintf(stage->directory, size, "%.*s/.nyx-XXXXXX", (int)dir_length, dir);
     if (mkdtemp(stage->directory) == NULL) goto fail;
     stage->created = true;
     size = strlen(stage->directory) + strlen(base) + 2;
-    stage->binary = nippy_malloc(size);
+    stage->binary = nyx_malloc(size);
     if (stage->binary == NULL) goto oom;
     snprintf(stage->binary, size, "%s/%s", stage->directory, base);
     stage->source = append_suffix(stage->binary, ".c");
@@ -301,7 +301,7 @@ static char *shell_quote(const char *text)
     char *out;
 
     if (length > (SIZE_MAX - 3) / 4) return NULL;
-    quoted = nippy_malloc(length * 4 + 3);
+    quoted = nyx_malloc(length * 4 + 3);
     if (quoted == NULL) {
         return NULL;
     }
@@ -344,14 +344,14 @@ static int build_binary(const char *c_path, const char *output_path,
         return 0;
     }
     command_size = strlen(quoted_c) + strlen(quoted_output) + 64;
-    command = nippy_malloc(command_size);
+    command = nyx_malloc(command_size);
     if (command == NULL) {
         error_report(errors, MESSAGE_DRIVER_COULD_NOT_ALLOCATE_COMMAND);
         free(quoted_c);
         free(quoted_output);
         return 0;
     }
-    snprintf(command, command_size, "cc -std=c11 -o %s %s", quoted_output, quoted_c);
+    snprintf(command, command_size, "cc -std=c11 -pthread -o %s %s", quoted_output, quoted_c);
     status = system(command);
     free(command);
     free(quoted_c);
@@ -368,14 +368,14 @@ static int build_binary(const char *c_path, const char *output_path,
     return 1;
 }
 
-/* Test hook: NIPPY_FAIL_ALLOC_AFTER makes the n-th allocation fail so the
+/* Test hook: NYX_FAIL_ALLOC_AFTER makes the n-th allocation fail so the
    suite can exercise the driver's out-of-memory paths. Unset in normal use. */
 static size_t failure_index_from_environment(const char *name)
 {
     const char *value = getenv(name);
 
     if (value == NULL || *value == '\0') {
-        return NIPPY_ALLOC_NEVER;
+        return NYX_ALLOC_NEVER;
     }
     return (size_t)strtoul(value, NULL, 10);
 }
@@ -453,8 +453,8 @@ int main(int argc, char **argv)
     StagedOutput stage = {0};
 
     error_init(&errors);
-    nippy_alloc_fail_after(failure_index_from_environment("NIPPY_FAIL_ALLOC_AFTER"));
-    rename_fail_after = failure_index_from_environment("NIPPY_FAIL_RENAME_AFTER");
+    nyx_alloc_fail_after(failure_index_from_environment("NYX_FAIL_ALLOC_AFTER"));
+    rename_fail_after = failure_index_from_environment("NYX_FAIL_RENAME_AFTER");
     source_path = NULL;
     output_path = NULL;
     if (argc == 3) {
@@ -479,7 +479,7 @@ int main(int argc, char **argv)
         source_path,
         config.max_source_bytes > 0
             ? (size_t)config.max_source_bytes
-            : (size_t)NIPPY_DEFAULT_MAX_SOURCE_BYTES,
+            : (size_t)NYX_DEFAULT_MAX_SOURCE_BYTES,
         &errors);
     if (source == NULL) {
         print_errors(&errors);

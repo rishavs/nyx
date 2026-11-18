@@ -184,7 +184,7 @@ TEST("numeric conversion trap")
                                               "numeric conversion range");
     if (result != TEST_PASS) return result;
     return file_contains(test_path("runtime.log"),
-                         "nippy: test.nip:2:15 (byte 37):")
+                         "nyx: test.nip:2:15 (byte 37):")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -471,4 +471,12 @@ TEST("numeric limits")
     return run_generated(source,
                          "-9223372036854775808\n18446744073709551615\n",
                          "numeric limits");
+}
+
+TEST("a sum that overflows Int32 is an ordinary Int64")
+{
+    return run_generated(
+        "var a: Int64 = 1\n"
+        "print(a + (2000000000 + 2000000000), a * (3000000000 - 1))\n",
+        "4000000001 2999999999\n", "Int64 constants beyond Int32");
 }

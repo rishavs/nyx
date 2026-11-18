@@ -1,5 +1,5 @@
-#ifndef NIPPY_NAME_INDEX_H
-#define NIPPY_NAME_INDEX_H
+#ifndef NYX_NAME_INDEX_H
+#define NYX_NAME_INDEX_H
 
 #include "list.h"
 

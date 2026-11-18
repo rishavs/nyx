@@ -1,5 +1,5 @@
-#ifndef NIPPY_COMPILE_SUPPORT_H
-#define NIPPY_COMPILE_SUPPORT_H
+#ifndef NYX_COMPILE_SUPPORT_H
+#define NYX_COMPILE_SUPPORT_H
 
 #include "harness.h"
 #include "alloc.h"
@@ -38,5 +38,11 @@ TestResult compile_fails(const char *source, const char *what,
                          const char *format, ...);
 /* Passes when `source` compiles; otherwise prints the diagnostic. */
 TestResult compile_accepts(const char *source, const char *what);
+
+/* Runs `check` on every .c file in `path`, and in each directory beneath it
+   when `recurse` is set. True only when every check passed. Source-scanning
+   tests use it to enforce rules on the compiler's own code. */
+typedef bool (*SourceCheck)(const char *path);
+bool check_directory(const char *path, bool recurse, SourceCheck check);
 
 #endif

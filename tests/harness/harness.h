@@ -1,5 +1,5 @@
-#ifndef NIPPY_TEST_HARNESS_H
-#define NIPPY_TEST_HARNESS_H
+#ifndef NYX_TEST_HARNESS_H
+#define NYX_TEST_HARNESS_H
 
 /* A small test runner.
 
@@ -33,20 +33,20 @@ void test_register(const char *file, int line, const char *name, TestFn run);
 void test_register_data(const char *file, int line, const char *name,
                         TestDataFn run, void *data);
 
-#define NIPPY_TEST_CAT2(a, b) a##b
-#define NIPPY_TEST_CAT(a, b) NIPPY_TEST_CAT2(a, b)
+#define NYX_TEST_CAT2(a, b) a##b
+#define NYX_TEST_CAT(a, b) NYX_TEST_CAT2(a, b)
 
 /* TEST("description") { ... return TEST_PASS; } */
 #define TEST(description)                                                    \
-    static TestResult NIPPY_TEST_CAT(nippy_test_, __LINE__)(void);           \
-    static void NIPPY_TEST_CAT(nippy_register_, __LINE__)(void)              \
+    static TestResult NYX_TEST_CAT(nyx_test_, __LINE__)(void);           \
+    static void NYX_TEST_CAT(nyx_register_, __LINE__)(void)              \
         __attribute__((constructor));                                        \
-    static void NIPPY_TEST_CAT(nippy_register_, __LINE__)(void)              \
+    static void NYX_TEST_CAT(nyx_register_, __LINE__)(void)              \
     {                                                                        \
         test_register(__FILE__, __LINE__, description,                       \
-                      NIPPY_TEST_CAT(nippy_test_, __LINE__));                \
+                      NYX_TEST_CAT(nyx_test_, __LINE__));                \
     }                                                                        \
-    static TestResult NIPPY_TEST_CAT(nippy_test_, __LINE__)(void)
+    static TestResult NYX_TEST_CAT(nyx_test_, __LINE__)(void)
 
 /* Runs the registered tests selected by the command line. `title` names the
    suite in the summary. Returns the process exit status. */

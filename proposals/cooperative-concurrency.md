@@ -1,164 +1,164 @@
-# Automatically sized parallel map
+# Parallel blocks, atomics, and channels
 
-- Feature name: `parallel_map`
+- Feature names: `parallel`, `Atomic`, `Channel`, `when`, `defer`
 - Start date: 2026-11-13
-- Status: proposed. Native-thread prototypes exercised.
+- Revised: 2026-11-17
+- Status: implemented. `SEMANTICS.md` is the language reference; this document
+  records why the design is what it is and what is still open.
+- Replaces: two earlier designs, a fork/join `parallel_map` and a `spawn` /
+  `join` / channels design with lent Stores. Neither shipped. Their history is in
+  the repository.
 
 ## Summary
 
-Add a blocking built-in, `parallel_map(input, worker)`, for independent CPU
-work. The caller describes the jobs and Nippy chooses the number of
-participants. The caller participates alongside native C11 threads. Results
-preserve input order. This proposal adds no keyword.
+Nyx runs work on several threads with three small pieces that fit together:
 
-## Motivation
+- `parallel ... do ... end` runs function calls at the same time and waits for all
+  of them. Its arms are threads that cannot outlive the block, so there are no
+  thread handles, no `join`, and no detached threads.
+- A block may own a **pool**, a fixed-capacity Store that every arm allocates in
+  without waiting. Objects stay private to the arm that made them until the arms
+  return, and a `then` section reads them all on one thread.
+- Global **`Atomic`** cells and global **`Channel`s** are the only things arms
+  share while they run. A channel carries a copy of a plain value.
 
-A renderer or batch processor should be able to expose many independent jobs
-without querying the machine or dividing work into one job per core. A
-compiler-generated worker trampoline and shared chunk counter can run these
-jobs on several cores with little runtime machinery.
+The rule behind all of it: **threads never share mutable memory.** An arm
+receives copies of plain values, cannot reach a global Store, and talks to other
+arms only through a resource whose every operation is synchronised. Data races,
+which are undefined behaviour in C11, are impossible by construction and checked
+at compile time.
 
-## Guide-level explanation
+## Why this shape
 
-```nippy
-fun render_tile(job: TileJob): Tile
-  return render(job)
-end
+**Scoped arenas set the theme.** A `scope` Store has a lexical lifetime and the
+compiler rejects any value that could outlive it. A `parallel` block is the same
+idea for threads: arms live exactly as long as the block, the pool dies at its
+`end`, and a value from the pool cannot be stored where it outlives the block.
+The escape analysis needed no new concept for this.
 
-var tiles = parallel_map(tile_jobs, render_tile)
-```
+**Structured threads remove most of a thread API.** With no handles there is no
+`Thread<R>`, no result-by-join, no thread that outlives the Store it was lent,
+and no "did you join it" check. A server is one block whose arms never return; a
+game is a block whose arms return when their channels close.
 
-Here `tile_jobs` is an `Array<TileJob,N>`. The call blocks until all tiles are
-ready and returns an `Array<Tile,N>` with the same length and capacity as the
-input. Tile types in this example are self-contained values. Tile count is a
-property of the image and the chosen tile size. On a machine with fewer
-available CPUs, each participant handles more tiles. Worker execution order
-is unspecified.
+**Plain values cross, nothing else does.** A value is *plain* when it holds no
+`Text`, `Handle`, `List`, `Slice`, `Table`, Store, or function. The rule is a
+walk over the type graph, and it is exactly the set of values the escape analysis
+already calls pointer-free. It applies to an arm's arguments, its assigned
+result, and a channel's element.
 
-## Reference-level explanation
+## Decisions and the alternatives they beat
 
-### Input and callback
+- **POSIX threads, not C11 threads.** glibc does not register `thrd_create`
+  threads with ThreadSanitizer, so a race in generated code could not be checked.
+  With `pthread` the race detector runs on the generated C, and it is clean on
+  the programs in the tests.
+- **A pool with an atomic cursor, not a growable Store.** Growth moves the buffer
+  while another thread reads it. A fixed capacity never moves, and an allocation
+  is one compare-and-swap. A full pool is a clear trap.
+- **Objects private until the arms return, not shared mid-block.** An arm gets
+  only plain values and the pool, so it holds no pointer to another arm's
+  objects. That makes sharing the pool safe without locks, and it is why a
+  `then` section is needed: results that point into the pool must be read while
+  the pool is alive.
+- **Atomics are global, scalar, and sequentially consistent.** Global means a
+  static address and no lifetime or escape question; scalar means a cell cannot
+  hide a data race; one memory order means nothing to get wrong. `add` returns
+  the previous value so it hands out tickets.
+- **Channels carry plain values, and live in static storage or a pool.** Same
+  reasoning as atomics. The
+  alternative that carries arenas (moving a Store between threads) needs a
+  moved-from check on a Store variable and a Store whose lifetime is not lexical,
+  which is ownership, and Nyx avoids that.
+- **One process-wide lock for all channels.** It is what lets `when` wait on
+  several channels and lets the deadlock report see every thread. The cost is that
+  channel traffic from different threads serialises; at the scale of an engine or
+  a server's job queue this is not the bottleneck. Per-channel locks would need a
+  waiter list per channel.
+- **`when` picks the first ready arm in source order.** Randomising or rotating
+  would hide the priority in the runtime. With source order the programmer states
+  it by writing the arms in that order.
+- **`recv` returns `T | Nil`.** A distinct `Closed` type would allow `Nil`
+  elements at the price of a built-in type, and a one-field wrapper struct covers
+  the rare optional message.
+- **A deadlock is a trap.** A hung server is the worst failure, and the one
+  process-wide lock makes the accounting cheap. Counting the thread that waits for
+  a block's arms only while an arm is unfinished, and clearing the blocked count on
+  every state change, are what keep it from reporting a deadlock that is not one.
+- **Why not Go's model.** Goroutines need a scheduler and a garbage collector,
+  which Nyx rules out, and they share memory freely.
+- **Why not locks or mutexes.** They let threads share mutable state, and locking
+  bugs are what rule 14 asks Nyx to remove. A shared structure belongs in C
+  interop.
 
-The first version takes an existing fixed-capacity `Array<T,N>` and a named
-non-generic function of one argument with signature `T -> U`. The checker
-derives the result type `Array<U,N>`. Both array types must satisfy existing
-element, capacity, and by-value size limits. Empty input returns an empty
-array without calling the worker. Evaluate the input once and materialize
-its by-value snapshot before launching work.
+## Added after the first cut
 
-Initially require self-contained element and result types. Accept inline
-scalars, fixed strings, Error values, and eligible inline aggregates whose
-members satisfy the same rule. Reject arena-backed descriptors and function
-values transitively, including through aliases and generic aggregate
-instantiations. Workers may use ordinary locals. When scoped Stores land,
-allow worker-private Stores under the scoped-arena rules. Their descriptors
-still cannot cross the map boundary.
+These were listed as gaps and are now built; each is a small extension of the
+rules above, not a new mechanism.
 
-Check the worker's entire reachable call graph. Allow named direct calls
-and operations on private values. Reject mutable global Store access,
-indirect calls, nested `parallel_map`, and external or externally visible
-side effects, including printing and blocking I/O. Apply the same
-restrictions even when the map runs inline. Use a visited set for recursive
-calls. Resolve the audit over checked functions and concrete
-instantiations, with diagnostics pointing to the worker and the offending
-operation. This gives workers independent inputs and results without
-sharing mutable backing storage.
+- **Large messages.** The 64 KiB by-value cap became `CompilerConfig.max_value_bytes`
+  (up to 16 MiB). A message, an arm argument, and an arm result are bounded by it,
+  so a program that needs a 500 KB frame raises the cap and accepts the stack cost.
+  Whether the default should move, and whether the cap should be tied to stack use,
+  stays in `TODO.md`.
+- **Rendezvous channels.** Capacity 0 on a global channel: a send waits until a
+  receiver has taken the value, and `close` withdraws a parked value so the sender
+  gets `false`. `try_send` and a `when` send arm are rejected on one, because a
+  send arm cannot wait for the receiver after the lock is released.
+- **Channels per block.** `pool.channel<T>(n)` makes a channel in a parallel pool
+  and returns a `Channel<T>` value. It lives exactly as long as the block, so each
+  run gets fresh state and a program can have one per lane. The pool is the only
+  place allowed, because it never moves; a growable Store could reallocate under a
+  thread waiting on a channel in it. A value is a descriptor (pool, offset,
+  generation) checked on every use and covered by the existing escape analysis.
+  To make channels before the arms start, a block may begin with `var`/`const`
+  declarations.
+- **Results from a repeated arm.** `with xs = f(lane) for lane in range(a, b)` fills
+  an existing `Array<R,N>` in lane order. A pool-backed `List` would be the more
+  general form and is still open.
+- **Thread reuse.** Arms run on detached workers that wait between blocks. A job
+  goes to an idle worker, or a new worker is started if none is idle, so an arm that
+  blocks can never hold up another arm waiting in a queue. Measured on the
+  development machine, a block of two arms costs about two thirds of what
+  creating and joining a thread cost (most of both is kernel wake-up latency);
+  nothing is created after warm-up.
+- **Blocking outside channels.** There is nothing to fix yet: the language has no
+  file or socket input. A thread blocked in such a call would be counted as
+  running, so the report could never be wrong, only silent. It must learn about
+  those waits when I/O arrives.
 
-### Automatic sizing and execution
+## What this does not do
 
-Use the process's available logical CPU count as a starting budget. On Linux
-count the CPUs in the process affinity mask. Fall back to one participant
-when the count cannot be obtained. Cap participants by the number of jobs.
-The budget includes the caller, so a one-participant run creates no threads.
-An affinity count does not reflect every CPU quota or current system load.
+- **Sharing a large object while threads run.** Arms cannot read existing Store
+  data, so a big read-only world must be copied in or sent as messages. Options
+  considered and not adopted: a frozen read-only Store that arms may read; sending
+  ownership of a pool object through a channel; tracking which Store a value
+  points into, which the analyser, tracking only a depth, cannot do.
+- **Pool rendezvous channels, and a pool channel as a field or a result.** The first
+  needs a capacity-0 path in `when`; the second needs the analyser to follow a
+  descriptor through a struct.
+- **Fairness.** Source order can starve a later arm behind a busy earlier one, and a
+  closed channel is ready forever, so an arm on it starves everything after it.
 
-For the initial implementation, start at most one helper per additional
-participant for the duration of the call. If thread creation fails, continue
-with the caller and the helpers already started. Reserve no jobs for threads
-that failed to start. Workers claim disjoint ranges from a shared counter
-using C11 atomics. Each writes its result to the matching output slot.
-Join every started helper before returning or releasing the snapshot and
-output storage. An unrecoverable join failure traps before reclaiming
-storage. The generator emits the trampoline and helper code only when a map
-is used.
+## Implementation notes
 
-Start with the caller alone for zero or one job. Benchmark a serial
-cutoff and chunk sizes before tuning. A persistent pool can avoid thread
-startup on repeated calls. Treat that as an optimization after measuring
-the per-call implementation. It does not change the source API. Preserve
-the normal C11 build path for programs without parallel work. Document
-native thread support and required linker flags for parallel programs.
-
-## Drawbacks
-
-Automatic sizing provides opportunities to use the available CPUs when
-enough jobs are runnable. Memory bandwidth, imbalance, thread startup, and
-other runnable processes affect the best count. The built-in blocks its
-caller and is intended for CPU work. The first version's array and
-self-contained-value limits rule out large arena-backed results and
-callbacks with captured state.
-
-## Rationale and alternatives
-
-A direct `Thread.start` API gives control over worker lifetime and blocking
-work. It also makes callers choose thread counts, split jobs, and join the
-workers. A map packages those decisions around one common workload.
-Exposing a worker limit or a persistent pool adds API surface. Repeated
-batches and main-thread latency can establish whether either is needed.
-
-The earlier cooperative-task design addressed waiting for I/O. This proposal
-uses blocking fork/join and has no suspension, event loop, or fiber runtime.
-
-## Prior art and prototype findings
-
-The scratch C11 probes under `tmp/` used `<threads.h>` and checked that each
-worker contributed. On the test device, WSL exposed six cores and twelve
-logical CPUs. The renderer's best median was around 76 ms with 24–32 spawned
-workers, versus 483 ms on the main thread. Streaming over two arrays
-totaling 256 MiB flattened around six workers. A separate synthetic blocking
-workload benefited from more workers and was fastest at 48 in that sweep.
-These measurements support automatic sizing as a starting policy and show
-why it is workload-dependent. The probes measured explicit thread counts.
-They did not exercise Nippy lowering or automatic sizing.
-
-Reproduction sources are `tmp/native_threads.c` and
-`tmp/native_thread_workloads.c`. Both build under Arch WSL with
-`cc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -pthread`.
-
-## Unresolved questions
-
-Choose a serial cutoff and chunk size after timing empty, small, uneven,
-and repeated batches. Measure startup costs before adding a persistent
-pool. A future platform policy may account for CPU quotas and offer a limit
-for applications that reserve CPU time for other work.
-
-## Implementation plan
-
-1. Prototype the automatic participant count, caller participation, chunk
-   claiming, and partial-launch fallback in C11. Compare per-call threads
-   with reuse on repeated batches and measure launch cost and wall time.
-2. Resolve the built-in through the checker, type the result using the
-   existing Array machinery, and audit the reachable callback graph.
-   Record worker identity and input and output types in the typed artifact.
-   The analyser validates the links and the generator consumes the typed
-   data.
-3. Emit the C trampoline, disjoint writes, join, and availability query.
-   Wire thread flags into the driver only for programs using the built-in.
-   Keep the initial feature independent of scoped Store implementation.
-4. Test empty and single-item inputs, partial arrays, output order,
-   restricted callback effects, multiple workers, and thread-creation
-   fallback. Verify the serial and parallel paths yield identical results.
-   Update the affected language and build docs, then run `make test`
-   and keep the strict C11 warning build clean.
-
-The worker loop is small. The compiler work is larger because it must enforce
-callback isolation, carry typed function information into C lowering, and
-handle thread startup and cleanup through the normal compile and run paths.
-Restricting the first release to arrays and named callbacks keeps that work
-bounded.
+- Generated C for a program that uses none of this is unchanged. Threaded
+  programs make the scope generation counter atomic, the recursion depth counters
+  `_Thread_local`, hold the stdout lock for each `print`, and route `exit` through
+  a once-only guard so two trapping threads cannot both call it.
+- The analyser audits every function an arm can reach through named calls and
+  rejects a global Store or a call through a function value. Atomics, channels,
+  `print`, `now`, `sleep`, scopes, pool channels, and nested `parallel` blocks are
+  allowed.
+- The poisoned-memory build (`make test-poison`) caught two use-after-realloc bugs
+  in the checker while this was built: a pointer into the type or node list must
+  not be held across a call that pushes onto it.
+- Verification: unit and golden tests, the poisoned build, and ThreadSanitizer,
+  AddressSanitizer, and UBSan runs of the threaded programs (see `BUILD.md`).
 
 ## Future possibilities
 
-Add slices or caller-provided output storage when real workloads need
-larger batches. Consider reusable workers for repeated maps. Explicit native
-thread handles and blocking I/O remain separate designs.
+Collecting repeated-arm results into a pool-backed `List`; moving a pool object
+through a channel; a frozen read-only Store shared by arms; pool rendezvous
+channels; `swap` and `compare_exchange` on atomics; timers with a one-shot form;
+and, once the language has I/O, deadlock reports that account for blocking reads.

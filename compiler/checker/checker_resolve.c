@@ -1,306 +1,306 @@
 #include "checker_internal.h"
 
+/* Resolving a type written in the source to a type in the typed program, under
+   an environment that binds the type parameters of the declaration being
+   checked. Which kind of syntax a type is written with picks the resolver. */
 
-static bool instantiate_struct_inner_entry(CheckContext *ctx, size_t entry_index, size_t argument_count, const size_t *arguments, size_t *out_type, const TypeEntry **entry, size_t *i, bool *outcome)
+/* ---- structs ---- */
+
+/* A type that cannot be the argument of a generic type. */
+static bool check_instantiation_arguments(CheckContext *ctx,
+                                          const size_t *arguments, size_t count)
 {
-    (*entry) = list_get(ctx->types, entry_index);
-    
+    size_t i;
 
-    if ((*entry) == NULL) {
-        error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-        do { *outcome = (false); return true; } while (0);
-    }
-    for ((*i) = 0; (*i) < argument_count; (*i)++) {
-        const TypedType *argument = typed_program_type(ctx->program, arguments[(*i)]);
-        if (argument != NULL && argument->kind == NIPPY_TYPE_STORE) {
-            error_report(ctx->errors, MESSAGE_CHECKER_STORE_TYPE);
-            do { *outcome = (false); return true; } while (0);
+    for (i = 0; i < count; i++) {
+        const char *message = resource_type_message(
+            typed_program_type(ctx->program, arguments[i]));
+
+        if (message != NULL) {
+            error_report(ctx->errors, message);
+            return false;
         }
     }
-    for ((*i) = 0; (*i) < ctx->struct_instantiations->length; (*i)++) {
+    return true;
+}
+
+static bool same_arguments(const CheckContext *ctx,
+                           const StructInstantiation *record,
+                           const size_t *arguments, size_t count)
+{
+    size_t j;
+
+    for (j = 0; j < count; j++) {
+        if (!same_type(ctx->program, record->arguments[j], arguments[j])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* An instantiation already made (or being made) for these arguments. */
+static StructInstantiation *find_instantiation(CheckContext *ctx,
+                                               size_t entry_index,
+                                               const size_t *arguments,
+                                               size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < ctx->struct_instantiations->length; i++) {
         StructInstantiation *record =
-            (StructInstantiation *)list_get(ctx->struct_instantiations, (*i));
+            (StructInstantiation *)list_get(ctx->struct_instantiations, i);
 
-        if (record->entry == entry_index &&
-            record->argument_count == argument_count) {
-            size_t j;
-            bool same = true;
-
-            for (j = 0; j < argument_count; j++) {
-                if (!same_type(ctx->program, record->arguments[j],
-                               arguments[j])) {
-                    same = false;
-                    break;
-                }
-            }
-            if (same) {
-                if (record->in_progress &&
-                    ctx->handle_depth <= record->handle_depth) {
-                    error_report(ctx->errors, MESSAGE_CHECKER_RECURSIVE_TYPE,
-                                 (*entry)->name);
-                    do { *outcome = (false); return true; } while (0);
-                }
-                *out_type = record->type_index;
-                do { *outcome = (true); return true; } while (0);
-            }
+        if (record->entry == entry_index && record->argument_count == count &&
+            same_arguments(ctx, record, arguments, count)) {
+            return record;
         }
+    }
+    return NULL;
+}
+
+/* A field holds a value: not a function, and not a resource. */
+static bool field_type_allowed(CheckContext *ctx, const AstNode *field,
+                               const char *name, size_t type)
+{
+    const TypedType *resolved = typed_program_type(ctx->program, type);
+
+    if (resolved != NULL && (resolved->kind == NYX_TYPE_FUNCTION ||
+                             resource_type_message(resolved) != NULL)) {
+        error_report_at(ctx->errors, field->pos, MESSAGE_CHECKER_FIELD_TYPE,
+                        name);
+        return false;
+    }
+    return true;
+}
+
+/* A field: its type may not be a function or a resource, and it may carry a
+   default that must fit that type. The typed field is appended to
+   `field_nodes`. */
+/* A field's default value must fit its type. */
+static bool check_field_default(CheckContext *ctx, const AstNode *field,
+                                const char *name, size_t type)
+{
+    size_t value;
+    size_t coerced;
+
+    if (field->right_child == AST_NO_NODE ||
+        (check_expression_expected(ctx, field->right_child, type, &value) &&
+         inject_into(ctx, value, type, &coerced))) {
+        return true;
+    }
+    if (!ctx->errors->reported) {
+        error_report_at(ctx->errors, field->pos,
+                        MESSAGE_CHECKER_FIELD_DEFAULT_TYPE, name);
     }
     return false;
 }
 
-static bool instantiate_struct_inner_typed_field(const AstNode *field, CheckContext *ctx, size_t field_ast, List *field_nodes, const char **field_name, TypeEnv *env, size_t *field_type, TypedNode *typed_field)
+/* A field: its type may not be a function or a resource, and it may carry a
+   default that must fit that type. The typed field is appended to
+   `field_nodes`. */
+static bool struct_field(CheckContext *ctx, size_t field_ast, const TypeEnv *env,
+                         List *field_nodes)
 {
-    (*typed_field) = (TypedNode){0};
-    
+    const AstNode *field = ast_get_node(ctx->ast, field_ast);
+    const char *name;
+    size_t type;
+    size_t index;
+    TypedNode typed;
 
     if (field == NULL || field->kind != AST_FIELD) {
-        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE,
-                     field_ast);
-        list_free(field_nodes);
+        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, field_ast);
         return false;
     }
-    (*field_name) = ast_symbol_text(ctx->ast, field->name_index);
-    if (!check_reserved_name(ctx, field->pos, (*field_name))) {
-        list_free(field_nodes);
+    name = ast_symbol_text(ctx->ast, field->name_index);
+    if (!check_reserved_name(ctx, field->pos, name) ||
+        !resolve_type_in_env(ctx, field->left_child, env, name, &type)) {
         return false;
     }
-    if (!resolve_type_in_env(ctx, field->left_child, env, (*field_name),
-                             field_type)) {
-        list_free(field_nodes);
+    if (!field_type_allowed(ctx, field, name, type)) {
         return false;
     }
-    {
-        const TypedType *resolved =
-            typed_program_type(ctx->program, (*field_type));
-
-        if (resolved != NULL &&
-            (resolved->kind == NIPPY_TYPE_FUNCTION ||
-             resolved->kind == NIPPY_TYPE_STORE)) {
-            error_report_at(ctx->errors, field->pos,
-                            MESSAGE_CHECKER_FIELD_TYPE, (*field_name));
-            list_free(field_nodes);
-            return false;
-        }
+    typed = new_node(TYPED_FIELD, type, field->pos, TYPED_NO_NODE, TYPED_NO_NODE);
+    typed.name_index = checker_name(ctx, name);
+    if (!check_field_default(ctx, field, name, type) ||
+        !checker_push_node(ctx, &typed, &index,
+                           MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
+        return false;
     }
-    return true;
+    return checker_ok(ctx->errors, list_push(field_nodes, &index),
+                      MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
 }
 
-static bool instantiate_struct_inner_step(StructInstantiation *record, size_t argument_count, CheckContext *ctx, size_t *i, const size_t *arguments, TypeEnv *env, const TypeEntry *entry, size_t *record_index, char (*generated)[32], size_t *name_index, const AstNode **declaration, size_t *first_argument)
+/* A struct being instantiated: its record, the environment binding its type
+   parameters, and the pieces of the typed struct as they are made. */
+typedef struct {
+    CheckContext *ctx;
+    size_t entry_index;
+    const TypeEntry *entry;
+    const size_t *arguments;
+    size_t argument_count;
+    TypeEnv env;
+    const AstNode *declaration;
+    size_t record_index;
+    size_t name_index;
+    size_t first_argument;
+    size_t type_index;
+} Instantiation;
+
+/* Record the instantiation as in progress (so a use of the struct inside its
+   own fields is seen), name it, and add its arguments as the type's
+   children. */
+static bool begin_instantiation(Instantiation *inst)
 {
-    (*record).argument_count = argument_count;
-    (*record).in_progress = true;
-    (*record).handle_depth = ctx->handle_depth;
-    for ((*i) = 0; (*i) < argument_count; (*i)++) {
-        (*record).arguments[(*i)] = arguments[(*i)];
-        (*env).names[(*i)] = entry->parameters[(*i)];
-        (*env).types[(*i)] = arguments[(*i)];
+    CheckContext *ctx = inst->ctx;
+    StructInstantiation record = {0};
+    char generated[32];
+    size_t i;
+
+    record.entry = inst->entry_index;
+    record.argument_count = inst->argument_count;
+    record.in_progress = true;
+    record.handle_depth = ctx->handle_depth;
+    for (i = 0; i < inst->argument_count; i++) {
+        record.arguments[i] = inst->arguments[i];
+        inst->env.names[i] = inst->entry->parameters[i];
+        inst->env.types[i] = inst->arguments[i];
     }
-    (*env).count = argument_count;
-    if (!list_push(ctx->struct_instantiations, record)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    inst->env.count = inst->argument_count;
+    if (!checker_ok(ctx->errors, list_push(ctx->struct_instantiations, &record),
+                    MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING)) {
         return false;
     }
-    (*record_index) = ctx->struct_instantiations->length - 1;
-
-    snprintf((*generated), sizeof((*generated)), "nyx_gen_%zu",
-             ctx->generated_names++);
-    (*name_index) = typed_program_copy_symbol(ctx->program, (*generated),
-                                           strlen((*generated)));
-    if ((*name_index) == TYPED_NO_NODE) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-        return false;
-    }
-
-    (*declaration) = ast_get_node(ctx->ast, entry->ast_index);
-    if ((*declaration) == NULL ||
-        (*declaration)->kind != AST_TYPE_DECLARATION) {
+    inst->record_index = ctx->struct_instantiations->length - 1;
+    snprintf(generated, sizeof(generated), "nyx_gen_%zu", ctx->generated_names++);
+    inst->name_index = checker_name(ctx, generated);
+    inst->declaration = ast_get_node(ctx->ast, inst->entry->ast_index);
+    if (inst->declaration == NULL || inst->declaration->kind != AST_TYPE_DECLARATION) {
         error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
         return false;
     }
-    (*first_argument) = ctx->program->type_children.length;
-    for ((*i) = 0; (*i) < argument_count; (*i)++) {
-        if (!typed_program_add_type_child(ctx->program, arguments[(*i)])) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
+    inst->first_argument = ctx->program->type_children.length;
+    for (i = 0; i < inst->argument_count; i++) {
+        checker_ok(ctx->errors,
+                   typed_program_add_type_child(ctx->program,
+                                                inst->arguments[i]),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     }
     return true;
 }
 
-static bool instantiate_struct_inner_list_free(TypedNode *typed_field, CheckContext *ctx, List *field_nodes, size_t *field_index)
+/* The struct type itself, before its fields, so that a Handle to it inside its
+   own fields has something to point at. */
+static bool add_struct_type(Instantiation *inst)
 {
-    if ((*typed_field).name_index == TYPED_NO_NODE) {
-        error_report_fatal(ctx->errors,
-                     MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-        list_free(field_nodes);
+    TypedType type = {0};
+    StructInstantiation *record;
+
+    type.kind = NYX_TYPE_STRUCT;
+    type.name_index = inst->name_index;
+    type.signature_index = TYPED_NO_NODE;
+    type.first_child = inst->first_argument;
+    type.child_count = inst->argument_count;
+    type.declaration_node = TYPED_NO_NODE;
+    type.source_name_index = checker_name(inst->ctx, inst->entry->name);
+    if (!checker_add_type(inst->ctx, &type, &inst->type_index)) {
         return false;
     }
-    (*typed_field).left_child = TYPED_NO_NODE;
-    (*typed_field).right_child = TYPED_NO_NODE;
-    (*typed_field).children_start = 0;
-    (*typed_field).children_count = 0;
-    if (!typed_program_push(ctx->program, typed_field, field_index) ||
-        !list_push(field_nodes, field_index)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-        list_free(field_nodes);
-        return false;
-    }
+    record = (StructInstantiation *)list_get(inst->ctx->struct_instantiations,
+                                             inst->record_index);
+    record->type_index = inst->type_index;
     return true;
 }
 
-static bool instantiate_struct_inner_expression_expected(CheckContext *ctx, const AstNode *field, size_t field_type, size_t *value, size_t *coerced, const char *field_name, List *field_nodes)
+/* The fields, then the declaration node that holds them. */
+static bool add_struct_declaration(Instantiation *inst)
 {
-    if (!check_expression_expected(ctx, field->right_child,
-                                   field_type, value) ||
-        !inject_into(ctx, (*value), field_type, coerced)) {
-        if (!ctx->errors->reported) {
-            error_report_at(ctx->errors, field->pos,
-                            MESSAGE_CHECKER_FIELD_DEFAULT_TYPE,
-                            field_name);
-        }
-        list_free(field_nodes);
+    CheckContext *ctx = inst->ctx;
+    const AstNode *declaration = inst->declaration;
+    TypedNode typed;
+    List field_nodes;
+    size_t declaration_index;
+    size_t i;
+    bool ok = true;
+
+    list_init(&field_nodes, sizeof(size_t));
+    for (i = 0; ok && i < declaration->children_count; i++) {
+        ok = struct_field(ctx, *(const size_t *)list_get(
+                                   &ctx->ast->children,
+                                   declaration->children_start + i),
+                          &inst->env, &field_nodes);
+    }
+    typed = new_node(TYPED_TYPE_DECLARATION, TYPED_NO_NODE, declaration->pos,
+                     TYPED_NO_NODE, TYPED_NO_NODE);
+    typed.name_index = inst->name_index;
+    typed.children_start = push_typed_children(ctx, &field_nodes);
+    typed.children_count = declaration->children_count;
+    list_free(&field_nodes);
+    if (!ok ||
+        !checker_push_node(ctx, &typed, &declaration_index,
+                           MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
         return false;
     }
+    ((TypedType *)list_get(&ctx->program->types, inst->type_index))
+        ->declaration_node = declaration_index;
     return true;
 }
 
-static bool instantiate_struct_inner_record(size_t argument_count, const TypeEntry *entry, CheckContext *ctx, size_t entry_index, size_t *i, const size_t *arguments, size_t *out_type)
+static bool build_instantiation(Instantiation *inst)
 {
-    {
-        StructInstantiation record = {0};
-        TypeEnv env = {0};
-        size_t record_index;
-        size_t first_argument;
-        size_t declaration_index;
-        size_t type_index;
-        size_t typed_fields_start;
-        const AstNode *declaration;
-        char generated[32];
-        size_t name_index;
-        List field_nodes;
+    CheckContext *ctx = inst->ctx;
+    StructInstantiation *record;
 
-        if (argument_count != entry->parameter_count) {
-            error_report(ctx->errors, MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT,
-                         entry->name, entry->parameter_count, argument_count);
-            return false;
-        }
-        record.entry = entry_index;
-        if (!instantiate_struct_inner_step(&record, argument_count, ctx, i, arguments, &env, entry, &record_index, &generated, &name_index, &declaration, &first_argument)) {
+    if (inst->argument_count != inst->entry->parameter_count) {
+        error_report(ctx->errors, MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT,
+                     inst->entry->name, inst->entry->parameter_count,
+                     inst->argument_count);
         return false;
     }
-        {
-            TypedType type = {0};
-            size_t source_name = typed_program_copy_symbol(
-                ctx->program, entry->name, strlen(entry->name));
-            if (source_name == TYPED_NO_NODE) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_COPYING_NAME);
-                return false;
-            }
-            type.kind = NIPPY_TYPE_STRUCT;
-            type.name_index = name_index;
-            type.signature_index = TYPED_NO_NODE;
-            type.first_child = first_argument;
-            type.child_count = argument_count;
-            type.declaration_node = TYPED_NO_NODE;
-            type.source_name_index = source_name;
-            if (!typed_program_add_type(ctx->program, &type, &type_index)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-            ((StructInstantiation *)list_get(ctx->struct_instantiations,
-                                             record_index))->type_index = type_index;
-        }
-        list_init(&field_nodes, sizeof(size_t));
-        for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
-            size_t field_ast = *(const size_t *)list_get(
-                &ctx->ast->children, declaration->children_start + (*i));
-            const AstNode *field = ast_get_node(ctx->ast, field_ast);
-            const char *field_name;
-            size_t field_type;
-            TypedNode typed_field = {0};
-            size_t field_index = {0};
-            if (!instantiate_struct_inner_typed_field(field, ctx, field_ast, &field_nodes, &field_name, &env, &field_type, &typed_field)) {
+    if (!begin_instantiation(inst) || !add_struct_type(inst) ||
+        !add_struct_declaration(inst)) {
         return false;
     }
-            if (field->right_child != AST_NO_NODE) {
-                size_t value, coerced;
-                if (!instantiate_struct_inner_expression_expected(ctx, field, field_type, &value, &coerced, field_name, &field_nodes)) {
-        return false;
-    }
-            }
-            typed_field.kind = TYPED_FIELD;
-            typed_field.type_index = field_type;
-            typed_field.pos = field->pos;
-            typed_field.name_index = typed_program_copy_symbol(
-                ctx->program, field_name, strlen(field_name));
-            if (!instantiate_struct_inner_list_free(&typed_field, ctx, &field_nodes, &field_index)) {
-        return false;
-    }
-        }
-
-        typed_fields_start = ctx->program->children.length;
-        for ((*i) = 0; (*i) < field_nodes.length; (*i)++) {
-            size_t field_index = *(const size_t *)list_get(&field_nodes, (*i));
-
-            if (!typed_program_push_child(ctx->program, field_index)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                list_free(&field_nodes);
-                return false;
-            }
-        }
-        list_free(&field_nodes);
-
-        {
-            TypedNode typed_declaration = {0};
-
-            typed_declaration.kind = TYPED_TYPE_DECLARATION;
-            typed_declaration.type_index = TYPED_NO_NODE;
-            typed_declaration.pos = declaration->pos;
-            typed_declaration.name_index = name_index;
-            typed_declaration.left_child = TYPED_NO_NODE;
-            typed_declaration.right_child = TYPED_NO_NODE;
-            typed_declaration.children_start = typed_fields_start;
-            typed_declaration.children_count = declaration->children_count;
-            if (!typed_program_push(ctx->program, &typed_declaration,
-                                    &declaration_index)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-                return false;
-            }
-        }
-
-        ((TypedType *)list_get(&ctx->program->types, type_index))->declaration_node =
-            declaration_index;
-
-        {
-            StructInstantiation *record =
-                (StructInstantiation *)list_get(ctx->struct_instantiations,
-                                                record_index);
-            record->type_index = type_index;
-            record->in_progress = false;
-        }
-        if (!check_type_value_size(ctx, type_index, declaration->pos)) {
-            return false;
-        }
-        *out_type = type_index;
-        return true;
-    }
+    record = (StructInstantiation *)list_get(ctx->struct_instantiations,
+                                             inst->record_index);
+    record->type_index = inst->type_index;
+    record->in_progress = false;
+    return check_type_value_size(ctx, inst->type_index, inst->declaration->pos);
 }
 
 static bool instantiate_struct_inner(CheckContext *ctx, size_t entry_index,
-                               const size_t *arguments, size_t argument_count,
-                               size_t *out_type)
+                                     const size_t *arguments,
+                                     size_t argument_count, size_t *out_type)
 {
-    const TypeEntry *entry = {0};
-    size_t i = {0};
-    {
-        bool outcome;
+    const TypeEntry *entry = list_get(ctx->types, entry_index);
+    StructInstantiation *existing;
+    Instantiation inst = {0};
 
-        if (instantiate_struct_inner_entry(ctx, entry_index, argument_count, arguments, out_type, &entry, &i, &outcome)) {
-            return outcome;
-        }
+    if (entry == NULL) {
+        error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return false;
     }
-
-    return instantiate_struct_inner_record(argument_count, entry, ctx, entry_index, &i, arguments, out_type);
+    if (!check_instantiation_arguments(ctx, arguments, argument_count)) {
+        return false;
+    }
+    existing = find_instantiation(ctx, entry_index, arguments, argument_count);
+    if (existing != NULL) {
+        if (existing->in_progress && ctx->handle_depth <= existing->handle_depth) {
+            error_report(ctx->errors, MESSAGE_CHECKER_RECURSIVE_TYPE, entry->name);
+            return false;
+        }
+        *out_type = existing->type_index;
+        return true;
+    }
+    inst.ctx = ctx;
+    inst.entry_index = entry_index;
+    inst.entry = entry;
+    inst.arguments = arguments;
+    inst.argument_count = argument_count;
+    if (!build_instantiation(&inst)) {
+        return false;
+    }
+    *out_type = inst.type_index;
+    return true;
 }
 
 bool instantiate_struct(CheckContext *ctx, size_t entry_index,
@@ -308,9 +308,10 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
                         size_t *out_type)
 {
     bool ok;
-    if (ctx->struct_depth >= NIPPY_TYPE_DEPTH) {
+
+    if (ctx->struct_depth >= NYX_TYPE_DEPTH) {
         error_report(ctx->errors, MESSAGE_CHECKER_TYPE_INSTANTIATION_DEPTH,
-                     (size_t)NIPPY_TYPE_DEPTH);
+                     (size_t)NYX_TYPE_DEPTH);
         return false;
     }
     ctx->struct_depth++;
@@ -320,14 +321,16 @@ bool instantiate_struct(CheckContext *ctx, size_t entry_index,
     return ok;
 }
 
+/* ---- aliases ---- */
 
 bool expand_alias(CheckContext *ctx, const TypeEntry *entry,
-                         const size_t *arguments, size_t argument_count,
-                         size_t *out_type)
+                  const size_t *arguments, size_t argument_count,
+                  size_t *out_type)
 {
     TypeEnv env = {0};
     const AstNode *alias;
     size_t i;
+    bool ok;
 
     if (argument_count != entry->parameter_count) {
         error_report(ctx->errors, MESSAGE_CHECKER_TYPE_ARGUMENT_COUNT,
@@ -344,456 +347,578 @@ bool expand_alias(CheckContext *ctx, const TypeEntry *entry,
         env.types[i] = arguments[i];
     }
     env.count = argument_count;
-    if (ctx->depth >= NIPPY_TYPE_DEPTH) {
+    if (ctx->depth >= NYX_TYPE_DEPTH) {
         error_report(ctx->errors, MESSAGE_CHECKER_RECURSIVE_TYPE, entry->name);
         return false;
     }
     ctx->depth++;
-    if (!resolve_type_in_env(ctx, alias->right_child, &env, entry->name,
-                             out_type)) {
-        ctx->depth--;
-        return false;
-    }
+    ok = resolve_type_in_env(ctx, alias->right_child, &env, entry->name,
+                             out_type);
     ctx->depth--;
-    return true;
+    return ok;
 }
 
+/* ---- a type written as a name ---- */
 
-static bool resolve_type_name_step_strcmp(const char *name, CheckContext *ctx, const AstNode *node, bool *outcome, size_t *out_index)
+/* Built-in type names that cannot stand alone: they take arguments, or are
+   made by a function of the context. */
+static const struct {
+    const char *name;
+    const char *message; /* the error, or NULL when `make` builds the type */
+    bool (*make)(CheckContext *ctx, size_t *out);
+} bare_names[] = {
+    {"String", MESSAGE_CHECKER_STRING_ARGS, NULL},
+    {"List", MESSAGE_CHECKER_LIST_ARGS, NULL},
+    {"Array", MESSAGE_CHECKER_ARRAY_ARGS, NULL},
+    {"Record", MESSAGE_CHECKER_RECORD_ARGS, NULL},
+    {"Table", MESSAGE_CHECKER_TABLE_ARGS, NULL},
+    {"Slice", MESSAGE_CHECKER_SLICE_ARGS, NULL},
+    {"Handle", MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, NULL},
+    {"Range", MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, NULL},
+    {"TextBuilder", NULL, text_builder_type},
+    {"Error", NULL, error_type},
+};
+
+typedef enum {
+    NAME_NEXT,
+    NAME_REJECTED,
+    NAME_RESOLVED
+} NameStep;
+
+static NameStep resolve_builtin_name(CheckContext *ctx, const AstNode *node,
+                                     const TypeEnv *env, const char *name,
+                                     size_t *out)
 {
-    if (strcmp(name, "Array") == 0) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_ARRAY_ARGS);
-        do { *outcome = (false); return false; } while (0);
+    NyxType scalar_kind;
+    size_t i;
+
+    if (env != NULL && env_lookup(env, name, out)) {
+        return NAME_RESOLVED;
     }
-    if (strcmp(name, "Record") == 0) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RECORD_ARGS);
-        do { *outcome = (false); return false; } while (0);
+    if (builtin_scalar_type_from_name(name, &scalar_kind)) {
+        return builtin_type(ctx, scalar_kind, out) ? NAME_RESOLVED : NAME_REJECTED;
     }
-    if (strcmp(name, "Table") == 0) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_TABLE_ARGS);
-        do { *outcome = (false); return false; } while (0);
+    for (i = 0; i < NYX_COUNT_OF(bare_names); i++) {
+        if (strcmp(name, bare_names[i].name) != 0) {
+            continue;
+        }
+        if (bare_names[i].make != NULL) {
+            return bare_names[i].make(ctx, out) ? NAME_RESOLVED : NAME_REJECTED;
+        }
+        error_report_at(ctx->errors, node->pos, bare_names[i].message, name);
+        return NAME_REJECTED;
     }
-    if (strcmp(name, "Slice") == 0) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_SLICE_ARGS);
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (strcmp(name, "Error") == 0) {
-        do { *outcome = (error_type(ctx, out_index)); return false; } while (0);
-    }
-    if (strcmp(name, "Handle") == 0 || strcmp(name, "Range") == 0) {
+    return NAME_NEXT;
+}
+
+/* A declared type used by its bare name: an alias to expand or a struct to
+   instantiate, neither of which may take arguments here. */
+static bool resolve_declared_name(CheckContext *ctx, const AstNode *node,
+                                  const char *name, size_t entry_index,
+                                  size_t *out)
+{
+    const TypeEntry *entry = list_get(ctx->types, entry_index);
+
+    if (entry->parameter_count != 0) {
         error_report_at(ctx->errors, node->pos,
                         MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, name);
-        do { *outcome = (false); return false; } while (0);
+        return false;
     }
-    return true;
-}
-
-static bool resolve_type_name_step_step(const char *name, CheckContext *ctx, const AstNode *node, bool *outcome, const TypeEnv *env, size_t *out_index)
-{
-    if (name == NULL) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (env != NULL && env_lookup(env, name, out_index)) {
-        do { *outcome = (true); return false; } while (0);
-    }
-    {
-        NippyType scalar_kind;
-        if (builtin_scalar_type_from_name(name, &scalar_kind)) {
-            do { *outcome = (builtin_type(ctx, scalar_kind, out_index)); return false; } while (0);
-        }
-    }
-    if (strcmp(name, "String") == 0) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_STRING_ARGS);
-        do { *outcome = (false); return false; } while (0);
-    }
-    if (strcmp(name, "TextBuilder") == 0) {
-        do { *outcome = (text_builder_type(ctx, out_index)); return false; } while (0);
-    }
-    if (strcmp(name, "List") == 0) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_LIST_ARGS);
-        do { *outcome = (false); return false; } while (0);
-    }
-    return true;
-}
-
-static bool resolve_type_name_step(const char *name, CheckContext *ctx, const AstNode *node, const TypeEnv *env, size_t *out_index, bool *outcome)
-{
-    if (!resolve_type_name_step_step(name, ctx, node, outcome, env, out_index)) {
+    if (entry->type_index != TYPED_NO_NODE) {
+        *out = entry->type_index;
         return true;
     }
-    if (!resolve_type_name_step_strcmp(name, ctx, node, outcome, out_index)) {
-        return true;
-    }
-    return false;
+    return entry->kind == TYPE_ENTRY_ALIAS
+               ? expand_alias(ctx, entry, NULL, 0, out)
+               : instantiate_struct(ctx, entry_index, NULL, 0, out);
 }
 
 bool resolve_type_name(CheckContext *ctx, const AstNode *node,
-                              const TypeEnv *env, const char *owner,
-                              size_t *out_index)
+                       const TypeEnv *env, const char *owner, size_t *out_index)
 {
     const char *name = ast_symbol_text(ctx->ast, node->name_index);
     size_t entry_index;
+    NameStep step;
 
-    {
-        bool outcome;
-
-        if (resolve_type_name_step(name, ctx, node, env, out_index, &outcome)) {
-            return outcome;
-        }
+    if (name == NULL) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
+        return false;
+    }
+    step = resolve_builtin_name(ctx, node, env, name, out_index);
+    if (step != NAME_NEXT) {
+        return step == NAME_RESOLVED;
     }
     entry_index = find_type_index(ctx->types, name);
     if (entry_index == TYPED_NO_NODE) {
         error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_UNKNOWN_TYPE,
-                        name, owner == NULL ? "value" : owner);
+                        name, owner == NULL ? MESSAGE_FRAGMENT_VALUE : owner);
         return false;
     }
-    {
-        const TypeEntry *entry = list_get(ctx->types, entry_index);
-
-        if (entry->kind == TYPE_ENTRY_ALIAS) {
-            if (entry->parameter_count != 0) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, name);
-                return false;
-            }
-            if (entry->type_index != TYPED_NO_NODE) {
-                *out_index = entry->type_index;
-                return true;
-            }
-            return expand_alias(ctx, entry, NULL, 0, out_index);
-        }
-        if (entry->parameter_count != 0) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MISSING_TYPE_ARGUMENTS, name);
-            return false;
-        }
-        if (entry->type_index == TYPED_NO_NODE) {
-            return instantiate_struct(ctx, entry_index, NULL, 0, out_index);
-        }
-        *out_index = entry->type_index;
-        return true;
-    }
+    return resolve_declared_name(ctx, node, name, entry_index, out_index);
 }
 
+/* ---- a type written with arguments: Name<...> ---- */
 
-static bool resolve_type_application_strcmp(const char *name, CheckContext *ctx, const AstNode *node)
+typedef struct {
+    CheckContext *ctx;
+    const AstNode *node;
+    const TypeEnv *env;
+    const char *owner;
+    const char *name;
+    size_t *out;
+} Application;
+
+typedef NameStep (*ApplicationRule)(const Application *app);
+
+static NameStep application_step(bool ok)
 {
-    if (strcmp(name, "Int32") == 0 || strcmp(name, "Bool") == 0 ||
-        strcmp(name, "Nil") == 0 || strcmp(name, "Byte") == 0 ||
-        strcmp(name, "Store") == 0 || strcmp(name, "String") == 0 ||
-        strcmp(name, "Text") == 0 ||
-        strcmp(name, "TextBuilder") == 0 ||
-        strcmp(name, "List") == 0 ||
-        strcmp(name, "Array") == 0 ||
-        strcmp(name, "Slice") == 0 ||
-        strcmp(name, "Record") == 0 ||
-        strcmp(name, "Table") == 0 ||
-        strcmp(name, "Error") == 0) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_TYPE_NOT_GENERIC, name);
-        return false;
-    }
-    return true;
+    return ok ? NAME_RESOLVED : NAME_REJECTED;
 }
 
-static bool resolve_type_application_element_element(const AstNode *node, CheckContext *ctx, bool *outcome, const TypeEnv *env, const char *owner, size_t *out_index)
+static NameStep application_error(const Application *app, const char *message)
+{
+    error_report_at(app->ctx->errors, app->node->pos, message, app->name);
+    return NAME_REJECTED;
+}
+
+static size_t application_child(const Application *app, size_t i)
+{
+    return *(const size_t *)list_get(&app->ctx->ast->children,
+                                     app->node->children_start + i);
+}
+
+static NameStep application_needs_name(const Application *app)
+{
+    if (app->name != NULL) {
+        return NAME_NEXT;
+    }
+    return application_error(app, MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
+}
+
+static NameStep application_atomic(const Application *app)
+{
+    if (strcmp(app->name, "Atomic") != 0) {
+        return NAME_NEXT;
+    }
+    return application_error(app, MESSAGE_CHECKER_ATOMIC_USE);
+}
+
+/* Channel<T> and Range<T> take exactly one element type. */
+static bool resolve_element(const Application *app, const char *message,
+                            size_t *element)
+{
+    if (app->node->children_count != 1) {
+        application_error(app, message);
+        return false;
+    }
+    return resolve_type_in_env(app->ctx, application_child(app, 0), app->env,
+                               app->owner, element);
+}
+
+static NameStep application_channel(const Application *app)
 {
     size_t element;
 
-    if (node->children_count != 1) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_HANDLE_ELEMENT);
-        do { *outcome = (false); return false; } while (0);
+    if (strcmp(app->name, "Channel") != 0) {
+        return NAME_NEXT;
     }
-    {
-        size_t child = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start);
-
-        bool resolved;
-        ctx->handle_depth++;
-        resolved = resolve_type_in_env(ctx, child, env, owner, &element) &&
-                   handle_type(ctx, element, out_index);
-        ctx->handle_depth--;
-        if (!resolved) {
-            do { *outcome = (false); return false; } while (0);
-        }
-        if (ctx->handle_depth == 0) {
-            size_t i;
-            bool incomplete = false;
-            for (i = 0; i < ctx->struct_instantiations->length; i++) {
-                const StructInstantiation *record = list_get(
-                    ctx->struct_instantiations, i);
-                if (record->in_progress) { incomplete = true; break; }
-            }
-            if (!incomplete) {
-                bool valid;
-                if (!check_handle_payload(ctx, element, &valid)) do { *outcome = (false); return false; } while (0);
-                if (!valid) {
-                    error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
-                    do { *outcome = (false); return false; } while (0);
-                }
-            }
-        }
-    }
-    return true;
+    return application_step(
+        resolve_element(app, MESSAGE_CHECKER_CHANNEL_ELEMENT, &element) &&
+        check_channel_element(app->ctx, app->node->pos, element) &&
+        channel_type(app->ctx, element, app->out));
 }
 
-static bool resolve_type_application_element(const char *name, const AstNode *node, CheckContext *ctx, const TypeEnv *env, const char *owner, size_t *out_index, size_t *entry_index, bool *outcome)
+static NameStep application_range(const Application *app)
 {
-    if (strcmp(name, "Handle") == 0) {
-        if (!resolve_type_application_element_element(node, ctx, outcome, env, owner, out_index)) {
-        return true;
+    size_t element;
+
+    if (strcmp(app->name, "Range") != 0) {
+        return NAME_NEXT;
     }
-        do { *outcome = (true); return true; } while (0);
+    if (!resolve_element(app, MESSAGE_CHECKER_RANGE_ARGUMENTS, &element)) {
+        return NAME_REJECTED;
     }
-    if (!resolve_type_application_strcmp(name, ctx, node)) {
-        do { *outcome = (false); return true; } while (0);
+    if (!range_type(app->ctx, element, app->out)) {
+        if (!app->ctx->errors->reported) {
+            application_error(app, MESSAGE_CHECKER_RANGE_ARGUMENTS);
+        }
+        return NAME_REJECTED;
     }
-    (*entry_index) = find_type_index(ctx->types, name);
-    if ((*entry_index) == TYPED_NO_NODE) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_UNKNOWN_TYPE,
-                        name, owner == NULL ? "value" : owner);
-        do { *outcome = (false); return true; } while (0);
+    return NAME_RESOLVED;
+}
+
+static bool instantiation_in_progress(const CheckContext *ctx)
+{
+    size_t i;
+
+    for (i = 0; i < ctx->struct_instantiations->length; i++) {
+        const StructInstantiation *record =
+            list_get(ctx->struct_instantiations, i);
+
+        if (record->in_progress) {
+            return true;
+        }
     }
     return false;
 }
 
-static bool resolve_type_application_entry(const char *name, CheckContext *ctx, const AstNode *node, const TypeEnv *env, const char *owner, size_t *out_index)
+/* The outermost Handle<T> checks that T is a sized, plain value, once no
+   struct is half built (a Handle inside its own struct is fine). */
+static bool check_outer_handle(const Application *app, size_t element)
 {
-    size_t entry_index;
-    List arguments;
-    size_t i;
-    bool ok = false;
+    CheckContext *ctx = app->ctx;
+    bool valid;
 
-    if (name == NULL) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
-        return false;
-    }
-    if (strcmp(name, "Range") == 0) {
-        size_t child, element;
-        if (node->children_count != 1) {
-            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RANGE_ARGUMENTS);
-            return false;
-        }
-        child = *(const size_t *)list_get(&ctx->ast->children, node->children_start);
-        if (!resolve_type_in_env(ctx, child, env, owner, &element)) return false;
-        if (!range_type(ctx, element, out_index)) {
-            if (!ctx->errors->reported)
-                error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_RANGE_ARGUMENTS);
-            return false;
-        }
+    if (ctx->handle_depth != 0 || instantiation_in_progress(ctx)) {
         return true;
     }
-    {
-        bool outcome;
+    if (!check_handle_payload(ctx, element, &valid)) {
+        return false;
+    }
+    if (!valid) {
+        error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+    }
+    return valid;
+}
 
-        if (resolve_type_application_element(name, node, ctx, env, owner, out_index, &entry_index, &outcome)) {
-            return outcome;
+static NameStep application_handle(const Application *app)
+{
+    CheckContext *ctx = app->ctx;
+    size_t element;
+    bool resolved;
+
+    if (strcmp(app->name, "Handle") != 0) {
+        return NAME_NEXT;
+    }
+    if (app->node->children_count != 1) {
+        return application_error(app, MESSAGE_CHECKER_HANDLE_ELEMENT);
+    }
+    ctx->handle_depth++;
+    resolved = resolve_type_in_env(ctx, application_child(app, 0), app->env,
+                                   app->owner, &element) &&
+               handle_type(ctx, element, app->out);
+    ctx->handle_depth--;
+    return application_step(resolved && check_outer_handle(app, element));
+}
+
+/* Built-in types that take no arguments. */
+static const char *const not_generic[] = {
+    "Int32", "Bool", "Nil", "Byte", "Store", "String", "Text", "TextBuilder",
+    "List", "Array", "Slice", "Record", "Table", "Error",
+};
+
+static NameStep application_not_generic(const Application *app)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(not_generic); i++) {
+        if (strcmp(app->name, not_generic[i]) == 0) {
+            return application_error(app, MESSAGE_CHECKER_TYPE_NOT_GENERIC);
         }
     }
+    return NAME_NEXT;
+}
 
-    list_init(&arguments, sizeof(size_t));
-    for (i = 0; i < node->children_count; i++) {
-        size_t child = *(const size_t *)list_get(&ctx->ast->children,
-                                                 node->children_start + i);
+/* The arguments of a declared generic type, which may not be resources. */
+static bool resolve_arguments(const Application *app, List *arguments)
+{
+    CheckContext *ctx = app->ctx;
+    size_t i;
+
+    for (i = 0; i < app->node->children_count; i++) {
         size_t argument;
+        const char *message;
 
-        if (!resolve_type_in_env(ctx, child, env, owner, &argument)) {
-            list_free(&arguments);
+        if (!resolve_type_in_env(ctx, application_child(app, i), app->env,
+                                 app->owner, &argument)) {
             return false;
         }
-        if (typed_program_type(ctx->program, argument)->kind == NIPPY_TYPE_STORE) {
-            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_TYPE);
-            list_free(&arguments);
+        message = resource_type_message(typed_program_type(ctx->program, argument));
+        if (message != NULL) {
+            error_report_at(ctx->errors, app->node->pos, message);
             return false;
         }
-        if (!list_push(&arguments, &argument)) {
-            if (!ctx->errors->reported) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            }
-            list_free(&arguments);
-            return false;
-        }
+        checker_ok(ctx->errors, list_push(arguments, &argument),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     }
+    return !ctx->errors->fatal;
+}
 
-    {
-        const TypeEntry *entry = list_get(ctx->types, entry_index);
+static NameStep application_declared(const Application *app)
+{
+    CheckContext *ctx = app->ctx;
+    size_t entry_index = find_type_index(ctx->types, app->name);
+    const TypeEntry *entry;
+    List arguments;
+    bool ok = false;
 
+    if (entry_index == TYPED_NO_NODE) {
+        error_report_at(ctx->errors, app->node->pos, MESSAGE_CHECKER_UNKNOWN_TYPE,
+                        app->name,
+                        app->owner == NULL ? MESSAGE_FRAGMENT_VALUE : app->owner);
+        return NAME_REJECTED;
+    }
+    list_init(&arguments, sizeof(size_t));
+    if (resolve_arguments(app, &arguments)) {
+        entry = list_get(ctx->types, entry_index);
         if (entry->parameter_count == 0) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_TYPE_NOT_GENERIC, name);
+            application_error(app, MESSAGE_CHECKER_TYPE_NOT_GENERIC);
         } else if (entry->kind == TYPE_ENTRY_ALIAS) {
-            ok = expand_alias(ctx, entry,
-                              (const size_t *)arguments.items,
-                              arguments.length, out_index);
+            ok = expand_alias(ctx, entry, (const size_t *)arguments.items,
+                              arguments.length, app->out);
         } else {
             ok = instantiate_struct(ctx, entry_index,
                                     (const size_t *)arguments.items,
-                                    arguments.length, out_index);
+                                    arguments.length, app->out);
         }
     }
     list_free(&arguments);
+    return application_step(ok);
+}
+
+static const ApplicationRule application_rules[] = {
+    application_needs_name, application_atomic, application_channel,
+    application_range, application_handle, application_not_generic,
+    application_declared,
+};
+
+bool resolve_type_application(CheckContext *ctx, const AstNode *node,
+                              const TypeEnv *env, const char *owner,
+                              size_t *out_index)
+{
+    Application app = {ctx, node, env, owner,
+                       ast_symbol_text(ctx->ast, node->name_index), out_index};
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(application_rules); i++) {
+        NameStep step = application_rules[i](&app);
+
+        if (step != NAME_NEXT) {
+            return step == NAME_RESOLVED;
+        }
+    }
+    return false;
+}
+
+/* ---- the other forms of type syntax ---- */
+
+typedef bool (*TypeResolver)(CheckContext *ctx, const AstNode *node,
+                             const TypeEnv *env, const char *owner, size_t *out);
+
+static bool resolve_left(CheckContext *ctx, const AstNode *node,
+                         const TypeEnv *env, const char *owner, size_t *element)
+{
+    return resolve_type_in_env(ctx, node->left_child, env, owner, element);
+}
+
+static bool resolve_fixed_string(CheckContext *ctx, const AstNode *node,
+                                 const TypeEnv *env, const char *owner,
+                                 size_t *out)
+{
+    (void)env;
+    (void)owner;
+    return string_type(ctx, node->integer_value, out);
+}
+
+static bool resolve_slice(CheckContext *ctx, const AstNode *node,
+                          const TypeEnv *env, const char *owner, size_t *out)
+{
+    size_t element;
+
+    return resolve_left(ctx, node, env, owner, &element) &&
+           slice_type(ctx, element, out);
+}
+
+static bool resolve_list(CheckContext *ctx, const AstNode *node,
+                         const TypeEnv *env, const char *owner, size_t *out)
+{
+    size_t element;
+
+    return resolve_left(ctx, node, env, owner, &element) &&
+           list_type(ctx, element, false, 0, out);
+}
+
+/* A written capacity must fit the configured limit. */
+static bool capacity_in_range(CheckContext *ctx, const AstNode *node,
+                              const char *message)
+{
+    if (node->integer_value < 0 ||
+        node->integer_value > ctx->program->max_list_capacity) {
+        error_report_at(ctx->errors, node->pos, message,
+                        ctx->program->max_list_capacity);
+        return false;
+    }
+    return true;
+}
+
+static bool resolve_fixed_list(CheckContext *ctx, const AstNode *node,
+                               const TypeEnv *env, const char *owner,
+                               size_t *out)
+{
+    size_t element;
+
+    return resolve_left(ctx, node, env, owner, &element) &&
+           capacity_in_range(ctx, node, MESSAGE_CHECKER_ARRAY_CAPACITY) &&
+           list_type(ctx, element, true, (size_t)node->integer_value, out);
+}
+
+static bool resolve_table(CheckContext *ctx, const AstNode *node,
+                          const TypeEnv *env, const char *owner, size_t *out)
+{
+    size_t key_type;
+    size_t value_type;
+
+    return resolve_left(ctx, node, env, owner, &key_type) &&
+           resolve_type_in_env(ctx, node->right_child, env, owner, &value_type) &&
+           map_type(ctx, key_type, value_type, false, 0, out);
+}
+
+static bool resolve_record(CheckContext *ctx, const AstNode *node,
+                           const TypeEnv *env, const char *owner, size_t *out)
+{
+    size_t key_type;
+    size_t value_type;
+
+    return resolve_left(ctx, node, env, owner, &key_type) &&
+           resolve_type_in_env(ctx, node->right_child, env, owner, &value_type) &&
+           capacity_in_range(ctx, node, MESSAGE_CHECKER_RECORD_CAPACITY) &&
+           map_type(ctx, key_type, value_type, true,
+                    (size_t)node->integer_value, out);
+}
+
+/* The alternatives of a union, none of them a resource. */
+static bool resolve_alternatives(CheckContext *ctx, const AstNode *node,
+                                 const TypeEnv *env, const char *owner,
+                                 List *alternatives)
+{
+    size_t i;
+
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(&ctx->ast->children,
+                                                 node->children_start + i);
+        size_t alternative;
+
+        if (!resolve_type_in_env(ctx, child, env, owner, &alternative)) {
+            return false;
+        }
+        if (resource_type_message(typed_program_type(ctx->program, alternative)) !=
+            NULL) {
+            error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_UNION_FUNCTION);
+            return false;
+        }
+        checker_ok(ctx->errors, list_push(alternatives, &alternative),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    return !ctx->errors->fatal;
+}
+
+static bool resolve_union(CheckContext *ctx, const AstNode *node,
+                          const TypeEnv *env, const char *owner, size_t *out)
+{
+    List alternatives;
+    const TypedType *result;
+    bool ok;
+
+    list_init(&alternatives, sizeof(size_t));
+    ok = resolve_alternatives(ctx, node, env, owner, &alternatives) &&
+         intern_union(ctx, &alternatives, out);
+    list_free(&alternatives);
+    result = ok ? typed_program_type(ctx->program, *out) : NULL;
+    if (result != NULL && result->kind == NYX_TYPE_NIL) {
+        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_NIL_TYPE);
+        return false;
+    }
     return ok;
 }
 
-bool resolve_type_application(CheckContext *ctx, const AstNode *node,
+static bool resolve_parameter_types(CheckContext *ctx, const AstNode *node,
+                                    const TypeEnv *env, const char *owner,
+                                    List *parameter_types)
+{
+    size_t i;
+
+    for (i = 0; i < node->children_count; i++) {
+        size_t child = *(const size_t *)list_get(&ctx->ast->children,
+                                                 node->children_start + i);
+        size_t parameter_type;
+
+        if (!resolve_type_in_env(ctx, child, env, owner, &parameter_type)) {
+            return false;
+        }
+        checker_ok(ctx->errors, list_push(parameter_types, &parameter_type),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    return !ctx->errors->fatal;
+}
+
+/* A function type's result is a value: not a resource, and known. */
+/* A function type's result is a value: known, and not a resource. */
+static bool check_function_result(CheckContext *ctx, const AstNode *node,
+                                  size_t return_type)
+{
+    const TypedType *result = typed_program_type(ctx->program, return_type);
+
+    if (result != NULL && resource_type_message(result) == NULL) {
+        return true;
+    }
+    error_report_at(ctx->errors, node->pos,
+                    result != NULL && result->kind == NYX_TYPE_CHANNEL
+                        ? MESSAGE_CHECKER_CHANNEL_USE
+                        : MESSAGE_CHECKER_STORE_TYPE);
+    return false;
+}
+
+static bool resolve_function(CheckContext *ctx, const AstNode *node,
+                             const TypeEnv *env, const char *owner, size_t *out)
+{
+    List parameter_types;
+    size_t return_type;
+    bool ok;
+
+    list_init(&parameter_types, sizeof(size_t));
+    ok = resolve_parameter_types(ctx, node, env, owner, &parameter_types) &&
+         (node->right_child == AST_NO_NODE
+              ? builtin_type(ctx, NYX_TYPE_NIL, &return_type)
+              : resolve_type_in_env(ctx, node->right_child, env, owner,
+                                    &return_type)) &&
+         check_function_result(ctx, node, return_type) &&
+         add_function_type(ctx, &parameter_types, return_type, out);
+    list_free(&parameter_types);
+    return ok;
+}
+
+static bool resolve_name_form(CheckContext *ctx, const AstNode *node,
+                              const TypeEnv *env, const char *owner, size_t *out)
+{
+    return resolve_type_name(ctx, node, env, owner, out);
+}
+
+static bool resolve_application_form(CheckContext *ctx, const AstNode *node,
                                      const TypeEnv *env, const char *owner,
-                                     size_t *out_index)
+                                     size_t *out)
 {
-    const char *name = ast_symbol_text(ctx->ast, node->name_index);
-    return resolve_type_application_entry(name, ctx, node, env, owner, out_index);
+    return resolve_type_application(ctx, node, env, owner, out);
 }
 
+static const struct {
+    AstNodeKind kind;
+    TypeResolver resolve;
+} type_resolvers[] = {
+    {AST_TYPE_NAME, resolve_name_form},
+    {AST_TYPE_FIXED_STRING, resolve_fixed_string},
+    {AST_TYPE_SLICE, resolve_slice},
+    {AST_TYPE_RECORD, resolve_record},
+    {AST_TYPE_TABLE, resolve_table},
+    {AST_TYPE_LIST, resolve_list},
+    {AST_TYPE_FIXED_LIST, resolve_fixed_list},
+    {AST_TYPE_APPLICATION, resolve_application_form},
+    {AST_TYPE_UNION, resolve_union},
+    {AST_TYPE_FUNCTION, resolve_function},
+};
 
-bool resolve_type_in_env(CheckContext *ctx, size_t ast_index, const TypeEnv *env, const char *owner, size_t *out_index);
-
-static bool resolve_type_in_env_key_element(const AstNode *node, CheckContext *ctx, const TypeEnv *env, const char *owner, bool *outcome, size_t *out_index)
-{
-    if (node->kind == AST_TYPE_LIST ||
-        node->kind == AST_TYPE_FIXED_LIST) {
-        size_t element;
-
-        if (!resolve_type_in_env(ctx, node->left_child, env, owner,
-                                 &element)) {
-            do { *outcome = (false); return false; } while (0);
-        }
-        if (node->kind == AST_TYPE_LIST) {
-            do { *outcome = (list_type(ctx, element, false, 0, out_index)); return false; } while (0);
-        }
-        if (node->integer_value < 0 ||
-            node->integer_value > ctx->program->max_list_capacity) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_ARRAY_CAPACITY,
-                            ctx->program->max_list_capacity);
-            do { *outcome = (false); return false; } while (0);
-        }
-        do { *outcome = (list_type(ctx, element, true,
-                         (size_t)node->integer_value, out_index)); return false; } while (0);
-    }
-    if (node->kind == AST_TYPE_APPLICATION) {
-        do { *outcome = (resolve_type_application(ctx, node, env, owner, out_index)); return false; } while (0);
-    }
-    return true;
-}
-
-static bool resolve_type_in_env_key(const AstNode *node, CheckContext *ctx, const TypeEnv *env, const char *owner, size_t *out_index, bool *outcome)
-{
-    if (node->kind == AST_TYPE_RECORD || node->kind == AST_TYPE_TABLE) {
-        size_t key_type;
-        size_t value_type;
-
-        if (!resolve_type_in_env(ctx, node->left_child, env, owner,
-                                 &key_type) ||
-            !resolve_type_in_env(ctx, node->right_child, env, owner,
-                                 &value_type)) {
-            do { *outcome = (false); return true; } while (0);
-        }
-        if (node->kind == AST_TYPE_TABLE) {
-            do { *outcome = (map_type(ctx, key_type, value_type, false, 0, out_index)); return true; } while (0);
-        }
-        if (node->integer_value < 0 ||
-            node->integer_value > ctx->program->max_list_capacity) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_RECORD_CAPACITY);
-            do { *outcome = (false); return true; } while (0);
-        }
-        do { *outcome = (map_type(ctx, key_type, value_type, true,
-                        (size_t)node->integer_value, out_index)); return true; } while (0);
-    }
-    if (!resolve_type_in_env_key_element(node, ctx, env, owner, outcome, out_index)) {
-        return true;
-    }
-    return false;
-}
-
-bool resolve_type_in_env(CheckContext *ctx, size_t ast_index, const TypeEnv *env, const char *owner, size_t *out_index);
-
-static bool resolve_type_in_env_string_alternatives(size_t *i, const AstNode *node, CheckContext *ctx, const TypeEnv *env, const char *owner, bool *outcome2, size_t *out_index)
-{
-    List alternatives;
-
-    list_init(&alternatives, sizeof(size_t));
-    for ((*i) = 0; (*i) < node->children_count; (*i)++) {
-        size_t child = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + (*i));
-        size_t alternative;
-
-        if (!resolve_type_in_env(ctx, child, env, owner, &alternative) ||
-            !list_push(&alternatives, &alternative)) {
-            if (!ctx->errors->reported) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            }
-            list_free(&alternatives);
-            do { *outcome2 = (false); return false; } while (0);
-        }
-        {
-            const TypedType *resolved =
-                typed_program_type(ctx->program, alternative);
-
-            if (resolved != NULL &&
-                resolved->kind == NIPPY_TYPE_STORE) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_UNION_FUNCTION);
-                list_free(&alternatives);
-                do { *outcome2 = (false); return false; } while (0);
-            }
-        }
-    }
-    {
-        bool ok = intern_union(ctx, &alternatives, out_index);
-        list_free(&alternatives);
-        if (ok) {
-            const TypedType *result = typed_program_type(ctx->program,
-                                                          *out_index);
-            if (result != NULL && result->kind == NIPPY_TYPE_NIL) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_NIL_TYPE);
-                do { *outcome2 = (false); return false; } while (0);
-            }
-        }
-        do { *outcome2 = (ok); return false; } while (0);
-    }
-    return true;
-}
-
-static bool resolve_type_in_env_string(const AstNode *node, CheckContext *ctx, size_t *out_index, const TypeEnv *env, const char *owner, size_t *i, bool *outcome2)
-{
-    if (node->kind == AST_TYPE_FIXED_STRING) {
-        do { *outcome2 = (string_type(ctx, node->integer_value, out_index)); return true; } while (0);
-    }
-    if (node->kind == AST_TYPE_SLICE) {
-        size_t element;
-
-        if (!resolve_type_in_env(ctx, node->left_child, env, owner,
-                                 &element)) {
-            do { *outcome2 = (false); return true; } while (0);
-        }
-        do { *outcome2 = (slice_type(ctx, element, out_index)); return true; } while (0);
-    }
-    {
-        bool outcome;
-
-        if (resolve_type_in_env_key(node, ctx, env, owner, out_index, &outcome)) {
-            do { *outcome2 = (outcome); return true; } while (0);
-        }
-    }
-    if (node->kind == AST_TYPE_UNION) {
-        if (!resolve_type_in_env_string_alternatives(i, node, ctx, env, owner, outcome2, out_index)) {
-        return true;
-    }
-    }
-    return false;
-}
-
-bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
-                                const TypeEnv *env, const char *owner,
-                                size_t *out_index)
+bool resolve_type_in_env(CheckContext *ctx, size_t ast_index, const TypeEnv *env,
+                         const char *owner, size_t *out_index)
 {
     const AstNode *node = ast_get_node(ctx->ast, ast_index);
     size_t i;
@@ -802,64 +927,17 @@ bool resolve_type_in_env(CheckContext *ctx, size_t ast_index,
         error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, ast_index);
         return false;
     }
-    if (node->kind == AST_TYPE_NAME) {
-        return resolve_type_name(ctx, node, env, owner, out_index);
-    }
-    {
-        bool outcome2;
-
-        if (resolve_type_in_env_string(node, ctx, out_index, env, owner, &i, &outcome2)) {
-            return outcome2;
+    for (i = 0; i < NYX_COUNT_OF(type_resolvers); i++) {
+        if (type_resolvers[i].kind == node->kind) {
+            return type_resolvers[i].resolve(ctx, node, env, owner, out_index);
         }
     }
-    if (node->kind == AST_TYPE_FUNCTION) {
-        List parameter_types;
-        size_t return_type;
-        bool ok = false;
-
-        list_init(&parameter_types, sizeof(size_t));
-        for (i = 0; i < node->children_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &ctx->ast->children, node->children_start + i);
-            size_t parameter_type;
-
-            if (!resolve_type_in_env(ctx, child, env, owner,
-                                     &parameter_type)) {
-                goto function_type_done;
-            }
-            if (!list_push(&parameter_types, &parameter_type)) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                goto function_type_done;
-            }
-        }
-        if (!(node->right_child == AST_NO_NODE
-                  ? builtin_type(ctx, NIPPY_TYPE_NIL, &return_type)
-                  : resolve_type_in_env(ctx, node->right_child, env, owner,
-                                        &return_type))) {
-            goto function_type_done;
-        }
-        {
-            const TypedType *result = typed_program_type(ctx->program, return_type);
-            if (result == NULL || result->kind == NIPPY_TYPE_STORE) {
-                error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_STORE_TYPE);
-                goto function_type_done;
-            }
-        }
-        ok = add_function_type(ctx, &parameter_types, return_type, out_index);
-
-    function_type_done:
-        list_free(&parameter_types);
-        return ok;
-    }
-
     error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
     return false;
 }
 
-
-bool resolve_type_node(CheckContext *ctx, size_t ast_index,
-                              const char *owner, size_t *out_index)
+bool resolve_type_node(CheckContext *ctx, size_t ast_index, const char *owner,
+                       size_t *out_index)
 {
     return resolve_type_in_env(ctx, ast_index, ctx->env, owner, out_index);
 }

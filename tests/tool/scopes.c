@@ -247,3 +247,13 @@ TEST("a scope inside a repeated handler starts empty each time")
         "for i in range(0, 4) do total = total + handle(Int32(i)) end\n"
         "print(total)\n", "10\n", "scope in a handler");
 }
+
+TEST("a scope at program level in a program with one variable")
+{
+    return run_generated(
+        "var n: Int32 = 1\n"
+        "scope s = Store(8) do\n"
+        "  n = 2\n"
+        "end\n",
+        "2\n", "scope in a single-variable program");
+}

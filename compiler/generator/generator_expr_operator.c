@@ -1,977 +1,717 @@
 #include "generator_internal.h"
 
-static bool emit_call_arguments(const TypedProgram *program,
-                                const TypedNode *node, TextBuffer *buffer,
-                                ErrorState *errors)
+/* Operators, calls, and Store allocation as C expressions. A kind with several
+   shapes (a binary operation, a numeric conversion, a unary operation) is an
+   ordered list of rules: each looks at the node and either writes its C and
+   says so, or passes. The first rule to take the node wins, so the order is
+   the precedence. */
+
+typedef enum {
+    EMIT_NEXT,   /* not this rule's shape; try the next */
+    EMIT_DONE,   /* written */
+    EMIT_FAILED  /* the error is reported */
+} Emit;
+
+static Emit emit_result(bool ok)
 {
-    size_t i;
-
-    if (!node->is_method_call) {
-        return emit_children_expressions(program, node, buffer, errors);
-    }
-    for (i = 0; i < node->children_count; i++) {
-        size_t child = *(const size_t *)list_get(
-            &program->children, node->children_start + i);
-
-        if (i > 0 && !buffer_append(buffer, ", ")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (i == 0 && !buffer_append(buffer, "&(")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (!emit_expression(program, child, buffer, errors)) {
-            return false;
-        }
-        if (i == 0 && !buffer_append(buffer, ")")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    }
-    return true;
+    return ok ? EMIT_DONE : EMIT_FAILED;
 }
 
-static const char *unsigned_type_name(NippyType kind)
+static Emit emit_unsupported(ErrorState *errors)
 {
-    switch (kind) {
-    case NIPPY_TYPE_INT8:
-    case NIPPY_TYPE_BYTE:
-        return "uint8_t";
-    case NIPPY_TYPE_INT16:
-    case NIPPY_TYPE_UINT16:
-        return "uint16_t";
-    case NIPPY_TYPE_INT32:
-    case NIPPY_TYPE_UINT32:
-        return "uint32_t";
-    case NIPPY_TYPE_INT64:
-    case NIPPY_TYPE_UINT64:
-        return "uint64_t";
-    default:
-        return NULL;
-    }
+    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
+    return EMIT_FAILED;
 }
 
+static const char *const unsigned_names[NYX_TYPE_KIND_COUNT] = {
+    [NYX_TYPE_INT8] = "uint8_t",    [NYX_TYPE_BYTE] = "uint8_t",
+    [NYX_TYPE_INT16] = "uint16_t",  [NYX_TYPE_UINT16] = "uint16_t",
+    [NYX_TYPE_INT32] = "uint32_t",  [NYX_TYPE_UINT32] = "uint32_t",
+    [NYX_TYPE_INT64] = "uint64_t",  [NYX_TYPE_UINT64] = "uint64_t",
+};
 
 /* Arithmetic is done in at least 32 bits. Narrower unsigned operands are
    promoted to signed int by C, so 65535 * 65535 in uint16_t would overflow a
    signed int; computing in uint32_t keeps every product defined. */
-static const char *compute_type_name(NippyType kind)
+static const char *compute_type_name(NyxType kind)
 {
-    return nippy_type_bit_width(kind) < 32 ? "uint32_t"
-                                           : unsigned_type_name(kind);
+    return nyx_type_bit_width(kind) < 32 ? "uint32_t" : unsigned_names[kind];
 }
 
+/* The suffix of the runtime helpers for each integer type. */
+static const char *const arith_suffixes[NYX_TYPE_KIND_COUNT] = {
+    [NYX_TYPE_INT8] = "i8",    [NYX_TYPE_INT16] = "i16",
+    [NYX_TYPE_INT32] = "i32",  [NYX_TYPE_INT64] = "i64",
+    [NYX_TYPE_BYTE] = "u8",    [NYX_TYPE_UINT16] = "u16",
+    [NYX_TYPE_UINT32] = "u32", [NYX_TYPE_UINT64] = "u64",
+};
 
 /* A conversion between integer types needs a runtime check unless every value
    of the source is representable in the target. */
-static bool integer_conversion_always_fits(NippyType source, NippyType target)
+static bool integer_conversion_always_fits(NyxType source, NyxType target)
 {
-    bool source_signed = nippy_type_is_signed_integer(source);
-    bool target_signed = nippy_type_is_signed_integer(target);
-    unsigned source_width = nippy_type_bit_width(source);
-    unsigned target_width = nippy_type_bit_width(target);
+    bool source_signed = nyx_type_is_signed_integer(source);
+    unsigned source_width = nyx_type_bit_width(source);
+    unsigned target_width = nyx_type_bit_width(target);
 
-    if (source_signed == target_signed) {
+    if (source_signed == nyx_type_is_signed_integer(target)) {
         return target_width >= source_width;
     }
     return !source_signed && target_width > source_width;
 }
 
+/* ---- numeric conversion ---- */
 
-static const char *arith_suffix(NippyType kind)
+typedef struct {
+    const TypedProgram *program;
+    const TypedNode *node;
+    TextBuffer *buffer;
+    ErrorState *errors;
+    NyxType source;
+    NyxType target;
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+} Conversion;
+
+typedef Emit (*ConversionRule)(Conversion *c);
+
+/* Same type, or a constant already converted by the checker. */
+static Emit conversion_identity(Conversion *c)
 {
-    switch (kind) {
-    case NIPPY_TYPE_INT8:
-        return "i8";
-    case NIPPY_TYPE_INT16:
-        return "i16";
-    case NIPPY_TYPE_INT32:
-        return "i32";
-    case NIPPY_TYPE_INT64:
-        return "i64";
-    case NIPPY_TYPE_BYTE:
-        return "u8";
-    case NIPPY_TYPE_UINT16:
-        return "u16";
-    case NIPPY_TYPE_UINT32:
-        return "u32";
-    case NIPPY_TYPE_UINT64:
-        return "u64";
-    default:
-        return NULL;
+    if (c->target != c->source) {
+        return EMIT_NEXT;
     }
+    return emit_result(emit_expression(c->program, c->node->left_child,
+                                       c->buffer, c->errors));
 }
 
-
-
-typedef bool (*EmitExprOperatorsHandler)(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled);
-
-static bool emit_operator_numeric_conversion_target(const TypedProgram *program, const TypedNode *node, char (*type_name)[64], ErrorState *errors, TextBuffer *buffer, const TypedType **source, const TypedType **target, const char **suffix, bool *outcome)
+static Emit conversion_float_to_integer(Conversion *c)
 {
-    (*target) = typed_program_type(program,
-                                                 node->type_index);
-    (*source) = typed_program_type(program,
-                                                 node->auxiliary_type);
-    
+    char head[64];
+    char tail[96];
 
-    if ((*target) == NULL || (*source) == NULL ||
-        !format_c_type(program, node->type_index, (*type_name),
-                       sizeof((*type_name)), errors)) {
+    if (!nyx_type_is_float(c->source) || !nyx_type_is_integer(c->target)) {
+        return EMIT_NEXT;
+    }
+    snprintf(head, sizeof(head), "nyx_f2i_%s((double)(",
+             arith_suffixes[c->target]);
+    snprintf(tail, sizeof(tail), "), __FILE__, %zu, %zu, %zu)",
+             c->node->pos.line, c->node->pos.column, c->node->pos.offset);
+    return emit_result(emit_operand(c->program, c->node, c->buffer, c->errors,
+                                    head, tail));
+}
+
+static Emit conversion_integer_checked(Conversion *c)
+{
+    bool from_signed = nyx_type_is_signed_integer(c->source);
+    char head[96];
+    char tail[96];
+
+    if (!nyx_type_is_integer(c->source) || !nyx_type_is_integer(c->target) ||
+        integer_conversion_always_fits(c->source, c->target)) {
+        return EMIT_NEXT;
+    }
+    snprintf(head, sizeof(head), "nyx_c%c_%s((%s)(", from_signed ? 's' : 'u',
+             arith_suffixes[c->target], from_signed ? "int64_t" : "uint64_t");
+    snprintf(tail, sizeof(tail), "), __FILE__, %zu, %zu, %zu)",
+             c->node->pos.line, c->node->pos.column, c->node->pos.offset);
+    return emit_result(emit_operand(c->program, c->node, c->buffer, c->errors,
+                                    head, tail));
+}
+
+static Emit conversion_float_narrowing(Conversion *c)
+{
+    char tail[96];
+
+    if (c->target != NYX_TYPE_FLOAT32 || c->source != NYX_TYPE_FLOAT64) {
+        return EMIT_NEXT;
+    }
+    snprintf(tail, sizeof(tail), ", __FILE__, %zu, %zu, %zu)",
+             c->node->pos.line, c->node->pos.column, c->node->pos.offset);
+    return emit_result(emit_operand(c->program, c->node, c->buffer, c->errors,
+                                    "nyx_f2f_f32(", tail));
+}
+
+/* Widening integer, integer to float, and float widening cannot fail, so a
+   plain C conversion is exact or correctly rounded. */
+static Emit conversion_plain(Conversion *c)
+{
+    char head[NYX_IDENTIFIER_MAX + 48];
+
+    snprintf(head, sizeof(head), "((%s)(", c->type_name);
+    return emit_result(emit_operand(c->program, c->node, c->buffer, c->errors,
+                                    head, "))"));
+}
+
+static const ConversionRule conversion_rules[] = {
+    conversion_identity,
+    conversion_float_to_integer,
+    conversion_integer_checked,
+    conversion_float_narrowing,
+    conversion_plain,
+};
+
+static bool emit_operator_numeric_conversion(const TypedProgram *program,
+                                             const TypedNode *node,
+                                             TextBuffer *buffer,
+                                             ErrorState *errors)
+{
+    const TypedType *target = typed_program_type(program, node->type_index);
+    const TypedType *source = typed_program_type(program, node->auxiliary_type);
+    Conversion c = {program, node, buffer, errors, source->kind, target->kind,
+                    ""};
+    size_t i;
+    Emit result = EMIT_NEXT;
+
+    if (!format_c_type(program, node->type_index, c.type_name,
+                       sizeof(c.type_name), errors)) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if ((*target)->kind == (*source)->kind) {
-        /* Same type, or a constant already converted by the checker. */
-        do { *outcome = (emit_expression(program, node->left_child, buffer,
-                               errors)); return true; } while (0);
-    }
-    if (nippy_type_is_float((*source)->kind) &&
-        nippy_type_is_integer((*target)->kind)) {
-        (*suffix) = arith_suffix((*target)->kind);
-        if ((*suffix) == NULL ||
-            !buffer_appendf(buffer, "nyx_f2i_%s((double)(", (*suffix)) ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_appendf(buffer, "), __FILE__, %zu, %zu, %zu)",
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome = (false); return true; } while (0);
-        }
-        do { *outcome = (true); return true; } while (0);
-    }
-    return false;
-}
-
-static bool emit_operator_numeric_conversion_from_signed(const TypedType *source, const TypedType *target, const char **suffix, TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, bool *outcome2)
-{
-    if (nippy_type_is_integer(source->kind) &&
-        nippy_type_is_integer(target->kind) &&
-        !integer_conversion_always_fits(source->kind, target->kind)) {
-        bool from_signed = nippy_type_is_signed_integer(source->kind);
-
-        (*suffix) = arith_suffix(target->kind);
-        if ((*suffix) == NULL ||
-            !buffer_appendf(buffer, "nyx_c%c_%s((%s)(",
-                            from_signed ? 's' : 'u', (*suffix),
-                            from_signed ? "int64_t" : "uint64_t") ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_appendf(buffer, "), __FILE__, %zu, %zu, %zu)",
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome2 = (false); return true; } while (0);
-        }
-        do { *outcome2 = (true); return true; } while (0);
-    }
-    return false;
-}
-
-static bool emit_operator_numeric_conversion(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
-{
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
-    *handled = true;
-    {
-        const TypedType *source = {0};
-        const TypedType *target = {0};
-        const char *suffix = {0};
-        {
-        bool outcome;
-
-        if (emit_operator_numeric_conversion_target(program, node, &type_name, errors, buffer, &source, &target, &suffix, &outcome)) {
-            return outcome;
-        }
-    }
-        {
-        bool outcome2;
-
-        if (emit_operator_numeric_conversion_from_signed(source, target, &suffix, buffer, program, node, errors, &outcome2)) {
-            return outcome2;
-        }
-    }
-        if (target->kind == NIPPY_TYPE_FLOAT32 &&
-            source->kind == NIPPY_TYPE_FLOAT64) {
-            if (!buffer_append(buffer, "nyx_f2f_f32(") ||
-                !emit_expression(program, node->left_child, buffer,
-                                 errors) ||
-                !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu)",
-                                node->pos.line, node->pos.column,
-                                node->pos.offset)) {
-                if (!errors->reported) {
-                    error_report(errors,
-                                 MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                }
-                return false;
-            }
-            return true;
-        }
-        /* Widening integer, integer to float, and float widening cannot
-           fail, so a plain C conversion is exact or correctly rounded. */
-        if (!buffer_appendf(buffer, "((%s)(", type_name) ||
-            !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            return false;
-        }
-        return true;
-    }
-}
-
-static bool emit_operator_binary_buffer_append(TextBuffer *buffer, const TypedType *left_type, const TypedProgram *program, const TypedNode *node, ErrorState *errors, const TypedType *right_type)
-{
-    if (!buffer_append(buffer, left_type->kind == NIPPY_TYPE_HANDLE
-                                   ? "(nyx_equal_validate_handle("
-                                   : "((void)(") ||
-        !emit_expression(program, node->left_child, buffer, errors) ||
-        (left_type->kind == NIPPY_TYPE_HANDLE &&
-         !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
-                         node->pos.line, node->pos.column,
-                         node->pos.offset)) ||
-        !buffer_append(buffer, right_type != NULL &&
-                                  right_type->kind == NIPPY_TYPE_HANDLE
-                                  ? "), nyx_equal_validate_handle("
-                                  : "), (void)(") ||
-        !emit_expression(program, node->right_child, buffer, errors) ||
-        (right_type != NULL && right_type->kind == NIPPY_TYPE_HANDLE &&
-         !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
-                         node->pos.line, node->pos.column,
-                         node->pos.offset)) ||
-        !buffer_append(buffer, "), false)")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
         return false;
     }
-    return true;
+    for (i = 0; result == EMIT_NEXT && i < NYX_COUNT_OF(conversion_rules); i++) {
+        result = conversion_rules[i](&c);
+    }
+    return result == EMIT_DONE;
 }
 
-static bool emit_operator_binary_buffer_append4(const TypedNode *node, const TypedType *left_type, TextBuffer *buffer, const TypedProgram *program, ErrorState *errors, char (*type_name)[64], bool *outcome)
+/* ---- binary operations ---- */
+
+typedef struct {
+    const TypedProgram *program;
+    const TypedNode *node;
+    TextBuffer *buffer;
+    ErrorState *errors;
+    const TypedNode *left;
+    const TypedNode *right;
+    const TypedType *left_type;
+    const TypedType *right_type;
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+} Binary;
+
+typedef Emit (*BinaryRule)(Binary *c);
+
+static bool is_equality(NyxOperator op)
 {
-    if ((node->op == NIPPY_OPERATOR_EQ ||
-         node->op == NIPPY_OPERATOR_STRICT_EQ ||
-         node->op == NIPPY_OPERATOR_NE) &&
-        left_type->kind == NIPPY_TYPE_STRING) {
-        if (!buffer_append(buffer,
-                           node->op == NIPPY_OPERATOR_NE ? "(!"
-                                                         : "(") ||
-            !buffer_appendf(buffer, "nyx_string_%zu_equal(",
-                            left_type->fixed_length) ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, ", ") ||
-            !emit_expression(program, node->right_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome = (false); return true; } while (0);
-        }
-        do { *outcome = (true); return true; } while (0);
-    }
-    if (!format_c_type(program, node->type_index, (*type_name),
-                       sizeof((*type_name)), errors)) {
-        do { *outcome = (false); return true; } while (0);
-    }
-    return false;
+    return op == NYX_OPERATOR_EQ || op == NYX_OPERATOR_NE ||
+           op == NYX_OPERATOR_STRICT_EQ;
 }
 
-static bool emit_operator_binary_buffer_append6(const TypedNode *node, const TypedType *left_type, TextBuffer *buffer, const TypedProgram *program, ErrorState *errors, char (*type_name)[64], bool *outcome2)
+static bool is_string_kind(NyxType kind)
 {
-    if ((node->op == NIPPY_OPERATOR_EQ ||
-         node->op == NIPPY_OPERATOR_STRICT_EQ ||
-         node->op == NIPPY_OPERATOR_NE) &&
-        left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        if (!buffer_append(buffer,
-                           node->op == NIPPY_OPERATOR_NE ? "(!"
-                                                         : "(") ||
-            !buffer_append(buffer, "nyx_string_equal_at(") ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, ", ") ||
-            !emit_expression(program, node->right_child, buffer,
-                             errors) ||
-            !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu))",
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome2 = (false); return true; } while (0);
-        }
-        do { *outcome2 = (true); return true; } while (0);
-    }
-    {
-    bool outcome;
-
-    if (emit_operator_binary_buffer_append4(node, left_type, buffer, program, errors, type_name, &outcome)) {
-        do { *outcome2 = (outcome); return true; } while (0);
-    }
-}
-    return false;
+    return kind == NYX_TYPE_STRING || kind == NYX_TYPE_DYNAMIC_STRING;
 }
 
-static void emit_operator_binary_helper(const TypedType *left_type, const TypedType *right_type, const char **helper)
+static bool is_handle_type(const TypedType *type)
 {
-    (*helper) = NULL;
-    bool ls = nippy_type_is_signed_integer(left_type->kind);
-    bool rs = nippy_type_is_signed_integer(right_type->kind);
-    bool lu = nippy_type_is_unsigned_integer(left_type->kind);
-    bool ru = nippy_type_is_unsigned_integer(right_type->kind);
-    bool lf = nippy_type_is_float(left_type->kind);
-    bool rf = nippy_type_is_float(right_type->kind);
-
-    if (ls && ru) (*helper) = "nyx_eq_su";
-    else if (lu && rs) (*helper) = "nyx_eq_us";
-    else if (ls && rf) (*helper) = "nyx_eq_sf";
-    else if (lf && rs) (*helper) = "nyx_eq_fs";
-    else if (lu && rf) (*helper) = "nyx_eq_uf";
-    else if (lf && ru) (*helper) = "nyx_eq_fu";
+    return type->kind == NYX_TYPE_HANDLE;
 }
 
-static bool emit_operator_binary_helper9(const TypedNode *node, const TypedType *right_type, const TypedType *left_type, TextBuffer *buffer, const TypedProgram *program, ErrorState *errors, bool *outcome)
+/* `(`, or `(!` for a not-equal. */
+static const char *negation(const TypedNode *node)
 {
-    if ((node->op == NIPPY_OPERATOR_EQ ||
-         node->op == NIPPY_OPERATOR_NE) && right_type != NULL &&
-        nippy_type_is_numeric(left_type->kind) &&
-        nippy_type_is_numeric(right_type->kind)) {
-        const char *helper = {0};
-        emit_operator_binary_helper(left_type, right_type, &helper);
-        if (helper != NULL) {
-            if (!buffer_append(buffer, node->op == NIPPY_OPERATOR_NE
-                                           ? "(!" : "(") ||
-                !buffer_appendf(buffer, "%s(", helper) ||
-                !emit_expression(program, node->left_child, buffer, errors) ||
-                !buffer_append(buffer, ", ") ||
-                !emit_expression(program, node->right_child, buffer, errors) ||
-                !buffer_append(buffer, "))")) {
-                if (!errors->reported)
-                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                do { *outcome = (false); return true; } while (0);
-            }
-            do { *outcome = (true); return true; } while (0);
-        }
-    }
-    return false;
+    return node->op == NYX_OPERATOR_NE ? "(!" : "(";
 }
 
-static bool emit_operator_binary_utype(const TypedType *left_type, const TypedNode *node, ErrorState *errors, TextBuffer *buffer, char (*type_name)[64], const TypedProgram *program, const char **helper, const char **suffix, const char **op, bool *outcome3)
+static bool emit_binary_operands(Binary *c, const char *open,
+                                 const char *middle, const char *close)
 {
-    const char *utype = compute_type_name(left_type->kind);
-    (*suffix) = arith_suffix(left_type->kind);
-    (*op) = binary_operator_text(node->op);
-    (*helper) = NULL;
-
-    if (utype == NULL || (*suffix) == NULL || (*op) == NULL) {
-        error_report(errors,
-                     MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        do { *outcome3 = (false); return true; } while (0);
-    }
-    if (node->op == NIPPY_OPERATOR_ADD ||
-        node->op == NIPPY_OPERATOR_SUB ||
-        node->op == NIPPY_OPERATOR_MUL) {
-        if (!buffer_appendf(buffer, "(%s)((%s)(",
-                            (*type_name), utype) ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_appendf(buffer, ") %s (%s)(", (*op), utype) ||
-            !emit_expression(program, node->right_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome3 = (false); return true; } while (0);
-        }
-        do { *outcome3 = (true); return true; } while (0);
-    }
-    return false;
+    return emit_operands(c->program, c->node, c->buffer, c->errors, open,
+                         middle, close);
 }
 
-static bool emit_operator_binary_step(const TypedNode *node, const char **helper, TextBuffer *buffer, const char *suffix, const TypedProgram *program, ErrorState *errors)
+/* Values of different types compared strictly are never equal, but each side
+   is still evaluated, and a Handle on either side is still validated. */
+static Emit binary_strict_mismatch(Binary *c)
 {
-    if (node->op == NIPPY_OPERATOR_DIV) {
-        (*helper) = "nyx_div_";
-    } else if (node->op == NIPPY_OPERATOR_MOD) {
-        (*helper) = "nyx_mod_";
-    } else if (node->op == NIPPY_OPERATOR_SHL) {
-        (*helper) = "nyx_shl_";
+    char left_tail[96] = "";
+    char middle[160];
+    char right_tail[96] = "";
+    char close[128];
+
+    if (c->node->op != NYX_OPERATOR_STRICT_EQ ||
+        typed_types_equivalent(c->program, c->left->type_index,
+                               c->right->type_index, 64)) {
+        return EMIT_NEXT;
+    }
+    if (is_handle_type(c->left_type)) {
+        position_text(c->node, left_tail, sizeof(left_tail));
+    }
+    if (is_handle_type(c->right_type)) {
+        position_text(c->node, right_tail, sizeof(right_tail));
+    }
+    snprintf(middle, sizeof(middle), "%s%s",
+             left_tail, is_handle_type(c->right_type)
+                            ? "), nyx_equal_validate_handle("
+                            : "), (void)(");
+    snprintf(close, sizeof(close), "%s), false)", right_tail);
+    return emit_result(emit_binary_operands(
+        c, is_handle_type(c->left_type) ? "(nyx_equal_validate_handle("
+                                        : "((void)(",
+        middle, close));
+}
+
+static bool is_composite_kind(NyxType kind)
+{
+    return kind == NYX_TYPE_STRUCT || kind == NYX_TYPE_FIXED_LIST ||
+           kind == NYX_TYPE_LIST || kind == NYX_TYPE_RECORD ||
+           kind == NYX_TYPE_TABLE || kind == NYX_TYPE_HANDLE;
+}
+
+/* Two string types that would not be the same C type. */
+static bool strings_differ(const Binary *c)
+{
+    return is_string_kind(c->left_type->kind) &&
+           is_string_kind(c->right_type->kind) &&
+           !typed_types_equivalent(c->program, c->left->type_index,
+                                   c->right->type_index, 64);
+}
+
+/* Two values compared with a generated equality helper: a composite type, or
+   two different string types. */
+static Emit binary_helper_equality(Binary *c)
+{
+    char open[96];
+    char close[96];
+
+    if (!is_equality(c->node->op) ||
+        !(is_composite_kind(c->left_type->kind) || strings_differ(c))) {
+        return EMIT_NEXT;
+    }
+    if (is_string_kind(c->left_type->kind)) {
+        snprintf(open, sizeof(open), "%snyx_equal_pair_%zu_%zu(",
+                 negation(c->node), c->left->type_index, c->right->type_index);
     } else {
-        (*helper) = "nyx_shr_";
+        snprintf(open, sizeof(open), "%snyx_equal_%zu(", negation(c->node),
+                 c->left->type_index);
     }
-    if (!buffer_appendf(buffer, "%s%s(", (*helper), suffix) ||
-        !emit_expression(program, node->left_child, buffer,
-                         errors) ||
-        !buffer_append(buffer, ", ") ||
-        !emit_expression(program, node->right_child, buffer,
-                         errors) ||
-        ((node->op == NIPPY_OPERATOR_DIV ||
-          node->op == NIPPY_OPERATOR_MOD) &&
-         !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu",
-                         node->pos.line, node->pos.column,
-                         node->pos.offset)) ||
-        !buffer_append(buffer, ")")) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    position_text(c->node, close, sizeof(close));
+    strcat(close, "))");
+    return emit_result(emit_binary_operands(c, open, ", ", close));
+}
+
+/* The helper that compares two numeric domains exactly. */
+static const char *mixed_equality_helper(NyxType left, NyxType right)
+{
+    static const struct {
+        bool (*first)(NyxType);
+        bool (*second)(NyxType);
+        const char *forward;  /* first on the left */
+        const char *backward; /* second on the left */
+    } rows[] = {
+        {nyx_type_is_signed_integer, nyx_type_is_unsigned_integer,
+         "nyx_eq_su", "nyx_eq_us"},
+        {nyx_type_is_signed_integer, nyx_type_is_float, "nyx_eq_sf",
+         "nyx_eq_fs"},
+        {nyx_type_is_unsigned_integer, nyx_type_is_float, "nyx_eq_uf",
+         "nyx_eq_fu"},
+    };
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(rows); i++) {
+        if (rows[i].first(left) && rows[i].second(right)) {
+            return rows[i].forward;
         }
+        if (rows[i].second(left) && rows[i].first(right)) {
+            return rows[i].backward;
+        }
+    }
+    return NULL;
+}
+
+static Emit binary_mixed_numeric_equality(Binary *c)
+{
+    const char *helper;
+    char open[64];
+
+    if ((c->node->op != NYX_OPERATOR_EQ && c->node->op != NYX_OPERATOR_NE) ||
+        !nyx_type_is_numeric(c->left_type->kind) ||
+        !nyx_type_is_numeric(c->right_type->kind)) {
+        return EMIT_NEXT;
+    }
+    helper = mixed_equality_helper(c->left_type->kind, c->right_type->kind);
+    if (helper == NULL) {
+        return EMIT_NEXT;
+    }
+    snprintf(open, sizeof(open), "%s%s(", negation(c->node), helper);
+    return emit_result(emit_binary_operands(c, open, ", ", "))"));
+}
+
+static Emit binary_dynamic_string_equality(Binary *c)
+{
+    char open[64];
+    char close[128];
+
+    if (!is_equality(c->node->op) ||
+        c->left_type->kind != NYX_TYPE_DYNAMIC_STRING) {
+        return EMIT_NEXT;
+    }
+    snprintf(open, sizeof(open), "%snyx_string_equal_at(", negation(c->node));
+    position_text(c->node, close, sizeof(close));
+    strcat(close, "))");
+    return emit_result(emit_binary_operands(c, open, ", ", close));
+}
+
+static Emit binary_fixed_string_equality(Binary *c)
+{
+    char open[64];
+
+    if (!is_equality(c->node->op) || c->left_type->kind != NYX_TYPE_STRING) {
+        return EMIT_NEXT;
+    }
+    snprintf(open, sizeof(open), "%snyx_string_%zu_equal(", negation(c->node),
+             c->left_type->fixed_length);
+    return emit_result(emit_binary_operands(c, open, ", ", "))"));
+}
+
+/* The C type of the result, which the arithmetic rules below spell out. */
+static Emit binary_result_type(Binary *c)
+{
+    return format_c_type(c->program, c->node->type_index, c->type_name,
+                         sizeof(c->type_name), c->errors)
+               ? EMIT_NEXT
+               : EMIT_FAILED;
+}
+
+/* +, - and * are done in the unsigned type of the operand's width, which wraps
+   instead of overflowing, and converted back. */
+static Emit binary_wrapping_arithmetic(Binary *c)
+{
+    NyxOperator op = c->node->op;
+    const char *unsigned_type = compute_type_name(c->left_type->kind);
+    char open[NYX_IDENTIFIER_MAX + 64];
+    char middle[64];
+    char close[16];
+
+    if (!nyx_type_is_integer(c->left_type->kind) ||
+        (op != NYX_OPERATOR_ADD && op != NYX_OPERATOR_SUB &&
+         op != NYX_OPERATOR_MUL)) {
+        return EMIT_NEXT;
+    }
+    snprintf(open, sizeof(open), "(%s)((%s)(", c->type_name, unsigned_type);
+    snprintf(middle, sizeof(middle), ") %s (%s)(", binary_operator_text(op),
+             unsigned_type);
+    snprintf(close, sizeof(close), "))");
+    return emit_result(emit_binary_operands(c, open, middle, close));
+}
+
+/* Division, remainder and shifts go through checked helpers. */
+static Emit binary_checked_arithmetic(Binary *c)
+{
+    static const struct {
+        NyxOperator op;
+        const char *prefix;
+        bool positioned; /* the helper reports a failure at the source */
+    } helpers[] = {
+        {NYX_OPERATOR_DIV, "nyx_div_", true},
+        {NYX_OPERATOR_MOD, "nyx_mod_", true},
+        {NYX_OPERATOR_SHL, "nyx_shl_", false},
+        {NYX_OPERATOR_SHR, "nyx_shr_", false},
+    };
+    size_t i;
+
+    for (i = 0; nyx_type_is_integer(c->left_type->kind) &&
+                i < NYX_COUNT_OF(helpers);
+         i++) {
+        char open[64];
+        char close[112] = ")";
+
+        if (helpers[i].op != c->node->op) {
+            continue;
+        }
+        snprintf(open, sizeof(open), "%s%s(", helpers[i].prefix,
+                 arith_suffixes[c->left_type->kind]);
+        if (helpers[i].positioned) {
+            position_text(c->node, close, sizeof(close));
+            strcat(close, ")");
+        }
+        return emit_result(emit_binary_operands(c, open, ", ", close));
+    }
+    return EMIT_NEXT;
+}
+
+/* Everything else is the C operator with the same meaning. */
+static Emit binary_infix(Binary *c)
+{
+    const char *op = binary_operator_text(c->node->op);
+    char middle[16];
+
+    if (op == NULL) {
+        return emit_unsupported(c->errors);
+    }
+    snprintf(middle, sizeof(middle), " %s ", op);
+    return emit_result(emit_binary_operands(c, "(", middle, ")"));
+}
+
+static const BinaryRule binary_rules[] = {
+    binary_strict_mismatch,
+    binary_helper_equality,
+    binary_mixed_numeric_equality,
+    binary_dynamic_string_equality,
+    binary_fixed_string_equality,
+    binary_result_type,
+    binary_wrapping_arithmetic,
+    binary_checked_arithmetic,
+    binary_infix,
+};
+
+static bool emit_operator_binary(const TypedProgram *program,
+                                 const TypedNode *node, TextBuffer *buffer,
+                                 ErrorState *errors)
+{
+    const TypedNode *left = typed_program_node(program, node->left_child);
+    const TypedNode *right = typed_program_node(program, node->right_child);
+    Binary c = {program, node, buffer, errors, left, right,
+                typed_program_type(program, left->type_index),
+                typed_program_type(program, right->type_index), ""};
+    size_t i;
+    Emit result = EMIT_NEXT;
+
+    for (i = 0; result == EMIT_NEXT && i < NYX_COUNT_OF(binary_rules); i++) {
+        result = binary_rules[i](&c);
+    }
+    return result == EMIT_DONE;
+}
+
+/* ---- unary operations ---- */
+
+static bool emit_unary_not(const TypedProgram *program, const TypedNode *node,
+                           TextBuffer *buffer, ErrorState *errors)
+{
+    return emit_operand(program, node, buffer, errors, "(!(", "))");
+}
+
+static bool emit_unary_negation(const TypedProgram *program,
+                                const TypedNode *node, TextBuffer *buffer,
+                                ErrorState *errors)
+{
+    const TypedType *type = typed_program_type(program, node->type_index);
+    const char *unsigned_type = type == NULL ? NULL
+                                             : compute_type_name(type->kind);
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+    char open[NYX_IDENTIFIER_MAX + 96];
+
+    if (!format_c_type(program, node->type_index, type_name, sizeof(type_name),
+                       errors)) {
         return false;
     }
-    return true;
-}
-
-static bool emit_operator_binary_helper13_buffer_append(TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, const char *op, bool *outcome4)
-{
-    if (!buffer_append(buffer, "(") ||
-        !emit_expression(program, node->left_child, buffer,
-                         errors) ||
-        !buffer_appendf(buffer, " %s ", op) ||
-        !emit_expression(program, node->right_child, buffer,
-                         errors) ||
-        !buffer_append(buffer, ")")) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        do { *outcome4 = (false); return false; } while (0);
+    if (type != NULL && nyx_type_is_float(type->kind)) {
+        return emit_operand(program, node, buffer, errors, "(-(", "))");
     }
-    do { *outcome4 = (true); return false; } while (0);
-    return true;
-}
-
-static bool emit_operator_binary_helper13_operator_binary_step(const TypedNode *node, const char **helper, TextBuffer *buffer, const char *suffix, const TypedProgram *program, ErrorState *errors, bool *outcome4, const char *op)
-{
-    if (node->op == NIPPY_OPERATOR_DIV ||
-        node->op == NIPPY_OPERATOR_MOD ||
-        node->op == NIPPY_OPERATOR_SHL ||
-        node->op == NIPPY_OPERATOR_SHR) {
-        if (!emit_operator_binary_step(node, helper, buffer, suffix, program, errors)) {
-do { *outcome4 = (false); return false; } while (0);
-}
-        do { *outcome4 = (true); return false; } while (0);
-    }
-    if (!emit_operator_binary_helper13_buffer_append(buffer, program, node, errors, op, outcome4)) {
-    return false;
-}
-    return true;
-}
-
-static bool emit_operator_binary_helper13(const TypedType *left_type, const TypedNode *node, ErrorState *errors, TextBuffer *buffer, char (*type_name)[64], const TypedProgram *program, bool *outcome4)
-{
-    if (nippy_type_is_integer(left_type->kind)) {
-        const char *helper = {0};
-        const char *suffix = {0};
-        const char *op = {0};
-        {
-    bool outcome3;
-
-    if (emit_operator_binary_utype(left_type, node, errors, buffer, type_name, program, &helper, &suffix, &op, &outcome3)) {
-        do { *outcome4 = (outcome3); return true; } while (0);
-    }
-}
-        if (!emit_operator_binary_helper13_operator_binary_step(node, &helper, buffer, suffix, program, errors, outcome4, op)) {
-        return true;
-    }
-    }
-    return false;
-}
-
-static bool emit_operator_binary_outcome_buffer_append(TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, const char *op, bool *outcome3)
-{
-    if (!buffer_append(buffer, "(") ||
-        !emit_expression(program, node->left_child, buffer,
-                         errors) ||
-        !buffer_appendf(buffer, " %s ", op) ||
-        !emit_expression(program, node->right_child, buffer,
-                         errors) ||
-        !buffer_append(buffer, ")")) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        do { *outcome3 = (false); return false; } while (0);
-    }
-    do { *outcome3 = (true); return false; } while (0);
-    return true;
-}
-
-static bool emit_operator_binary_outcome_op(const TypedType *left_type, const TypedNode *node, ErrorState *errors, bool *outcome3, TextBuffer *buffer, const TypedProgram *program)
-{
-    if (nippy_type_is_float(left_type->kind)) {
-        const char *op = binary_operator_text(node->op);
-
-        if (op == NULL) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-            do { *outcome3 = (false); return false; } while (0);
-        }
-        if (!emit_operator_binary_outcome_buffer_append(buffer, program, node, errors, op, outcome3)) {
-        return false;
-    }
-    }
-    return true;
-}
-
-static bool emit_operator_binary_outcome(const TypedNode *node, const TypedType *right_type, const TypedType *left_type, TextBuffer *buffer, const TypedProgram *program, ErrorState *errors, char (*type_name)[64], bool *outcome3)
-{
-    {
-    bool outcome;
-
-    if (emit_operator_binary_helper9(node, right_type, left_type, buffer, program, errors, &outcome)) {
-        do { *outcome3 = (outcome); return true; } while (0);
-    }
-}
-    {
-    bool outcome2;
-
-    if (emit_operator_binary_buffer_append6(node, left_type, buffer, program, errors, type_name, &outcome2)) {
-        do { *outcome3 = (outcome2); return true; } while (0);
-    }
-}
-    if (!emit_operator_binary_outcome_op(left_type, node, errors, outcome3, buffer, program)) {
-        return true;
-    }
-    {
-    bool outcome4;
-
-    if (emit_operator_binary_helper13(left_type, node, errors, buffer, type_name, program, &outcome4)) {
-        do { *outcome3 = (outcome4); return true; } while (0);
-    }
-}
-    return false;
-}
-
-static bool emit_operator_binary_pair(const TypedType *left_type, TextBuffer *buffer, const TypedNode *node, const TypedNode *left, const TypedNode *right, const TypedProgram *program, ErrorState *errors)
-{
-    bool pair = (left_type->kind == NIPPY_TYPE_STRING ||
-                 left_type->kind == NIPPY_TYPE_DYNAMIC_STRING);
-    if (!buffer_append(buffer, node->op == NIPPY_OPERATOR_NE
-                                   ? "(!" : "(") ||
-        !(pair ? buffer_appendf(buffer, "nyx_equal_pair_%zu_%zu(",
-                                left->type_index, right->type_index)
-               : buffer_appendf(buffer, "nyx_equal_%zu(",
-                                left->type_index)) ||
-        !emit_expression(program, node->left_child, buffer, errors) ||
-        !buffer_append(buffer, ", ") ||
-        !emit_expression(program, node->right_child, buffer, errors) ||
-        !buffer_appendf(buffer, ", __FILE__, %zu, %zu, %zu))",
-                        node->pos.line, node->pos.column,
-                        node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
-}
-
-static bool emit_operator_binary_outcome3(const TypedNode *node, const TypedType *right_type, const TypedType *left_type, TextBuffer *buffer, const TypedProgram *program, ErrorState *errors, char (*type_name)[64])
-{
-    {
-    bool outcome3;
-
-    if (emit_operator_binary_outcome(node, right_type, left_type, buffer, program, errors, type_name, &outcome3)) {
-        return outcome3;
-    }
-}
-    {
-        const char *op = binary_operator_text(node->op);
-
-        if (op == NULL) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-            return false;
-        }
-        if (!buffer_append(buffer, "(") ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_appendf(buffer, " %s ", op) ||
-            !emit_expression(program, node->right_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, ")")) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            return false;
-        }
-        return true;
-    }
-}
-
-static bool emit_operator_binary_left(const TypedProgram *program, const TypedNode *node, ErrorState *errors, TextBuffer *buffer, const TypedType **right_type, const TypedType **left_type, const TypedNode **left, const TypedNode **right, bool *outcome)
-{
-    (*left) = typed_program_node(program,
-                                               node->left_child);
-    (*left_type) =
-        (*left) == NULL ? NULL
-                     : typed_program_type(program, (*left)->type_index);
-    (*right) = typed_program_node(program,
-                                                node->right_child);
-    (*right_type) = (*right) == NULL ? NULL :
-        typed_program_type(program, (*right)->type_index);
-
-    if ((*left_type) == NULL) {
+    if (unsigned_type == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (node->op == NIPPY_OPERATOR_STRICT_EQ && (*right) != NULL &&
-        !types_equivalent(program, (*left)->type_index, (*right)->type_index,
-                          64)) {
-        if (!emit_operator_binary_buffer_append(buffer, (*left_type), program, node, errors, (*right_type))) {
-    do { *outcome = (false); return true; } while (0);
-}
-        do { *outcome = (true); return true; } while (0);
-    }
-    return false;
-}
-
-static bool emit_operator_binary(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
-{
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
-    *handled = true;
-    {
-        const TypedType *right_type = {0};
-        const TypedType *left_type = {0};
-        const TypedNode *left = {0};
-        const TypedNode *right = {0};
-        {
-        bool outcome;
-
-        if (emit_operator_binary_left(program, node, errors, buffer, &right_type, &left_type, &left, &right, &outcome)) {
-            return outcome;
-        }
-    }
-        if ((node->op == NIPPY_OPERATOR_EQ || node->op == NIPPY_OPERATOR_NE ||
-             node->op == NIPPY_OPERATOR_STRICT_EQ) && right_type != NULL &&
-            (left_type->kind == NIPPY_TYPE_STRUCT ||
-             left_type->kind == NIPPY_TYPE_FIXED_LIST ||
-             left_type->kind == NIPPY_TYPE_LIST ||
-             left_type->kind == NIPPY_TYPE_RECORD ||
-             left_type->kind == NIPPY_TYPE_TABLE ||
-             left_type->kind == NIPPY_TYPE_HANDLE ||
-             ((left_type->kind == NIPPY_TYPE_STRING ||
-               left_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
-              (right_type->kind == NIPPY_TYPE_STRING ||
-               right_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
-              !types_equivalent(program, left->type_index,
-                                right->type_index, 64)))) {
-            if (!emit_operator_binary_pair(left_type, buffer, node, left, right, program, errors)) {
         return false;
     }
-            return true;
-        }
-        return emit_operator_binary_outcome3(node, right_type, left_type, buffer, program, errors, &type_name);
-    }
+    snprintf(open, sizeof(open), "(%s)((%s)0 - (%s)(", type_name, unsigned_type,
+             unsigned_type);
+    return emit_operand(program, node, buffer, errors, open, "))");
 }
 
-static bool emit_operator_unary_type_nippy_type_is_float(const TypedType *type, TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, bool *outcome)
+/* C promotes a narrow operand to int, so ~ on a Uint8 would be negative; the
+   cast brings it back to the operand's own type. */
+static bool emit_unary_complement(const TypedProgram *program,
+                                  const TypedNode *node, TextBuffer *buffer,
+                                  ErrorState *errors)
 {
-    if (nippy_type_is_float(type == NULL ? NIPPY_TYPE_UNKNOWN
-                                         : type->kind)) {
-        if (!buffer_append(buffer, "(-(") ||
-            !emit_expression(program, node->left_child, buffer,
-                             errors) ||
-            !buffer_append(buffer, "))")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            do { *outcome = (false); return false; } while (0);
-        }
-        do { *outcome = (true); return false; } while (0);
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+    char open[NYX_IDENTIFIER_MAX + 48];
+
+    if (!format_c_type(program, node->type_index, type_name, sizeof(type_name),
+                       errors)) {
+        return false;
     }
-    return true;
+    snprintf(open, sizeof(open), "((%s)(~(", type_name);
+    return emit_operand(program, node, buffer, errors, open, ")))");
 }
 
-static bool emit_operator_unary_type(const TypedNode *node, const TypedProgram *program, char (*type_name)[64], ErrorState *errors, TextBuffer *buffer, bool *outcome)
+static const struct {
+    NyxOperator op;
+    bool (*emit)(const TypedProgram *, const TypedNode *, TextBuffer *,
+                 ErrorState *);
+} unary_emitters[] = {
+    {NYX_OPERATOR_NOT, emit_unary_not},
+    {NYX_OPERATOR_NEG, emit_unary_negation},
+    {NYX_OPERATOR_BIT_NOT, emit_unary_complement},
+};
+
+static bool emit_operator_unary(const TypedProgram *program,
+                                const TypedNode *node, TextBuffer *buffer,
+                                ErrorState *errors)
 {
-    if (node->op == NIPPY_OPERATOR_NEG) {
-        const TypedType *type = typed_program_type(program,
-                                                   node->type_index);
-        const char *utype = type == NULL
-                                ? NULL
-                                : compute_type_name(type->kind);
+    size_t i;
 
-        if (!format_c_type(program, node->type_index, (*type_name),
-                           sizeof((*type_name)), errors)) {
-            do { *outcome = (false); return true; } while (0);
+    for (i = 0; i < NYX_COUNT_OF(unary_emitters); i++) {
+        if (unary_emitters[i].op == node->op) {
+            return unary_emitters[i].emit(program, node, buffer, errors);
         }
-        if (!emit_operator_unary_type_nippy_type_is_float(type, buffer, program, node, errors, outcome)) {
-        return true;
-    }
-        if (utype == NULL ||
-            !buffer_appendf(buffer, "(%s)((%s)0 - (%s)(",
-                            (*type_name), utype, utype) ||
-            !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-            }
-            do { *outcome = (false); return true; } while (0);
-        }
-        do { *outcome = (true); return true; } while (0);
-    }
-    return false;
-}
-
-static bool emit_operator_unary(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
-{
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
-    *handled = true;
-    if (node->op == NIPPY_OPERATOR_NOT) {
-        if (!buffer_append(buffer, "(!(") ||
-            !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, "))")) {
-            if (!errors->reported) {
-                error_report(errors,
-                             MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            return false;
-        }
-        return true;
-    }
-    {
-        bool outcome;
-
-        if (emit_operator_unary_type(node, program, &type_name, errors, buffer, &outcome)) {
-            return outcome;
-        }
-    }
-    if (node->op == NIPPY_OPERATOR_BIT_NOT) {
-        /* C promotes a narrow operand to int, so ~ on a Uint8 would be
-           negative; the cast brings it back to the operand's own type. */
-        if (!format_c_type(program, node->type_index, type_name,
-                           sizeof(type_name), errors) ||
-            !buffer_appendf(buffer, "((%s)(~(", type_name) ||
-            !emit_expression(program, node->left_child, buffer, errors) ||
-            !buffer_append(buffer, ")))")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            return false;
-        }
-        return true;
     }
     error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
     return false;
 }
 
-static bool emit_operator_struct_constructor(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
+/* ---- constructors and calls ---- */
+
+static bool emit_operator_struct_constructor(const TypedProgram *program,
+                                             const TypedNode *node,
+                                             TextBuffer *buffer,
+                                             ErrorState *errors)
 {
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
-    *handled = true;
-    if (!format_c_type(program, node->type_index, type_name,
-                       sizeof(type_name), errors) ||
-        !buffer_appendf(buffer, "(%s){ ", type_name) ||
-        !emit_children_expressions(program, node, buffer, errors) ||
-        !buffer_append(buffer, " }")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok = format_c_type(program, node->type_index, type_name,
+                            sizeof(type_name), errors);
+
+    if (!ok) {
         return false;
     }
-    return true;
+    buffer_appendf(buffer, "(%s){ ", type_name);
+    ok = emit_children_expressions(program, node, buffer, errors);
+    buffer_append(buffer, " }");
+    return ok;
 }
 
-static bool emit_operator_function_call(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
+/* A method call passes its receiver by address. */
+static bool emit_call_arguments(const TypedProgram *program,
+                                const TypedNode *node, TextBuffer *buffer,
+                                ErrorState *errors)
 {
-    *handled = true;
+    size_t i;
+    bool ok = true;
+
+    if (!node->is_method_call) {
+        return emit_children_expressions(program, node, buffer, errors);
+    }
+    for (i = 0; ok && i < node->children_count; i++) {
+        buffer_append(buffer, i == 0 ? "&(" : ", ");
+        ok = emit_expression(program,
+                             *(const size_t *)list_get(
+                                 &program->children, node->children_start + i),
+                             buffer, errors);
+        if (i == 0) {
+            buffer_append(buffer, ")");
+        }
+    }
+    return ok;
+}
+
+static bool emit_operator_function_call(const TypedProgram *program,
+                                        const TypedNode *node,
+                                        TextBuffer *buffer, ErrorState *errors)
+{
     char name_text[USER_NAME_CAPACITY];
-const char *name = user_c_name(program, node->name_index,
-                              name_text, sizeof(name_text));
+    const char *name = checked_user_name(program, node->name_index, name_text,
+                                         sizeof(name_text), errors);
+    bool ok;
 
-    if (!valid_identifier(name)) {
-        error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
+    if (name == NULL) {
         return false;
     }
-    if (!buffer_appendf(buffer, "%s(", name) ||
-        !emit_call_arguments(program, node, buffer, errors) ||
-        !buffer_append(buffer, ")")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
+    buffer_appendf(buffer, "%s(", name);
+    ok = emit_call_arguments(program, node, buffer, errors);
+    buffer_append(buffer, ")");
+    return ok;
 }
 
-static bool emit_operator_store_alloc_buffer_append(TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, bool aggregate, char (*element_name)[64])
+/* The C literal that holds one element of a Store: an aggregate goes through a
+   union so a braced initialiser reads as one value. */
+static void emit_element_literal_open(TextBuffer *buffer, bool aggregate,
+                                      const char *element_name)
 {
-    if (!buffer_append(buffer, "nyx_store_alloc_at(") ||
-        !emit_store_reference(program, node, buffer, errors) ||
-        !buffer_append(buffer, ", ")) {
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
     if (aggregate) {
-        if (!buffer_appendf(
-                buffer, "&(union { %s nyx_value; }){ .nyx_value = ",
-                (*element_name))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (!buffer_appendf(buffer, "&(%s){ ", (*element_name))) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
+        buffer_appendf(buffer, "&(union { %s nyx_value; }){ .nyx_value = ",
+                       element_name);
+    } else {
+        buffer_appendf(buffer, "&(%s){ ", element_name);
     }
-    return true;
 }
 
-static bool emit_operator_store_alloc_store_reference_is_valid(const TypedProgram *program, const TypedNode *node, size_t *element, char (*element_name)[64], ErrorState *errors, bool *aggregate, TextBuffer *buffer)
+static bool emit_operator_store_alloc(const TypedProgram *program,
+                                      const TypedNode *node, TextBuffer *buffer,
+                                      ErrorState *errors)
 {
-    if (!store_reference_is_valid(program, node) ||
-        !handle_element_type(program, node->type_index, element) ||
-        !format_c_type(program, (*element), (*element_name),
-                       sizeof((*element_name)), errors) ||
-        node->left_child == TYPED_NO_NODE) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        }
-        return false;
-    }
-    (*aggregate) = type_is_c_aggregate(program, (*element));
-    if (!emit_operator_store_alloc_buffer_append(buffer, program, node, errors, (*aggregate), element_name)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_operator_store_alloc(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
-{
-    *handled = true;
     size_t element;
-    bool aggregate;
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok;
 
-    if (!emit_operator_store_alloc_store_reference_is_valid(program, node, &element, &element_name, errors, &aggregate, buffer)) {
+    if (!store_reference_is_valid(program, node) ||
+        !handle_element_type(program, node->type_index, &element) ||
+        node->left_child == TYPED_NO_NODE) {
+        return emit_unsupported(errors) == EMIT_DONE;
+    }
+    if (!format_c_type(program, element, element_name, sizeof(element_name),
+                       errors)) {
         return false;
     }
-    if (!emit_expression(program, node->left_child, buffer, errors) ||
-        !buffer_appendf(buffer, " }, sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
-                        element_name, element_name, node->pos.line,
-                        node->pos.column, node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
+    buffer_append(buffer, "nyx_store_alloc_at(");
+    ok = emit_store_reference(program, node, buffer, errors);
+    buffer_append(buffer, ", ");
+    emit_element_literal_open(buffer, type_is_c_aggregate(program, element),
+                              element_name);
+    ok = emit_expression(program, node->left_child, buffer, errors) && ok;
+    buffer_appendf(buffer,
+                   " }, sizeof(%s), _Alignof(%s), __FILE__, %zu, %zu, %zu)",
+                   element_name, element_name, node->pos.line, node->pos.column,
+                   node->pos.offset);
+    return ok;
 }
 
-static bool emit_operator_handle_read(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
+static bool emit_operator_handle_read(const TypedProgram *program,
+                                      const TypedNode *node, TextBuffer *buffer,
+                                      ErrorState *errors)
 {
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
-    *handled = true;
-    if (node->left_child == TYPED_NO_NODE ||
-        !format_c_type(program, node->type_index, type_name,
-                       sizeof(type_name), errors)) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        }
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok;
+
+    if (node->left_child == TYPED_NO_NODE) {
+        return emit_unsupported(errors) == EMIT_DONE;
+    }
+    if (!format_c_type(program, node->type_index, type_name, sizeof(type_name),
+                       errors)) {
         return false;
     }
-    if (!buffer_appendf(buffer, "(*(%s *)nyx_handle_pointer_at(",
-                        type_name) ||
-        !emit_expression(program, node->left_child, buffer, errors) ||
-        !buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu))",
-                        type_name, node->pos.line, node->pos.column,
-                        node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
+    buffer_appendf(buffer, "(*(%s *)nyx_handle_pointer_at(", type_name);
+    ok = emit_expression(program, node->left_child, buffer, errors);
+    buffer_appendf(buffer, ", sizeof(%s), __FILE__, %zu, %zu, %zu))", type_name,
+                   node->pos.line, node->pos.column, node->pos.offset);
+    return ok;
 }
 
-static bool emit_operator_handle_write_buffer_append(TextBuffer *buffer, const TypedProgram *program, const TypedNode *node, ErrorState *errors, bool aggregate, char (*element_name)[64])
+static bool emit_operator_handle_write(const TypedProgram *program,
+                                       const TypedNode *node,
+                                       TextBuffer *buffer, ErrorState *errors)
 {
-    if (!buffer_append(buffer, "((void)nyx_handle_write_at(") ||
-        !emit_expression(program, node->left_child, buffer, errors) ||
-        !buffer_append(buffer, ", ")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    if (aggregate) {
-        if (!buffer_appendf(
-                buffer, "&(union { %s nyx_value; }){ .nyx_value = ",
-                (*element_name))) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (!buffer_appendf(buffer, "&(%s){ ", (*element_name))) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
-}
-
-static bool emit_operator_handle_write_handle_element(const TypedNode *handle, const TypedType *result, const TypedNode *node, const TypedProgram *program, size_t *element, char (*element_name)[64], ErrorState *errors, bool *aggregate, TextBuffer *buffer)
-{
-    if (handle == NULL || result == NULL ||
-        result->kind != NIPPY_TYPE_NIL ||
-        node->right_child == TYPED_NO_NODE ||
-        !handle_element_type(program, handle->type_index, element) ||
-        !format_c_type(program, (*element), (*element_name),
-                       sizeof((*element_name)), errors)) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
-        }
-        return false;
-    }
-    (*aggregate) = type_is_c_aggregate(program, (*element));
-    if (!emit_operator_handle_write_buffer_append(buffer, program, node, errors, (*aggregate), element_name)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_operator_handle_write(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
-{
-    *handled = true;
-    const TypedNode *handle =
-        typed_program_node(program, node->left_child);
+    const TypedNode *handle = typed_program_node(program, node->left_child);
     const TypedType *result = typed_program_type(program, node->type_index);
     size_t element;
-    bool aggregate;
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok;
 
-    if (!emit_operator_handle_write_handle_element(handle, result, node, program, &element, &element_name, errors, &aggregate, buffer)) {
+    if (handle == NULL || result == NULL || result->kind != NYX_TYPE_NIL ||
+        node->right_child == TYPED_NO_NODE ||
+        !handle_element_type(program, handle->type_index, &element)) {
+        return emit_unsupported(errors) == EMIT_DONE;
+    }
+    if (!format_c_type(program, element, element_name, sizeof(element_name),
+                       errors)) {
         return false;
     }
-    if (!emit_expression(program, node->right_child, buffer, errors) ||
-        !buffer_appendf(buffer, " }, sizeof(%s), __FILE__, %zu, %zu, %zu), (nyx_nil)0)",
-                        element_name, node->pos.line, node->pos.column,
-                        node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
+    buffer_append(buffer, "((void)nyx_handle_write_at(");
+    ok = emit_expression(program, node->left_child, buffer, errors);
+    buffer_append(buffer, ", ");
+    emit_element_literal_open(buffer, type_is_c_aggregate(program, element),
+                              element_name);
+    ok = emit_expression(program, node->right_child, buffer, errors) && ok;
+    buffer_appendf(buffer,
+                   " }, sizeof(%s), __FILE__, %zu, %zu, %zu), (nyx_nil)0)",
+                   element_name, node->pos.line, node->pos.column,
+                   node->pos.offset);
+    return ok;
 }
 
+typedef bool (*ExprOperatorEmitter)(const TypedProgram *, const TypedNode *,
+                                    TextBuffer *, ErrorState *);
+
 static const struct {
-    int key;
-    EmitExprOperatorsHandler handler;
-} emit_expr_operators_handlers[] = {
+    TypedNodeKind kind;
+    ExprOperatorEmitter emit;
+} operator_emitters[] = {
     {TYPED_NUMERIC_CONVERSION, emit_operator_numeric_conversion},
     {TYPED_BINARY, emit_operator_binary},
     {TYPED_UNARY, emit_operator_unary},
@@ -983,12 +723,14 @@ static const struct {
 };
 
 bool emit_expr_operators(const TypedProgram *program, const TypedNode *node,
-                TextBuffer *buffer, ErrorState *errors, bool *handled)
+                         TextBuffer *buffer, ErrorState *errors, bool *handled)
 {
+    size_t i;
 
-    for (size_t i = 0; i < NIPPY_COUNT_OF(emit_expr_operators_handlers); i++) {
-        if (emit_expr_operators_handlers[i].key == (int)node->kind) {
-            return emit_expr_operators_handlers[i].handler(program, node, buffer, errors, handled);
+    for (i = 0; i < NYX_COUNT_OF(operator_emitters); i++) {
+        if (operator_emitters[i].kind == node->kind) {
+            *handled = true;
+            return operator_emitters[i].emit(program, node, buffer, errors);
         }
     }
     return true;

@@ -5,14 +5,14 @@
 #include <string.h>
 
 #if defined(__GNUC__) || defined(__clang__)
-#define NIPPY_UNUSED __attribute__((unused))
+#define NYX_UNUSED __attribute__((unused))
 #else
-#define NIPPY_UNUSED
+#define NYX_UNUSED
 #endif
 
-#define NIPPY_STORE_COUNT 1
+#define NYX_STORE_COUNT 1
 
-static nyx_store nyx_stores[NIPPY_STORE_COUNT];
+static nyx_store nyx_stores[NYX_STORE_COUNT];
 
 static void nyx_panic(const char *message)
 {
@@ -25,7 +25,7 @@ static inline void nyx_panic_at(const char *message, const char *file, size_t li
 {
     if (file == NULL) nyx_panic(message);
     fflush(stdout);
-    fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + sizeof("nippy: ") - 1);
+    fprintf(stderr, "nyx: %s:%zu:%zu (byte %zu): %s\n", file, line, column, pos, message + sizeof("nyx: ") - 1);
     exit(1);
 }
 
@@ -41,7 +41,7 @@ static inline size_t nyx_store_align_at(size_t offset, size_t alignment, const c
         return offset;
     }
     if (offset > (size_t)-1 - (alignment - remainder)) {
-        nyx_panic_at("nippy: out of memory", file, line, column, pos);
+        nyx_panic_at("nyx: out of memory", file, line, column, pos);
     }
     return offset + (alignment - remainder);
 }
@@ -56,7 +56,7 @@ static inline void nyx_store_init_at(nyx_store *store, size_t initial_bytes, con
     }
     store->data = malloc(initial_bytes);
     if (store->data == NULL) {
-        nyx_panic_at("nippy: out of memory", file, line, column, pos);
+        nyx_panic_at("nyx: out of memory", file, line, column, pos);
     }
     store->used = 0;
     store->capacity = initial_bytes;
@@ -77,13 +77,13 @@ static inline void nyx_store_reserve_at(nyx_store *store, size_t required, const
     capacity = store->capacity == 0 ? 1 : store->capacity;
     while (capacity < required) {
         if (capacity > (size_t)-1 / 2) {
-            nyx_panic_at("nippy: out of memory", file, line, column, pos);
+            nyx_panic_at("nyx: out of memory", file, line, column, pos);
         }
         capacity *= 2;
     }
     grown = realloc(store->data, capacity);
     if (grown == NULL) {
-        nyx_panic_at("nippy: out of memory", file, line, column, pos);
+        nyx_panic_at("nyx: out of memory", file, line, column, pos);
     }
     store->data = grown;
     store->capacity = capacity;
@@ -100,14 +100,14 @@ static inline nyx_handle nyx_store_alloc_at(nyx_store *store, const void *value,
     size_t end;
 
     if (store == NULL) {
-        nyx_panic_at("nippy: invalid store id", file, line, column, pos);
+        nyx_panic_at("nyx: invalid store id", file, line, column, pos);
     }
     if (size == 0) {
-        nyx_panic_at("nippy: handle is out of range", file, line, column, pos);
+        nyx_panic_at("nyx: handle is out of range", file, line, column, pos);
     }
     offset = nyx_store_align_at(store->used, align, file, line, column, pos);
     if (offset > (size_t)-1 - size) {
-        nyx_panic_at("nippy: handle is out of range", file, line, column, pos);
+        nyx_panic_at("nyx: handle is out of range", file, line, column, pos);
     }
     end = offset + size;
     nyx_store_reserve_at(store, end, file, line, column, pos);
@@ -128,15 +128,12 @@ static inline unsigned char *nyx_handle_pointer_at(nyx_handle handle,
     nyx_store *store;
 
     if (handle.store == NULL) {
-        nyx_panic_at("nippy: invalid store id", file, line, column, pos);
+        nyx_panic_at("nyx: invalid store id", file, line, column, pos);
     }
     store = handle.store;
-    if (handle.generation != store->generation) {
-        nyx_panic_at("nippy: stale handle", file, line, column, pos);
-    }
     if (handle.offset > store->used ||
         size > store->used - handle.offset) {
-        nyx_panic_at("nippy: handle is out of range", file, line, column, pos);
+        nyx_panic_at("nyx: handle is out of range", file, line, column, pos);
     }
     return store->data + handle.offset;
 }
@@ -153,7 +150,7 @@ static inline void nyx_handle_write_at(nyx_handle handle, const void *value,
 static inline void nyx_handle_write(nyx_handle handle, const void *value, size_t size)
 { nyx_handle_write_at(handle, value, size, NULL, 0, 0, 0); }
 
-static NIPPY_UNUSED void nyx_store_free(nyx_store *store)
+static NYX_UNUSED void nyx_store_free(nyx_store *store)
 {
     free(store->data);
     store->data = NULL;

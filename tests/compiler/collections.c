@@ -78,7 +78,7 @@ TEST("list: list capacity too large")
     return compile_fails(
         "var xs: Array<Int32, 4097> = []\n",
         "list capacity too large",
-        MESSAGE_CHECKER_ARRAY_CAPACITY, NIPPY_DEFAULT_MAX_LIST_CAPACITY);
+        MESSAGE_CHECKER_ARRAY_CAPACITY, NYX_DEFAULT_MAX_LIST_CAPACITY);
 }
 
 TEST("list: list index type")

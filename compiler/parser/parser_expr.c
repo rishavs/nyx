@@ -768,9 +768,9 @@ bool parse_unary(
         node.kind = AST_UNARY;
         node.pos = token->pos;
         node.op = token->type == TOKEN_BANG
-                      ? NIPPY_OPERATOR_NOT
-                      : (token->type == TOKEN_MINUS ? NIPPY_OPERATOR_NEG
-                                                    : NIPPY_OPERATOR_BIT_NOT);
+                      ? NYX_OPERATOR_NOT
+                      : (token->type == TOKEN_MINUS ? NYX_OPERATOR_NEG
+                                                    : NYX_OPERATOR_BIT_NOT);
         node.name_index = AST_NO_NODE;
         node.left_child = operand;
         node.right_child = AST_NO_NODE;
@@ -836,9 +836,9 @@ bool parse_multiplicative(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_STAR, NIPPY_OPERATOR_MUL},
-        {TOKEN_SLASH, NIPPY_OPERATOR_DIV},
-        {TOKEN_PERCENT, NIPPY_OPERATOR_MOD}
+        {TOKEN_STAR, NYX_OPERATOR_MUL},
+        {TOKEN_SLASH, NYX_OPERATOR_DIV},
+        {TOKEN_PERCENT, NYX_OPERATOR_MOD}
     };
 
     return parse_binary_level(parse_unary, operators,
@@ -853,8 +853,8 @@ bool parse_additive(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_PLUS, NIPPY_OPERATOR_ADD},
-        {TOKEN_MINUS, NIPPY_OPERATOR_SUB}
+        {TOKEN_PLUS, NYX_OPERATOR_ADD},
+        {TOKEN_MINUS, NYX_OPERATOR_SUB}
     };
 
     return parse_binary_level(parse_multiplicative, operators,
@@ -876,7 +876,7 @@ bool parse_shift(
     for (;;) {
         const Token *token = token_at(tokens, *cursor);
         const Token *next = token_at(tokens, *cursor + 1);
-        NippyOperator op;
+        NyxOperator op;
         size_t right;
         AstNode node = {0};
 
@@ -885,8 +885,8 @@ bool parse_shift(
             next->type != token->type) {
             break;
         }
-        op = token->type == TOKEN_LT ? NIPPY_OPERATOR_SHL
-                                     : NIPPY_OPERATOR_SHR;
+        op = token->type == TOKEN_LT ? NYX_OPERATOR_SHL
+                                     : NYX_OPERATOR_SHR;
         *cursor += 2;
         if (!parse_additive(tokens, string_bytes, ast, cursor, &right, errors)) {
             return false;
@@ -914,10 +914,10 @@ bool parse_relational(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_LT, NIPPY_OPERATOR_LT},
-        {TOKEN_LE, NIPPY_OPERATOR_LE},
-        {TOKEN_GT, NIPPY_OPERATOR_GT},
-        {TOKEN_GE, NIPPY_OPERATOR_GE}
+        {TOKEN_LT, NYX_OPERATOR_LT},
+        {TOKEN_LE, NYX_OPERATOR_LE},
+        {TOKEN_GT, NYX_OPERATOR_GT},
+        {TOKEN_GE, NYX_OPERATOR_GE}
     };
 
     return parse_binary_level(parse_bit_or, operators,
@@ -932,9 +932,9 @@ bool parse_equality(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_EQEQ, NIPPY_OPERATOR_EQ},
-        {TOKEN_EQEQEQ, NIPPY_OPERATOR_STRICT_EQ},
-        {TOKEN_NE, NIPPY_OPERATOR_NE}
+        {TOKEN_EQEQ, NYX_OPERATOR_EQ},
+        {TOKEN_EQEQEQ, NYX_OPERATOR_STRICT_EQ},
+        {TOKEN_NE, NYX_OPERATOR_NE}
     };
 
     return parse_binary_level(parse_relational, operators,
@@ -949,7 +949,7 @@ bool parse_bit_and(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_AMP, NIPPY_OPERATOR_BIT_AND}
+        {TOKEN_AMP, NYX_OPERATOR_BIT_AND}
     };
 
     return parse_binary_level(parse_shift, operators,
@@ -964,7 +964,7 @@ bool parse_bit_xor(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_CARET, NIPPY_OPERATOR_BIT_XOR}
+        {TOKEN_CARET, NYX_OPERATOR_BIT_XOR}
     };
 
     return parse_binary_level(parse_bit_and, operators,
@@ -979,7 +979,7 @@ bool parse_bit_or(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_PIPE, NIPPY_OPERATOR_BIT_OR}
+        {TOKEN_PIPE, NYX_OPERATOR_BIT_OR}
     };
 
     return parse_binary_level(parse_bit_xor, operators,
@@ -994,7 +994,7 @@ bool parse_logical_and(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_ANDAND, NIPPY_OPERATOR_AND}
+        {TOKEN_ANDAND, NYX_OPERATOR_AND}
     };
 
     return parse_binary_level(parse_equality, operators,
@@ -1009,7 +1009,7 @@ bool parse_logical_or(
 )
 {
     static const BinaryOperator operators[] = {
-        {TOKEN_OROR, NIPPY_OPERATOR_OR}
+        {TOKEN_OROR, NYX_OPERATOR_OR}
     };
 
     return parse_binary_level(parse_logical_and, operators,

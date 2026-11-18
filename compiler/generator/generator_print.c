@@ -1,142 +1,6 @@
 #include "generator_internal.h"
 
 
-bool print_type_in_list(const List *types, size_t type_index)
-{
-    size_t i;
-
-    for (i = 0; i < types->length; i++) {
-        if (*(const size_t *)list_get(types, i) == type_index) {
-            return true;
-        }
-    }
-    return false;
-}
-
-
-static bool collect_print_type_type(const TypedProgram *program, size_t *type_index, unsigned int depth, ErrorState *errors, List *types, const TypedType **type, bool *outcome)
-{
-    (*type) = typed_program_type(program, (*type_index));
-    
-
-    if ((*type) == NULL || depth == 0) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (print_type_in_list(types, (*type_index))) {
-        do { *outcome = (true); return true; } while (0);
-    }
-    if (!list_push(types, type_index)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        do { *outcome = (false); return true; } while (0);
-    }
-    return false;
-}
-
-bool collect_print_type(const TypedProgram *program, size_t type_index, List *types, unsigned depth, ErrorState *errors);
-
-static bool collect_print_type_declaration(const TypedProgram *program, const TypedType *type, ErrorState *errors, size_t *i, List *types, unsigned int depth)
-{
-    const TypedNode *declaration = typed_program_node(
-        program, type->declaration_node);
-
-    if (declaration == NULL) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        return false;
-    }
-    for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
-        size_t child = *(const size_t *)list_get(
-            &program->children, declaration->children_start + (*i));
-        const TypedNode *field = typed_program_node(program, child);
-
-        if (field == NULL ||
-            !collect_print_type(program, field->type_index, types,
-                                depth - 1, errors)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool collect_print_type(const TypedProgram *program, size_t type_index,
-                               List *types, unsigned depth, ErrorState *errors)
-{
-    const TypedType *type = {0};
-    size_t i = {0};
-    {
-        bool outcome;
-
-        if (collect_print_type_type(program, &type_index, depth, errors, types, &type, &outcome)) {
-            return outcome;
-        }
-    }
-    switch (type->kind) {
-    case NIPPY_TYPE_UNION:
-        for (i = 0; i < type->child_count; i++) {
-            size_t alternative = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (!collect_print_type(program, alternative, types,
-                                    depth - 1, errors)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_STRUCT: {
-        if (!collect_print_type_declaration(program, type, errors, &i, types, depth)) {
-        return false;
-    }
-        return true;
-    }
-    case NIPPY_TYPE_ERROR:
-        for (i = 0; i < type->child_count; i++) {
-            size_t field = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (!collect_print_type(program, field, types, depth - 1,
-                                    errors)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_RECORD:
-    case NIPPY_TYPE_TABLE:
-        if (type->child_count != 2) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-            return false;
-        }
-        for (i = 0; i < 2; i++) {
-            size_t part = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (!collect_print_type(program, part, types, depth - 1,
-                                    errors)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_LIST:
-    case NIPPY_TYPE_FIXED_LIST:
-    case NIPPY_TYPE_SLICE:
-        if (type->child_count != 1) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-            return false;
-        }
-        return collect_print_type(
-            program, *(const size_t *)list_get(&program->type_children,
-                                               type->first_child),
-            types, depth - 1, errors);
-    case NIPPY_TYPE_STORE:
-    case NIPPY_TYPE_UNKNOWN:
-    case NIPPY_TYPE_STRING_LITERAL:
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        return false;
-    default:
-        return true;
-    }
-}
-
-
 static bool emit_print_helper_declaration_child(const TypedProgram *program, const TypedNode *declaration, size_t *i, ErrorState *errors, TextBuffer *source)
 {
     size_t child = *(const size_t *)list_get(
@@ -160,14 +24,11 @@ static bool emit_print_helper_declaration_child(const TypedProgram *program, con
     }
     /* The text shows the name the program used; the C member access
        needs the name the generator emitted. */
-    if (!buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
-                        (*i) == 0 ? "" : ", ", field_name) ||
-        !buffer_appendf(source,
-                        "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
-                        field->type_index, member)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(source, "    fputs(\"%s%s: \", stdout);\n",
+                    (*i) == 0 ? "" : ", ", field_name);
+    buffer_appendf(source,
+                    "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
+                    field->type_index, member);
     return true;
 }
 
@@ -176,7 +37,7 @@ static bool emit_print_helper_declaration(const TypedProgram *program, const Typ
     const TypedNode *declaration = typed_program_node(
         program, type->declaration_node);
     const char *name = type->source_name_index == TYPED_NO_NODE
-                           ? "struct"
+                           ? MESSAGE_FRAGMENT_STRUCT
                            : typed_program_symbol_text(
                                  program, type->source_name_index);
 
@@ -184,53 +45,37 @@ static bool emit_print_helper_declaration(const TypedProgram *program, const Typ
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    if (!buffer_appendf(source, "    fputs(\"%s { \", stdout);\n", name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(source, "    fputs(\"%s { \", stdout);\n", name);
     for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
         if (!emit_print_helper_declaration_child(program, declaration, i, errors, source)) {
         return false;
     }
     }
-    if (!buffer_append(source, "    fputs(\" }\", stdout);\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_append(source, "    fputs(\" }\", stdout);\n");
     return true;
 }
 
-static bool emit_print_helper_names(TextBuffer *source, ErrorState *errors, size_t *i, const TypedType *type, const TypedProgram *program)
+static void emit_print_helper_names(TextBuffer *source, size_t *i, const TypedType *type, const TypedProgram *program)
 {
     static const char *const names[] = {
         "header", "description", "filename", "line", "col", "pos"
     };
 
-    if (!buffer_append(source, "    fputs(\"Error(\", stdout);\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_append(source, "    fputs(\"Error(\", stdout);\n");
     for ((*i) = 0; (*i) < type->child_count && (*i) < 6; (*i)++) {
         size_t field = *(const size_t *)list_get(
             &program->type_children, type->first_child + (*i));
 
-        if (!buffer_appendf(source, "    fputs(\"%s\", stdout);\n",
-                            (*i) == 0 ? "" : ", ") ||
-            !buffer_appendf(source,
-                            "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
-                            field, names[(*i)])) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(source, "    fputs(\"%s\", stdout);\n",
+                        (*i) == 0 ? "" : ", ");
+        buffer_appendf(source,
+                        "    nyx_print_%zu(value.%s, depth + 1, file, line, column, pos);\n",
+                        field, names[(*i)]);
     }
-    if (!buffer_appendf(source,
-                        "    fprintf(stdout, \", %%d, %%d, %%d\", "
-                        "(int)value.line, (int)value.col, (int)value.pos);\n"
-                        "    fputs(\")\", stdout);\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    buffer_appendf(source,
+                    "    fprintf(stdout, \", %%d, %%d, %%d\", "
+                    "(int)value.line, (int)value.col, (int)value.pos);\n"
+                    "    fputs(\")\", stdout);\n");
 }
 
 static bool emit_print_helper_alternative(const TypedProgram *program, const TypedType *type, size_t i, ErrorState *errors, TextBuffer *source)
@@ -244,16 +89,10 @@ static bool emit_print_helper_alternative(const TypedProgram *program, const Typ
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    if (!buffer_appendf(source, "    case %zu:\n", i)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (alternative_type->kind == NIPPY_TYPE_NIL) {
-        if (!buffer_append(source,
-                           "        fputs(\"nil\", stdout);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+    buffer_appendf(source, "    case %zu:\n", i);
+    if (alternative_type->kind == NYX_TYPE_NIL) {
+        buffer_append(source,
+                       "        fputs(\"nil\", stdout);\n");
     } else if (!buffer_appendf(
                    source,
                    "        nyx_print_%zu(value.value.v%zu, "
@@ -262,14 +101,11 @@ static bool emit_print_helper_alternative(const TypedProgram *program, const Typ
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;
     }
-    if (!buffer_append(source, "        break;\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_append(source, "        break;\n");
     return true;
 }
 
-static bool emit_print_helper_key(const TypedProgram *program, const TypedType *type, TextBuffer *source, ErrorState *errors)
+static void emit_print_helper_key(const TypedProgram *program, const TypedType *type, TextBuffer *source)
 {
     size_t key_type = *(const size_t *)list_get(&program->type_children,
                                                 type->first_child);
@@ -277,38 +113,34 @@ static bool emit_print_helper_key(const TypedProgram *program, const TypedType *
         &program->type_children, type->first_child + 1);
     size_t buckets = type->fixed_length == 0 ? 1 : type->fixed_length + 1;
 
-    if (!buffer_append(source,
-                       "    fputs(\"{\", stdout);\n"
-                       "    size_t count = 0;\n"
-                       "    for (size_t i = 0; i < ") ||
-        !buffer_appendf(source, "%zu", buckets) ||
-        !buffer_append(source,
-                       "; i++) {\n"
-                       "        if (value.states[i] != 1) continue;\n"
-                       "        if (count++ != 0) fputs(\", \", stdout);\n") ||
-        !buffer_appendf(source, "        nyx_print_%zu(value.keys[i], "
-                                "depth + 1, file, line, column, pos);\n"
-                                "        fputs(\": \", stdout);\n"
-                                "        nyx_print_%zu(value.values[i], "
-                                "depth + 1, file, line, column, pos);\n"
-                                "    }\n"
-                                "    fputs(\"}\", stdout);\n",
-                        key_type, value_type)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    buffer_append(source,
+                   "    fputs(\"{\", stdout);\n"
+                   "    size_t count = 0;\n"
+                   "    for (size_t i = 0; i < ");
+    buffer_appendf(source, "%zu", buckets);
+    buffer_append(source,
+                   "; i++) {\n"
+                   "        if (value.states[i] != 1) continue;\n"
+                   "        if (count++ != 0) fputs(\", \", stdout);\n");
+    buffer_appendf(source, "        nyx_print_%zu(value.keys[i], "
+                            "depth + 1, file, line, column, pos);\n"
+                            "        fputs(\": \", stdout);\n"
+                            "        nyx_print_%zu(value.values[i], "
+                            "depth + 1, file, line, column, pos);\n"
+                            "    }\n"
+                            "    fputs(\"}\", stdout);\n",
+                    key_type, value_type);
 }
 
 static bool emit_print_helper_element(const TypedProgram *program, const TypedType *type, ErrorState *errors, TextBuffer *source)
 {
     size_t element = *(const size_t *)list_get(&program->type_children,
                                                type->first_child);
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
-    const char *get = type->kind == NIPPY_TYPE_LIST
+    char element_name[NYX_IDENTIFIER_MAX + 32];
+    const char *get = type->kind == NYX_TYPE_LIST
                           ? "nyx_list_len_at(value, file, line, column, pos)"
                           : "nyx_slice_len_at(value, file, line, column, pos)";
-    const char *data = type->kind == NIPPY_TYPE_LIST
+    const char *data = type->kind == NYX_TYPE_LIST
                            ? "nyx_list_data_at"
                            : "nyx_slice_data_at";
 
@@ -316,38 +148,31 @@ static bool emit_print_helper_element(const TypedProgram *program, const TypedTy
                        sizeof(element_name), errors)) {
         return false;
     }
-    if (!buffer_appendf(source,
-                        "    fputs(\"[\", stdout);\n"
-                        "    for (size_t i = 0; i < (size_t)%s; i++) {\n"
-                        "        if (i != 0) fputs(\", \", stdout);\n"
-                        "        nyx_print_%zu(*(%s *)%s(value, i, "
-                        "sizeof(%s), file, line, column, pos), depth + 1, file, line, column, pos);\n"
-                        "    }\n"
-                        "    fputs(\"]\", stdout);\n",
-                        get, element, element_name, data, element_name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(source,
+                    "    fputs(\"[\", stdout);\n"
+                    "    for (size_t i = 0; i < (size_t)%s; i++) {\n"
+                    "        if (i != 0) fputs(\", \", stdout);\n"
+                    "        nyx_print_%zu(*(%s *)%s(value, i, "
+                    "sizeof(%s), file, line, column, pos), depth + 1, file, line, column, pos);\n"
+                    "    }\n"
+                    "    fputs(\"]\", stdout);\n",
+                    get, element, element_name, data, element_name);
     return true;
 }
 
-static bool emit_print_helper_buffer_append(TextBuffer *source, size_t element, ErrorState *errors)
+static void emit_print_helper_buffer_append(TextBuffer *source, size_t element)
 {
-    if (!buffer_append(source,
-                       "    fputs(\"[\", stdout);\n"
-                       "    for (size_t i = 0; i < value.length; i++) {\n"
-                       "        if (i != 0) fputs(\", \", stdout);\n") ||
-        !buffer_appendf(source,
-                        "        nyx_print_%zu(value.data[i], "
-                        "depth + 1, file, line, column, pos);\n",
-                        element) ||
-        !buffer_append(source,
-                       "    }\n"
-                       "    fputs(\"]\", stdout);\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    buffer_append(source,
+                   "    fputs(\"[\", stdout);\n"
+                   "    for (size_t i = 0; i < value.length; i++) {\n"
+                   "        if (i != 0) fputs(\", \", stdout);\n");
+    buffer_appendf(source,
+                    "        nyx_print_%zu(value.data[i], "
+                    "depth + 1, file, line, column, pos);\n",
+                    element);
+    buffer_append(source,
+                   "    }\n"
+                   "    fputs(\"]\", stdout);\n");
 }
 
 static bool emit_print_helper_key9(const TypedProgram *program, const TypedType *type, ErrorState *errors, TextBuffer *source, size_t type_index)
@@ -365,377 +190,283 @@ static bool emit_print_helper_key9(const TypedProgram *program, const TypedType 
                        sizeof(value_name), errors)) {
         return false;
     }
-    if (!buffer_appendf(source,
-        "    nyx_table_state_%zu *state = nyx_table_%zu_state_at(value, file, line, column, pos);\n"
-        "    nyx_store *store = value.store;\n"
-        "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
-        "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
-        "    uint8_t *states = (uint8_t *)(void *)(store->data + "
-        "state->states_offset);\n"
-        "    fputs(\"{\", stdout);\n"
-        "    size_t count = 0;\n"
-        "    for (size_t i = 0; i < state->buckets; i++) {\n"
-        "        if (states[i] != 1) continue;\n"
-        "        if (count++ != 0) fputs(\", \", stdout);\n"
-        "        nyx_print_%zu(keys[i], depth + 1, file, line, column, pos);\n"
-        "        fputs(\": \", stdout);\n"
-        "        nyx_print_%zu(values[i], depth + 1, file, line, column, pos);\n"
-        "    }\n"
-        "    fputs(\"}\", stdout);\n",
-        type_index, type_index, key_name, key_name, value_name,
-        value_name, key_type, value_type)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(source,
+    "    nyx_table_state_%zu *state = nyx_table_%zu_state_at(value, file, line, column, pos);\n"
+    "    nyx_store *store = value.store;\n"
+    "    %s *keys = (%s *)(void *)(store->data + state->keys_offset);\n"
+    "    %s *values = (%s *)(void *)(store->data + state->values_offset);\n"
+    "    uint8_t *states = (uint8_t *)(void *)(store->data + "
+    "state->states_offset);\n"
+    "    fputs(\"{\", stdout);\n"
+    "    size_t count = 0;\n"
+    "    for (size_t i = 0; i < state->buckets; i++) {\n"
+    "        if (states[i] != 1) continue;\n"
+    "        if (count++ != 0) fputs(\", \", stdout);\n"
+    "        nyx_print_%zu(keys[i], depth + 1, file, line, column, pos);\n"
+    "        fputs(\": \", stdout);\n"
+    "        nyx_print_%zu(values[i], depth + 1, file, line, column, pos);\n"
+    "    }\n"
+    "    fputs(\"}\", stdout);\n",
+    type_index, type_index, key_name, key_name, value_name,
+    value_name, key_type, value_type);
     return true;
 }
 
-static bool emit_print_helper_i(const TypedType *type, const TypedProgram *program, size_t type_index, char (*c_type)[64], ErrorState *errors, TextBuffer *source)
+static bool emit_print_helper_i(GeneratorContext *gen, const TypedType *type, const TypedProgram *program, size_t type_index, char (*c_type)[64], ErrorState *errors, TextBuffer *source)
 {
+    (void)gen;
     if (type == NULL ||
         !format_c_type(program, type_index, (*c_type), sizeof((*c_type)), errors)) {
         return false;
     }
-    if (!buffer_appendf(source,
-                        "static inline void nyx_print_%zu(%s value, int depth, const char *file, size_t line, size_t column, size_t pos)\n"
-                        "{\n"
-                        "    (void)value; (void)file; (void)line; (void)column; (void)pos;\n"
-                        "    if (depth > %d) {\n"
-                        "        fputs(\"<...>\", stdout);\n"
-                        "        return;\n"
-                        "    }\n",
-                        type_index, (*c_type), program->max_print_depth)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    buffer_appendf(source,
+                    "static inline void nyx_print_%zu(%s value, int depth, const char *file, size_t line, size_t column, size_t pos)\n"
+                    "{\n"
+                    "    (void)value; (void)file; (void)line; (void)column; (void)pos;\n"
+                    "    if (depth > %d) {\n"
+                    "        fputs(\"" MESSAGE_RUNTIME_PRINT_TRUNCATED "\", stdout);\n"
+                    "        return;\n"
+                    "    }\n",
+                    type_index, (*c_type), program->max_print_depth);
     return true;
 }
 
-bool emit_print_helper(TextBuffer *source, const TypedProgram *program,
-                              size_t type_index, ErrorState *errors)
+/* The body of a print helper, by kind of type. A scalar's body is a fixed
+   piece of C; a kind with parts has a writer that spells them out. */
+typedef bool (*PrintBody)(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                          size_t type_index, TextBuffer *source,
+                          ErrorState *errors);
+
+typedef struct {
+    const char *text;
+    PrintBody write;
+} PrintRule;
+
+#define PRINT_INT "    fprintf(stdout, \"%d\", (int)value);\n"
+#define PRINT_UNSIGNED "    fprintf(stdout, \"%u\", (unsigned)value);\n"
+
+static bool print_float(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                        size_t type_index, TextBuffer *source,
+                        ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    (void)program;
+    (void)type_index;
+    buffer_appendf(source, "    nyx_print_float((double)value, %d);\n",
+                    type->kind == NYX_TYPE_FLOAT32);
+    return true;
+}
+
+static bool print_handle(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                         size_t type_index, TextBuffer *source,
+                         ErrorState *errors)
+{
+    (void)errors;
+    (void)program;
+    (void)type;
+    (void)type_index;
+    buffer_append(source, "    size_t store_id = 0;\n");
+    if ((gen->analysis->store_count > 0 &&
+     !buffer_append(source,
+                    "    while (store_id < NYX_STORE_COUNT && "
+                    "value.store != &nyx_stores[store_id]) store_id++;\n"))) {
+        return false;
+    }
+    buffer_append(source,
+                   "    fprintf(stdout, \"" MESSAGE_RUNTIME_PRINT_HANDLE "\", "
+                   "store_id, value.offset, "
+                   "(unsigned long long)value.generation);\n");
+    return true;
+}
+
+static bool print_struct(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                         size_t type_index, TextBuffer *source,
+                         ErrorState *errors)
+{
+    (void)gen;
+    size_t i;
+
+    (void)type_index;
+    return emit_print_helper_declaration(program, type, errors, source, &i);
+}
+
+static bool print_union(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                        size_t type_index, TextBuffer *source,
+                        ErrorState *errors)
+{
+    (void)gen;
+    size_t i;
+
+    (void)type_index;
+    buffer_append(source, "    switch (value.tag) {\n");
+    for (i = 0; i < type->child_count; i++) {
+        if (!emit_print_helper_alternative(program, type, i, errors, source)) {
+            return false;
+        }
+    }
+    buffer_append(source,
+                   "    default:\n"
+                   "        fputs(\"" MESSAGE_RUNTIME_PRINT_INVALID_UNION "\", stdout);\n"
+                   "        break;\n"
+                   "    }\n");
+    return true;
+}
+
+static bool print_error(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                        size_t type_index, TextBuffer *source,
+                        ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    size_t i;
+
+    (void)type_index;
+    emit_print_helper_names(source, &i, type, program);
+    return true;
+}
+
+static bool print_array(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                        size_t type_index, TextBuffer *source,
+                        ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    (void)type_index;
+    emit_print_helper_buffer_append(
+        source,
+        *(const size_t *)list_get(&program->type_children, type->first_child));
+    return true;
+}
+
+static bool print_sequence(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                           size_t type_index, TextBuffer *source,
+                           ErrorState *errors)
+{
+    (void)gen;
+    (void)type_index;
+    return emit_print_helper_element(program, type, errors, source);
+}
+
+static bool print_record(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                         size_t type_index, TextBuffer *source,
+                         ErrorState *errors)
+{
+    (void)errors;
+    (void)gen;
+    (void)type_index;
+    emit_print_helper_key(program, type, source);
+    return true;
+}
+
+static bool print_table(const TypedProgram *program, GeneratorContext *gen, const TypedType *type,
+                        size_t type_index, TextBuffer *source,
+                        ErrorState *errors)
+{
+    (void)gen;
+    return emit_print_helper_key9(program, type, errors, source, type_index);
+}
+
+static const PrintRule print_rules[NYX_TYPE_KIND_COUNT] = {
+    [NYX_TYPE_INT8] = {PRINT_INT, NULL},
+    [NYX_TYPE_INT16] = {PRINT_INT, NULL},
+    [NYX_TYPE_INT32] = {PRINT_INT, NULL},
+    [NYX_TYPE_INT64] = {"    fprintf(stdout, \"%lld\", (long long)value);\n",
+                        NULL},
+    [NYX_TYPE_BYTE] = {PRINT_UNSIGNED, NULL},
+    [NYX_TYPE_UINT16] = {PRINT_UNSIGNED, NULL},
+    [NYX_TYPE_UINT32] = {PRINT_UNSIGNED, NULL},
+    [NYX_TYPE_UINT64] = {"    fprintf(stdout, \"%llu\", "
+                         "(unsigned long long)value);\n", NULL},
+    [NYX_TYPE_FLOAT32] = {NULL, print_float},
+    [NYX_TYPE_FLOAT64] = {NULL, print_float},
+    [NYX_TYPE_BOOL] = {"    fputs(value ? \"true\" : \"false\", stdout);\n",
+                       NULL},
+    [NYX_TYPE_NIL] = {"    fputs(\"nil\", stdout);\n", NULL},
+    [NYX_TYPE_FUNCTION] = {"    fputs(\"" MESSAGE_RUNTIME_PRINT_FUNCTION "\", stdout);\n", NULL},
+    [NYX_TYPE_DYNAMIC_STRING] = {
+        "    const uint8_t *data = nyx_string_data_at(value, file, line, column, pos);\n"
+        "    if (value.length != 0) {\n"
+        "        fwrite(data, 1, value.length, stdout);\n"
+        "    }\n", NULL},
+    [NYX_TYPE_STRING] = {
+        "    if (value.length != 0) {\n"
+        "        fwrite(value.data, 1, value.length, stdout);\n"
+        "    }\n", NULL},
+    [NYX_TYPE_TEXT_BUILDER] = {
+        "    nyx_builder_state *state = "
+        "nyx_builder_get_state(value, file, line, column, pos);\n"
+        "    nyx_store *store = nyx_builder_store(value, file, line, column, pos);\n"
+        "    if (state->length != 0) {\n"
+        "        fwrite(store->data + state->offset, 1, state->length, stdout);\n"
+        "    }\n", NULL},
+    [NYX_TYPE_HANDLE] = {NULL, print_handle},
+    [NYX_TYPE_STRUCT] = {NULL, print_struct},
+    [NYX_TYPE_UNION] = {NULL, print_union},
+    [NYX_TYPE_ERROR] = {NULL, print_error},
+    [NYX_TYPE_FIXED_LIST] = {NULL, print_array},
+    [NYX_TYPE_LIST] = {NULL, print_sequence},
+    [NYX_TYPE_SLICE] = {NULL, print_sequence},
+    [NYX_TYPE_RECORD] = {NULL, print_record},
+    [NYX_TYPE_TABLE] = {NULL, print_table},
+};
+
+#undef PRINT_INT
+#undef PRINT_UNSIGNED
+
+bool emit_print_helper(GeneratorContext *gen, TextBuffer *source, const TypedProgram *program,
+                       size_t type_index, ErrorState *errors)
 {
     const TypedType *type = typed_program_type(program, type_index);
-    char c_type[NIPPY_IDENTIFIER_MAX + 32];
-    size_t i = {0};
-    if (!emit_print_helper_i(type, program, type_index, &c_type, errors, source)) {
-        return false;
-    }
-    switch (type->kind) {
-    case NIPPY_TYPE_INT8:
-    case NIPPY_TYPE_INT16:
-    case NIPPY_TYPE_INT32:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"%d\", (int)value);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_INT64:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"%lld\", (long long)value);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_BYTE:
-    case NIPPY_TYPE_UINT16:
-    case NIPPY_TYPE_UINT32:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"%u\", (unsigned)value);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_UINT64:
-        if (!buffer_append(source,
-                           "    fprintf(stdout, \"%llu\", "
-                           "(unsigned long long)value);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_FLOAT32:
-    case NIPPY_TYPE_FLOAT64:
-        if (!buffer_appendf(source,
-                            "    nyx_print_float((double)value, %d);\n",
-                            type->kind == NIPPY_TYPE_FLOAT32)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_BOOL:
-        if (!buffer_append(source,
-                           "    fputs(value ? \"true\" : \"false\", stdout);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_NIL:
-        if (!buffer_append(source, "    fputs(\"nil\", stdout);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_FUNCTION:
-        if (!buffer_append(source, "    fputs(\"<function>\", stdout);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_DYNAMIC_STRING:
-        if (!buffer_append(source,
-                           "    const uint8_t *data = nyx_string_data_at(value, file, line, column, pos);\n"
-                           "    if (value.length != 0) {\n"
-                           "        fwrite(data, 1, "
-                           "value.length, stdout);\n"
-                           "    }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_STRING:
-        if (!buffer_append(source,
-                           "    if (value.length != 0) {\n"
-                           "        fwrite(value.data, 1, value.length, "
-                           "stdout);\n"
-                           "    }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_TEXT_BUILDER:
-        if (!buffer_append(source,
-                           "    nyx_builder_state *state = "
-                           "nyx_builder_get_state(value, file, line, column, pos);\n"
-                           "    nyx_store *store = nyx_builder_store(value, file, line, column, pos);\n"
-                           "    if (state->length != 0) {\n"
-                           "        fwrite(store->data + state->offset, 1, "
-                           "state->length, stdout);\n"
-                           "    }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_HANDLE:
-        if (!buffer_append(source, "    size_t store_id = 0;\n") ||
-            (count_store_declarations(program) > 0 &&
-             !buffer_append(source,
-                            "    while (store_id < NIPPY_STORE_COUNT && "
-                            "value.store != &nyx_stores[store_id]) store_id++;\n")) ||
-            !buffer_append(source,
-                           "    fprintf(stdout, \"<handle store=%zu offset=%zu "
-                           "generation=%llu>\", store_id, value.offset, "
-                           "(unsigned long long)value.generation);\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_STRUCT: {
-        if (!emit_print_helper_declaration(program, type, errors, source, &i)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_UNION:
-        if (!buffer_append(source, "    switch (value.tag) {\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        for (i = 0; i < type->child_count; i++) {
-            if (!emit_print_helper_alternative(program, type, i, errors, source)) {
-        return false;
-    }
-        }
-        if (!buffer_append(source,
-                           "    default:\n"
-                           "        fputs(\"<invalid union>\", stdout);\n"
-                           "        break;\n"
-                           "    }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        break;
-    case NIPPY_TYPE_ERROR: {
-        if (!emit_print_helper_names(source, errors, &i, type, program)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_FIXED_LIST: {
-        size_t element = *(const size_t *)list_get(&program->type_children,
-                                                   type->first_child);
+    char c_type[NYX_IDENTIFIER_MAX + 32];
+    const PrintRule *rule;
+    bool ok;
 
-        if (!emit_print_helper_buffer_append(source, element, errors)) {
+    if (!emit_print_helper_i(gen, type, program, type_index, &c_type, errors,
+                             source)) {
         return false;
     }
-        break;
-    }
-    case NIPPY_TYPE_LIST:
-    case NIPPY_TYPE_SLICE: {
-        if (!emit_print_helper_element(program, type, errors, source)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_RECORD: {
-        if (!emit_print_helper_key(program, type, source, errors)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_TABLE: {
-        if (!emit_print_helper_key9(program, type, errors, source, type_index)) {
-        return false;
-    }
-        break;
-    }
-    default:
+    rule = &print_rules[type->kind];
+    if (rule->text == NULL && rule->write == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    if (!buffer_append(source, "}\n\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    ok = rule->text != NULL
+             ? buffer_append(source, rule->text)
+             : rule->write(program, gen, type, type_index, source, errors);
+    buffer_append(source, "}\n\n");
+    return ok;
 }
 
 
-static void emit_print_helpers_i(List *types, const TypedProgram *program, ErrorState *errors, TextBuffer *source, bool *ok, size_t *i)
-{
-    (*ok) = true;
-
-    list_init(types, sizeof(size_t));
-    for ((*i) = 0; (*i) < program->nodes.length && (*ok); (*i)++) {
-        const TypedNode *node = typed_program_node(program, (*i));
-
-        if (node == NULL || node->kind != TYPED_PRINT) {
-            continue;
-        }
-        for (size_t j = 0; j < node->children_count; j++) {
-            size_t child = *(const size_t *)list_get(
-                &program->children, node->children_start + j);
-            const TypedNode *argument = typed_program_node(program, child);
-
-            if (argument == NULL ||
-                !collect_print_type(program, argument->type_index, types,
-                                    32, errors)) {
-                (*ok) = false;
-                break;
-            }
-        }
-    }
-    if ((*ok)) {
-        for ((*i) = 0; (*i) < (*types).length; (*i)++) {
-            size_t index = *(const size_t *)list_get(types, (*i));
-            const TypedType *type = typed_program_type(program, index);
-
-            if (type != NULL && (type->kind == NIPPY_TYPE_FLOAT32 ||
-                                 type->kind == NIPPY_TYPE_FLOAT64)) {
-                if (!buffer_append(source,
-        "#include <math.h>\n"
-        "static void nyx_print_float(double value, int single)\n"
-        "{\n"
-        "    char buf[128], digits[32], candidate[64];\n"
-        "    unsigned long long n = 0, chosen = 0;\n"
-        "    int exponent = 0, decimal_power = 0, precision, i, count;\n"
-        "    if (isnan(value)) { fputs(\"nan\", stdout); return; }\n"
-        "    if (signbit(value)) { fputc('-', stdout); value = -value; }\n"
-        "    if (isinf(value)) { fputs(\"inf\", stdout); return; }\n"
-        "    if (value == 0.0) { fputs(\"0.0\", stdout); return; }\n"
-        "    for (precision = 1; precision <= (single ? 9 : 17); precision++) {\n"
-        "        char *ep;\n"
-        "        snprintf(buf, sizeof(buf), \"%.*e\", precision - 1, value);\n"
-        "        ep = strchr(buf, 'e');\n"
-        "        exponent = (int)strtol(ep + 1, NULL, 10);\n"
-        "        n = 0;\n"
-        "        for (char *p = buf; p < ep; p++)\n"
-        "            if (*p >= '0' && *p <= '9') n = n * 10 + (unsigned)(*p - '0');\n"
-        "        decimal_power = exponent - (precision - 1);\n"
-        "        for (i = 0; i < 3; i++) {\n"
-        "            unsigned long long trial = i == 0 ? n : (i == 1 ? n - 1 : n + 1);\n"
-        "            if (trial == 0) continue;\n"
-        "            snprintf(candidate, sizeof(candidate), \"%llue%d\", trial, decimal_power);\n"
-        "            if (single ? (double)strtof(candidate, NULL) == value\n"
-        "                       : strtod(candidate, NULL) == value) {\n"
-        "                chosen = trial;\n"
-        "                break;\n"
-        "            }\n"
-        "        }\n"
-        "        if (chosen != 0) break;\n"
-        "    }\n"
-        "    while (chosen % 10 == 0) { chosen /= 10; decimal_power++; }\n"
-        "    snprintf(digits, sizeof(digits), \"%llu\", chosen);\n"
-        "    count = (int)strlen(digits);\n"
-        "    exponent = decimal_power + count - 1;\n"
-        "    if (exponent >= -6 && exponent <= 15) {\n"
-        "        int point = count + decimal_power;\n"
-        "        if (point <= 0) {\n"
-        "            fputs(\"0.\", stdout);\n"
-        "            for (i = 0; i < -point; i++) fputc('0', stdout);\n"
-        "            fputs(digits, stdout);\n"
-        "        } else if (point >= count) {\n"
-        "            fputs(digits, stdout);\n"
-        "            for (i = count; i < point; i++) fputc('0', stdout);\n"
-        "            fputs(\".0\", stdout);\n"
-        "        } else {\n"
-        "            for (i = 0; i < count; i++) {\n"
-        "                if (i == point) fputc('.', stdout);\n"
-        "                fputc(digits[i], stdout);\n"
-        "            }\n"
-        "        }\n"
-        "    } else {\n"
-        "        fputc(digits[0], stdout);\n"
-        "        if (count > 1) { fputc('.', stdout); fputs(digits + 1, stdout); }\n"
-        "        fprintf(stdout, \"e%+d\", exponent);\n"
-        "    }\n"
-        "}\n")) {
-                    error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                    (*ok) = false;
-                }
-                break;
-            }
-        }
-    }
-}
-
-bool emit_print_helpers(const TypedProgram *program, TextBuffer *source,
+/* The forward declarations and the bodies of the print helpers, for the types
+   the analyser found print needs, in the order it found them. */
+bool emit_print_helpers(const TypedProgram *program, GeneratorContext *gen, TextBuffer *source,
                                ErrorState *errors)
 {
-    List types;
-    bool ok = {0};
-    size_t i = {0};
-    emit_print_helpers_i(&types, program, errors, source, &ok, &i);
-    if (ok) {
-        for (i = 0; i < types.length; i++) {
-            size_t type_index = *(const size_t *)list_get(&types, i);
-            char c_type[NIPPY_IDENTIFIER_MAX + 32];
+    const List *types = &gen->analysis->print_types;
+    size_t i;
 
-            if (!format_c_type(program, type_index, c_type,
-                               sizeof(c_type), errors) ||
-                !buffer_appendf(source,
-                                "static inline void nyx_print_%zu(%s value, int "
-                                "depth, const char *file, size_t line, size_t column, size_t pos);\n",
-                                type_index, c_type)) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                ok = false;
-                break;
-            }
+    for (i = 0; i < types->length; i++) {
+        size_t type_index = *(const size_t *)list_get(types, i);
+        char c_type[NYX_IDENTIFIER_MAX + 32];
+
+        if (!format_c_type(program, type_index, c_type, sizeof(c_type),
+                       errors)) {
+            return false;
+        }
+        buffer_appendf(source,
+                        "static inline void nyx_print_%zu(%s value, int "
+                        "depth, const char *file, size_t line, size_t column, size_t pos);\n",
+                        type_index, c_type);
+    }
+    for (i = 0; i < types->length; i++) {
+        if (!emit_print_helper(gen, source, program,
+                               *(const size_t *)list_get(types, i), errors)) {
+            return false;
         }
     }
-    for (i = 0; ok && i < types.length; i++) {
-        size_t type_index = *(const size_t *)list_get(&types, i);
-
-        if (!emit_print_helper(source, program, type_index, errors)) {
-            ok = false;
-        }
-    }
-    if (ok && types.length > 0 &&
-        !buffer_append(source, "\n")) {
-        ok = false;
-    }
-    list_free(&types);
-    return ok;
+    return types->length == 0 || buffer_append(source, "\n");
 }
 
 
@@ -745,7 +476,7 @@ static bool emit_print_statement_child(size_t *i, const TypedNode *node, const T
         size_t child = *(const size_t *)list_get(
             &program->children, node->children_start + (*i));
         const TypedNode *argument = typed_program_node(program, child);
-        char c_type[NIPPY_IDENTIFIER_MAX + 32];
+        char c_type[NYX_IDENTIFIER_MAX + 32];
 
         if (argument == NULL ||
             !format_c_type(program, argument->type_index, c_type,
@@ -753,55 +484,52 @@ static bool emit_print_statement_child(size_t *i, const TypedNode *node, const T
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
             return false;
         }
-        if (!append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nyx_print_arg_%zu_%zu = ",
-                            c_type, node->pos.offset, (*i)) ||
-            !emit_expression(program, child, source, errors) ||
-            !buffer_append(source, ";\n")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
+        append_indent(source, depth + 1);
+        buffer_appendf(source, "%s nyx_print_arg_%zu_%zu = ",
+                        c_type, node->pos.offset, (*i));
+        if (!emit_expression(program, child, source, errors)) {
             return false;
         }
+        buffer_append(source, ";\n");
         if ((*i) != 0) {
-            if (!append_indent(source, depth + 1) ||
-                !buffer_append(source, "fputc(' ', stdout);\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
+            append_indent(source, depth + 1);
+            buffer_append(source, "fputc(' ', stdout);\n");
         }
-        if (!append_indent(source, depth + 1) ||
-            !buffer_appendf(source,
-                            "nyx_print_%zu(nyx_print_arg_%zu_%zu, 0, __FILE__, %zu, %zu, %zu);\n",
-                            argument->type_index, node->pos.offset, (*i),
-                            node->pos.line, node->pos.column, node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        append_indent(source, depth + 1);
+        buffer_appendf(source,
+                        "nyx_print_%zu(nyx_print_arg_%zu_%zu, 0, __FILE__, %zu, %zu, %zu);\n",
+                        argument->type_index, node->pos.offset, (*i),
+                        node->pos.line, node->pos.column, node->pos.offset);
     }
     return true;
 }
 
-bool emit_print_statement(const TypedProgram *program,
+bool emit_print_statement(const TypedProgram *program, GeneratorContext *gen,
                                  const TypedNode *node, TextBuffer *source,
                                  ErrorState *errors, size_t depth)
 {
     size_t i;
 
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "{\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    /* One print is many stdio calls. With threads, hold the stream for the
+       whole statement so lines from different threads never interleave. */
+    bool lock = analysis_has(gen->analysis, ANALYSIS_PARALLEL);
+
+    append_indent(source, depth);
+    buffer_append(source, "{\n");
+    if ((lock && (!append_indent(source, depth + 1) ||
+              !buffer_append(source, "flockfile(stdout);\n")))) {
         return false;
     }
     if (!emit_print_statement_child(&i, node, program, errors, source, depth)) {
         return false;
     }
-    if (!append_indent(source, depth + 1) ||
-        !buffer_append(source, "fputc('\\n', stdout);\n") ||
-        !append_indent(source, depth) ||
-        !buffer_append(source, "}\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    append_indent(source, depth + 1);
+    buffer_append(source, "fputc('\\n', stdout);\n");
+    if ((lock && (!append_indent(source, depth + 1) ||
+              !buffer_append(source, "funlockfile(stdout);\n")))) {
         return false;
     }
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
     return true;
 }

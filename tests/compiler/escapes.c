@@ -15,7 +15,7 @@ TEST("escape: returning a scoped handle")
     return compile_fails(
         "fun leak(): Handle<Int32>\n"
         " scope s = Store(16) do\n  return s.alloc<Int32>(5)\n end\n"
-        "end\n", "returned scoped handle", MESSAGE_ANALYSER_ESCAPE_RETURN, "Store 's'");
+        "end\n", "returned scoped handle", MESSAGE_ANALYSER_ESCAPE_RETURN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: returning a struct holding a scoped handle")
@@ -24,7 +24,7 @@ TEST("escape: returning a struct holding a scoped handle")
         "type Box h: Handle<Int32> end\n"
         "fun mk(): Box\n scope s = Store(16) do\n"
         "  return Box(h = s.alloc<Int32>(1))\n end\nend\n",
-        "returned scoped struct", MESSAGE_ANALYSER_ESCAPE_RETURN, "Store 's'");
+        "returned scoped struct", MESSAGE_ANALYSER_ESCAPE_RETURN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: assigning a scoped value to an outer variable")
@@ -33,7 +33,7 @@ TEST("escape: assigning a scoped value to an outer variable")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do keep = s.copy(\"a\") end\n",
         "assignment to an outer variable", MESSAGE_ANALYSER_ESCAPE_ASSIGN,
-        "Store 's'", "keep");
+        MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: assigning from an inner scope to a middle scope")
@@ -42,7 +42,7 @@ TEST("escape: assigning from an inner scope to a middle scope")
         "scope a = Store(64) do\n var mid: Text = a.copy(\"m\")\n"
         " scope b = Store(64) do mid = b.copy(\"d\") end\nend\n",
         "inner scope assigned outward", MESSAGE_ANALYSER_ESCAPE_ASSIGN,
-        "Store 'b'", "mid");
+        MESSAGE_FRAGMENT_STORE_PREFIX "b\'", "mid");
 }
 
 TEST("escape: assignment inside a loop")
@@ -51,7 +51,7 @@ TEST("escape: assignment inside a loop")
         PRELUDE "var cur: Text = root.copy(\"a\")\nvar i = 0\n"
         "while i < 3 do\n scope s = Store(64) do cur = s.copy(\"n\") end\n"
         " i = i + 1\nend\n", "loop assignment", MESSAGE_ANALYSER_ESCAPE_ASSIGN,
-        "Store 's'", "cur");
+        MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "cur");
 }
 
 TEST("escape: pushing a scoped value into an outer list")
@@ -59,7 +59,7 @@ TEST("escape: pushing a scoped value into an outer list")
     return compile_fails(
         PRELUDE "scope s = Store(64) do names.push(s.copy(\"x\")) end\n",
         "push into an outer list", MESSAGE_ANALYSER_ESCAPE_WRITE,
-                         "Store 's'", "names");
+                         MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "names");
 }
 
 TEST("escape: writing a scoped handle through an outer handle")
@@ -69,7 +69,7 @@ TEST("escape: writing a scoped handle through an outer handle")
         "var hh = root.alloc<Handle<Int32>>(root.alloc<Int32>(1))\n"
         "scope s = Store(64) do hh.write(s.alloc<Int32>(2)) end\n",
         "handle write", MESSAGE_ANALYSER_ESCAPE_WRITE,
-        "Store 's'", "hh");
+        MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "hh");
 }
 
 TEST("escape: writing a scoped value into an outer struct field")
@@ -79,7 +79,7 @@ TEST("escape: writing a scoped value into an outer struct field")
         "global root: Store = Store(64)\n"
         "var b = Box(h = root.alloc<Int32>(1))\n"
         "scope s = Store(64) do b.h = s.alloc<Int32>(2) end\n",
-        "field write", MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "b");
+        "field write", MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "b");
 }
 
 TEST("escape: writing a scoped value into an outer array")
@@ -88,7 +88,7 @@ TEST("escape: writing a scoped value into an outer array")
         "global root: Store = Store(256)\n"
         "var a: Array<Text, 2> = [root.copy(\"a\"), root.copy(\"b\")]\n"
         "scope s = Store(64) do a[0] = s.copy(\"c\") end\n",
-        "array write", MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "a");
+        "array write", MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "a");
 }
 
 TEST("escape: derived values keep their region")
@@ -97,7 +97,7 @@ TEST("escape: derived values keep their region")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n var t = s.copy(\"hello\")\n"
         " keep = t.slice(1, 2)\nend\n", "slice of a scoped Text",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: reading from a scoped list keeps its region")
@@ -106,7 +106,7 @@ TEST("escape: reading from a scoped list keeps its region")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n var l: List<Text> = s.list<Text>(2)\n"
         " l.push(s.copy(\"q\"))\n keep = l[0]\nend\n", "element read",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: for binding over a scoped list")
@@ -115,7 +115,7 @@ TEST("escape: for binding over a scoped list")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n var l: List<Text> = s.list<Text>(2)\n"
         " l.push(s.copy(\"q\"))\n for t in l do keep = t end\nend\n",
-        "for binding", MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        "for binding", MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: if expression joins both branches")
@@ -124,7 +124,7 @@ TEST("escape: if expression joins both branches")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n"
         " keep = if true then s.copy(\"a\") else root.copy(\"b\") end\nend\n",
-        "if expression", MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        "if expression", MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: narrowed union keeps its region")
@@ -133,7 +133,7 @@ TEST("escape: narrowed union keeps its region")
         PRELUDE "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n var u: Text | Nil = s.copy(\"a\")\n"
         " if typeof u is Text then keep = u end\nend\n", "narrowed union",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: a call that stores an argument into another")
@@ -141,7 +141,7 @@ TEST("escape: a call that stores an argument into another")
     return compile_fails(
         "fun stash(l: List<Text>, t: Text) l.push(t) end\n" PRELUDE
         "scope s = Store(64) do stash(names, s.copy(\"x\")) end\n",
-        "stashing call", MESSAGE_ANALYSER_ESCAPE_CALL, "stash", "Store 's'");
+        "stashing call", MESSAGE_ANALYSER_ESCAPE_CALL, "stash", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: a call that allocates in a Store parameter")
@@ -149,7 +149,7 @@ TEST("escape: a call that allocates in a Store parameter")
     return compile_fails(
         "fun add(s: Store, l: List<Text>) l.push(s.copy(\"x\")) end\n" PRELUDE
         "scope s = Store(64) do add(s, names) end\n",
-        "Store parameter stash", MESSAGE_ANALYSER_ESCAPE_CALL, "add", "Store 's'");
+        "Store parameter stash", MESSAGE_ANALYSER_ESCAPE_CALL, "add", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: a call that allocates a value inside another Store")
@@ -158,7 +158,7 @@ TEST("escape: a call that allocates a value inside another Store")
         "fun put(o: Store, t: Text): Handle<Text> return o.alloc<Text>(t) end\n"
         "global root: Store = Store(256)\n"
         "scope s = Store(64) do var h = put(root, s.copy(\"x\")) end\n",
-        "alloc through a call", MESSAGE_ANALYSER_ESCAPE_CALL, "put", "Store 's'");
+        "alloc through a call", MESSAGE_ANALYSER_ESCAPE_CALL, "put", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: the stash is found through a wrapper")
@@ -167,7 +167,7 @@ TEST("escape: the stash is found through a wrapper")
         "fun stash(l: List<Text>, t: Text) l.push(t) end\n"
         "fun wrap(l: List<Text>, t: Text) stash(l, t) end\n" PRELUDE
         "scope s = Store(64) do wrap(names, s.copy(\"x\")) end\n",
-        "transitive stash", MESSAGE_ANALYSER_ESCAPE_CALL, "wrap", "Store 's'");
+        "transitive stash", MESSAGE_ANALYSER_ESCAPE_CALL, "wrap", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: the stash is found through recursion")
@@ -176,7 +176,7 @@ TEST("escape: the stash is found through recursion")
         "fun rec(l: List<Text>, t: Text, n: Int32)\n"
         " if n == 0 then l.push(t) else rec(l, t, n - 1) end\nend\n" PRELUDE
         "scope s = Store(64) do rec(names, s.copy(\"x\"), 2) end\n",
-        "recursive stash", MESSAGE_ANALYSER_ESCAPE_CALL, "rec", "Store 's'");
+        "recursive stash", MESSAGE_ANALYSER_ESCAPE_CALL, "rec", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: calls through a function value assume the worst")
@@ -185,7 +185,7 @@ TEST("escape: calls through a function value assume the worst")
         "fun stash(l: List<Text>, t: Text) l.push(t) end\n"
         "fun run(f: Fun<(List<Text>, Text)>, l: List<Text>, t: Text) f(l, t) end\n"
         PRELUDE "scope s = Store(64) do run(stash, names, s.copy(\"x\")) end\n",
-        "indirect call", MESSAGE_ANALYSER_ESCAPE_CALL, "run", "Store 's'");
+        "indirect call", MESSAGE_ANALYSER_ESCAPE_CALL, "run", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: a call result carries its argument's region")
@@ -195,7 +195,7 @@ TEST("escape: a call result carries its argument's region")
         "var keep: Text = root.copy(\"k\")\n"
         "scope s = Store(64) do\n"
         " keep = pick(s.copy(\"x\"), root.copy(\"y\"))\nend\n",
-        "returned argument", MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 's'", "keep");
+        "returned argument", MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "s\'", "keep");
 }
 
 TEST("escape: a method that stores into self")
@@ -207,7 +207,7 @@ TEST("escape: a method that stores into self")
         "var h = Holder(root.copy(\"a\"))\n"
         "scope s = Store(64) do h.set(s.copy(\"b\")) end\n",
         "method write through self", MESSAGE_ANALYSER_ESCAPE_CALL,
-                         "method or generic function", "Store 's'");
+                         MESSAGE_FRAGMENT_GENERATED_CALLEE, MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
 }
 
 TEST("escape: the guide's rejected assignment names origin and destination")
@@ -221,7 +221,7 @@ TEST("escape: the guide's rejected assignment names origin and destination")
         "  var input = scratch.copy(\"example\")\n"
         "  result = input\n"
         " end\nend\n", "guide example", MESSAGE_ANALYSER_ESCAPE_ASSIGN,
-        "Store 'scratch'", "result");
+        MESSAGE_FRAGMENT_STORE_PREFIX "scratch\'", "result");
 }
 
 TEST("escape: a linked node from an inner scope is rejected in an outer one")
@@ -233,7 +233,7 @@ TEST("escape: a linked node from an inner scope is rejected in an outer one")
         "  var tail = inner.alloc<Node>(Node(2, nil))\n"
         "  var head = chain.alloc<Node>(Node(1, tail))\n"
         " end\nend\n", "guide linked example", MESSAGE_ANALYSER_ESCAPE_WRITE,
-        "Store 'inner'", "chain");
+        MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "chain");
 }
 
 TEST("escape: a function that retains into global memory is not a value")
@@ -284,7 +284,7 @@ TEST("escape: a wrapped outer list and an inner Text meet in a call")
         BATCH "var outer = Batch(root.list<Text>(4))\n"
         "scope inner = Store(64) do add_name(outer, inner.copy(\"x\")) end\n",
         "mixed aggregate call", MESSAGE_ANALYSER_ESCAPE_CALL, "add_name",
-        "Store 'inner'");
+        MESSAGE_FRAGMENT_STORE_PREFIX "inner\'");
 }
 
 TEST("escape: the same write made directly is rejected despite inner Text")
@@ -296,7 +296,7 @@ TEST("escape: the same write made directly is rejected despite inner Text")
         " var b = Batch(root.list<Text>(4), inner.copy(\"t\"))\n"
         " var l = b.names\n l.push(inner.copy(\"x\"))\nend\n",
         "mixed aggregate direct write", MESSAGE_ANALYSER_ESCAPE_WRITE,
-        "Store 'inner'", "l");
+        MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "l");
 }
 
 TEST("scopes accept copying into the list's Store before the write")
@@ -338,7 +338,7 @@ TEST("escape: the inner field of the same struct is still rejected")
         " var b = Batch(root.list<Text>(4), inner.copy(\"t\"))\n"
         " note = b.tmp\n"
         "end\n", "inner field of a mixed struct",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 'inner'", "note");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "note");
 }
 
 TEST("scopes track a field written after construction")
@@ -349,7 +349,7 @@ TEST("scopes track a field written after construction")
         " b.tmp = inner.copy(\"x\")\n"
         " note = b.tmp\n"
         "end\n", "field overwritten with an inner value",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 'inner'", "note");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "note");
 }
 
 TEST("scopes track nested struct paths")
@@ -376,7 +376,7 @@ TEST("escape: a nested inner path is rejected")
         " var q = Q(P(root.copy(\"a\"), inner.copy(\"b\")), root.copy(\"t\"))\n"
         " note = q.p.b\n"
         "end\n", "nested inner field", MESSAGE_ANALYSER_ESCAPE_ASSIGN,
-        "Store 'inner'", "note");
+        MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "note");
 }
 
 TEST("scopes track union alternatives")
@@ -410,6 +410,21 @@ TEST("escape: a call diagnostic notes the retaining operation")
         "retention note", MESSAGE_ANALYSER_NOTE_RETAINED, "stash");
 }
 
+TEST("escape: a call that keeps an argument in a global Store")
+{
+    return compile_fails(
+        "global root: Store = Store(256)\n"
+        "fun stash(t: Text)\n"
+        "  var l: List<Text> = root.list<Text>(2)\n"
+        "  l.push(t)\n"
+        "end\n"
+        "scope s = Store(64) do\n"
+        "  stash(s.copy(\"x\"))\n"
+        "end\n",
+        "a callee that retains its argument in global memory",
+        MESSAGE_ANALYSER_ESCAPE_CALL, "stash", MESSAGE_FRAGMENT_STORE_PREFIX "s\'");
+}
+
 #define FILL \
     "type Batch names: List<Text> tmp: Text end\n" \
     "fun fill(b: Batch, t: Text)\n var l = b.names\n l.push(t)\nend\n" \
@@ -429,7 +444,7 @@ TEST("escape: a call is still rejected when the written field is outer")
         FILL "scope inner = Store(64) do\n"
         " fill(Batch(root.list<Text>(4), inner.copy(\"x\")), inner.copy(\"t\"))\n"
         "end\n", "the written field is global", MESSAGE_ANALYSER_ESCAPE_CALL,
-        "fill", "Store 'inner'");
+        "fill", MESSAGE_FRAGMENT_STORE_PREFIX "inner\'");
 }
 
 #define SECOND \
@@ -452,7 +467,7 @@ TEST("escape: the returned field of an argument keeps its region")
         SECOND "scope inner = Store(64) do\n"
         " keep = second(Pair(root.copy(\"a\"), inner.copy(\"b\")))\n"
         "end\n", "the returned field is inner",
-        MESSAGE_ANALYSER_ESCAPE_ASSIGN, "Store 'inner'", "keep");
+        MESSAGE_ANALYSER_ESCAPE_ASSIGN, MESSAGE_FRAGMENT_STORE_PREFIX "inner\'", "keep");
 }
 
 TEST("scopes accept values that stay inside")
@@ -529,11 +544,11 @@ TEST("escape analysis fails closed when an allocation fails")
     CompilerResult baseline;
     size_t count, i;
 
-    nippy_alloc_reset();
-    nippy_alloc_begin_counting();
+    nyx_alloc_reset();
+    nyx_alloc_begin_counting();
     baseline = compiler_compile(source, &test_config);
-    count = nippy_alloc_attempts();
-    nippy_alloc_reset();
+    count = nyx_alloc_attempts();
+    nyx_alloc_reset();
     if (!baseline.succeeded) {
         fprintf(stderr, "  baseline did not compile: %s\n",
                 baseline.error_message);
@@ -544,9 +559,9 @@ TEST("escape analysis fails closed when an allocation fails")
         CompilerResult result;
         bool valid;
 
-        nippy_alloc_fail_after(i);
+        nyx_alloc_fail_after(i);
         result = compiler_compile(source, &test_config);
-        nippy_alloc_reset();
+        nyx_alloc_reset();
         valid = result.succeeded
                     ? result.c_source != NULL &&
                           strcmp(result.c_source, baseline.c_source) == 0

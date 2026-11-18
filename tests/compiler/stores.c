@@ -325,3 +325,44 @@ TEST("Store parameters cannot be assigned")
                          "assignment to a Store parameter",
                          MESSAGE_CHECKER_CONST_ASSIGN, "s");
 }
+
+TEST("a constant Store capacity folds every integer operator")
+{
+    return compile_accepts(
+        "global a: Store = Store(3 * 4 + 20 / 4 - 7 % 4)\n"
+        "global b: Store = Store(6 & 3 | 8 ^ 1)\n"
+        "global c: Store = Store(1 << 4 >> 2)\n"
+        "global d: Store = Store(((0 - 2147483647 - 1) % (0 - 1)) + 4)\n"
+        "global e: Store = Store(-(0 - 16))\n",
+        "folded capacities");
+}
+
+TEST("a constant Store capacity reports what cannot fold")
+{
+    TestResult divide = compile_fails("global s: Store = Store(8 / 0)\n",
+                                      "a zero divisor in a capacity",
+                                      MESSAGE_CHECKER_ZERO_DIVISOR, "/");
+    TestResult modulo;
+    TestResult overflow;
+    TestResult shift;
+    TestResult negate;
+
+    if (divide != TEST_PASS) return divide;
+    modulo = compile_fails("global s: Store = Store(8 % 0)\n",
+                           "a zero modulus in a capacity",
+                           MESSAGE_CHECKER_ZERO_DIVISOR, "%");
+    if (modulo != TEST_PASS) return modulo;
+    overflow = compile_fails(
+        "global s: Store = Store((0 - 2147483647 - 1) / (0 - 1))\n",
+        "the smallest Int32 divided by -1", MESSAGE_CHECKER_CONST_OVERFLOW);
+    if (overflow != TEST_PASS) return overflow;
+    shift = compile_fails("global s: Store = Store(1 << 32)\n",
+                          "a shift past the width", MESSAGE_CHECKER_SHIFT_RANGE);
+    if (shift != TEST_PASS) return shift;
+    negate = compile_fails(
+        "global s: Store = Store(-(0 - 2147483647 - 1))\n",
+        "negating the smallest Int32", MESSAGE_CHECKER_CONST_OVERFLOW);
+    if (negate != TEST_PASS) return negate;
+    return compile_fails("global s: Store = Store(2147483647 + 1)\n",
+                         "an overflowing sum", MESSAGE_CHECKER_CONST_OVERFLOW);
+}

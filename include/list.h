@@ -1,5 +1,5 @@
-#ifndef NIPPY_LIST_H
-#define NIPPY_LIST_H
+#ifndef NYX_LIST_H
+#define NYX_LIST_H
 
 #include <stdbool.h>
 #include <stddef.h>

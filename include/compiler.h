@@ -1,12 +1,12 @@
-#ifndef NIPPY_COMPILER_H
-#define NIPPY_COMPILER_H
+#ifndef NYX_COMPILER_H
+#define NYX_COMPILER_H
 
 #include "limits_config.h"
 
 #include <stdbool.h>
 
 typedef struct {
-    /* Header filename used by the generated C source; defaults to nippy.h. */
+    /* Header filename used by the generated C source; defaults to nyx.h. */
     const char *header_name;
     /* Source filename shown in diagnostics and emitted #line directives. */
     const char *source_name;
@@ -23,6 +23,10 @@ typedef struct {
     int max_string_capacity;
     /* Upper bound for fixed List<T,N> capacities. 0 selects 4096. */
     int max_list_capacity;
+    /* The most bytes one value of a type may occupy: a struct, a fixed Array,
+       a message on a channel, an argument or result of a parallel arm. 0
+       selects 64 KiB; the hard limit is 16 MiB. */
+    int max_value_bytes;
     /* Maximum pretty-print nesting depth. 0 selects 16. */
     int max_print_depth;
     /* Test seam: skip the scoped-Store escape analysis. The runtime

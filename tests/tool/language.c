@@ -640,7 +640,7 @@ TEST("for mutation")
     TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_FOR_MUTATED + 7,
                                               "for mutation");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:11:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:11:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -815,7 +815,7 @@ TEST("recursion guard")
     TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_RECURSION + 7,
                                               "recursion depth guard");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:1:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:1:")
                ? TEST_PASS : TEST_FAIL;
 }
 

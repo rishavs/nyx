@@ -80,7 +80,7 @@ bool name_index_insert(NameIndex *index, const List *entries, size_t entry)
         if (capacity < index->capacity || capacity > SIZE_MAX / sizeof(size_t)) {
             return false;
         }
-        slots = nippy_malloc(capacity * sizeof(size_t));
+        slots = nyx_malloc(capacity * sizeof(size_t));
         if (slots == NULL) {
             return false;
         }

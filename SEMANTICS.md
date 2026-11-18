@@ -1,4 +1,4 @@
-# Nippy semantics
+# Nyx semantics
 
 What a program means, and which programs the compiler accepts. The accepted
 syntax is in `GRAMMAR.ebnf`; the implementation is in `ARCH.md`.
@@ -48,7 +48,7 @@ templates are instantiated on use. Transparent aliases can refer to recursive
 structs but cannot themselves form recursive alias cycles. Type instantiation is
 limited to 64 simultaneously nested struct instantiations.
 
-```nippy
+```nyx
 type Node
   value: Int64
   next: Handle<Node> | Nil = nil
@@ -74,7 +74,7 @@ that is a C11 keyword, a C identifier the generated code uses (such as `main`,
 Every name a program chooses (type, field, variable, parameter, function) is
 emitted into the generated C with the prefix `nyx_u_`, so no program name can
 collide with libc, a C keyword, a macro such as `EOF`, or a generator name. The
-generated names are internal; a C driver that calls a Nippy function must spell
+generated names are internal; a C driver that calls a Nyx function must spell
 it `nyx_u_<name>`. The `nyx_` prefix is reserved for the generator's own types, helpers, and
 instantiation names, so source names cannot collide with them.
 
@@ -83,7 +83,7 @@ nothing but type declarations or function declarations is legal.
 
 ## Whitespace and newlines
 
-Nippy is newline- and whitespace-agnostic, like Lua. Spaces, tabs, and newlines
+Nyx is newline- and whitespace-agnostic, like Lua. Spaces, tabs, and newlines
 only separate tokens; indentation is not syntax, there are no semicolons, and no
 line continuation rule. A declaration or statement ends where the grammar says
 it ends, not at a line boundary. The same program may be written on one line or
@@ -96,7 +96,7 @@ keywords and closed with `end`; there are no braces for blocks and no
 semicolons; `if` uses `then`, `elseif`, `else`, and `end`; and types are
 attached to names with `:`. Braces are used only for record literals.
 
-Nippy is not a Lua dialect: a function declaration is `fun`, a value declaration
+Nyx is not a Lua dialect: a function declaration is `fun`, a value declaration
 is `var`, blocks are not expressions, and the function type is written
 `Fun<(Int32):Bool>` rather than Luau's `(Int32) -> Bool`. The shape is Lua-like
 so that adding constructs such as loops, blocks, and declarations follows the
@@ -166,9 +166,13 @@ alternatives and collection elements.
 
 Collections are `Array<T,N>`, `List<T>`, `Slice<T>`, `TextBuilder`,
 `Record<K,V,N>`, and `Table<K,V>`.
-A by-value type is capped at 64 KiB. This covers structs, fixed `Array<T,N>`,
-`Record<K,V,N>`, `String<N>`, `Error`, and unions. A larger type is rejected;
-put the data in a Store instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`,
+A by-value type is capped at 64 KiB by default. The cap is a compiler setting,
+`CompilerConfig.max_value_bytes`, which may be raised to 16 MiB or lowered. It
+covers structs, fixed `Array<T,N>`, `Record<K,V,N>`, `String<N>`, `Error`, and
+unions, and so also a message on a channel and an argument or result of a
+`parallel` arm. A larger type is rejected; put the data in a Store instead, or
+raise the cap if the stack can hold it (every copy of a value lives on the C
+stack). `List`, `Table`, `Text`, `TextBuilder`, `Slice`,
 and `Handle` are descriptors and their payload does not count.
 
 `alloc<...>` and `Handle<...>` accept `Text` and handles in otherwise
@@ -255,7 +259,7 @@ never equal unsigned values. Floating-point NaN is unequal to every value,
 including itself; positive and negative zero compare equal. Same-sign infinities
 compare equal to each other but never to integers. `!=` negates `==`.
 
-```nippy
+```nyx
 print(Uint16(3) == Int64(3))          -- true
 print(Int64(-1) == Uint64(1))        -- false
 var n: Int64 = 9007199254740993
@@ -270,7 +274,7 @@ operands are evaluated even when their types differ. Floating-point equality
 retains its usual rules, including NaN and signed zero. Use `!(a === b)` for
 strict inequality.
 
-```nippy
+```nyx
 var a: Int32 = 3
 var b: Int64 = 3
 print(a == b, a === b)  -- true false
@@ -300,11 +304,15 @@ minimum modulo `-1` is `0`. Shifts mask a non-constant count to the operand
 width, and `>>` is a logical shift for every integer type. `~` yields a value of
 the operand's own type.
 
-Compile-time constant expressions are currently modelled for `Int32`: `Int32`
-overflow, constant shift counts outside the operand width, and constant zero
-divisors are rejected. `const` integer bindings participate there, and the same
-evaluator handles `Store(bytes)` and constructor capacities. Constant folding
-for the other numeric widths is not implemented yet.
+Compile-time constant expressions are folded in the type of the expression, so
+a constant is never rejected for being out of range of a type the expression
+does not have. `Int32` overflow is rejected at compile time. In every integer
+type, constant shift counts outside the operand width and constant zero divisors
+are rejected. For the other widths an out-of-range constant is not an error at
+compile time; the expression simply is not known to be constant, and the
+run-time overflow check applies. `const` integer bindings are `Int32` and
+participate there, and the same evaluator handles `Store(bytes)` and constructor
+capacities.
 
 Float arithmetic follows C `float`/`double` arithmetic; `%`, shifts, and bitwise
 operators require integers.
@@ -360,7 +368,7 @@ Int32(5)` is rejected.
   `Float32(1e39)` are compile-time errors. A float constant truncates toward
   zero first, so `Int32(2.9)` is `2`.
 - Any other value converts at run time. A conversion between integer types that
-  could lose a value is range-checked and traps with `nippy: numeric conversion
+  could lose a value is range-checked and traps with `nyx: numeric conversion
   out of range`; one that cannot (such as `Int8` to `Int32`) is a plain C
   conversion.
 - Float to integer truncates toward zero and traps when the truncated value is
@@ -399,7 +407,7 @@ type: `var s = "x"` is rejected.
 no Store, so it is usable anywhere a `Text` is, including `store.copy`,
 `store.concat`, equality, `slice`, `for`, and unions with `Text`:
 
-```nippy
+```nyx
 var hello: Text = base64("SGVsbG8sIFdvcmxkIQ==")   // "Hello, World!"
 var raw: Text = base64("AAECgP8=")                  // bytes 0 1 2 128 255
 ```
@@ -494,7 +502,7 @@ later part may call a function.
 
 `match` is a statement or expression with repeated `with` arms:
 
-```nippy
+```nyx
 match typeof x with Int32 then
   ...
 with Bool then
@@ -506,7 +514,7 @@ end
 
 Value patterns use equality:
 
-```nippy
+```nyx
 match x with true then
   ...
 with false then
@@ -521,7 +529,7 @@ There is no fallthrough.
 
 Expression form:
 
-```nippy
+```nyx
 var z: Int32 = match typeof x with Int32 then 1 with Bool then 2 else 0 end
 ```
 
@@ -540,7 +548,7 @@ Duplicate type patterns are rejected. Expression matches still require `else`.
 
 ### `if` expression
 
-```nippy
+```nyx
 var z: Int32 = if typeof x is Int32 then 1 else 0 end
 ```
 
@@ -551,7 +559,7 @@ is required.
 
 Value conditions use ordinary equality:
 
-```nippy
+```nyx
 if x == true then ... end
 match x with true then ... else ... end
 ```
@@ -587,7 +595,7 @@ and references to other fields are not defaults. A non-generic struct's defaults
 are checked at its declaration; generic defaults are checked for each concrete
 instantiation.
 
-```nippy
+```nyx
 type Rectangle
   width: Int64
   height: Int64 = 10
@@ -635,7 +643,7 @@ variable and no default-initialisation.
 
 `const` is binding immutability, not deep immutability:
 
-```nippy
+```nyx
 const Max: Int32 = 10
 Max = 20              // rejected
 
@@ -662,7 +670,7 @@ therefore not visible inside function bodies yet.
 
 `print` is a builtin statement, not a user-defined function:
 
-```nippy
+```nyx
 print("n =", n, "ok =", flag)
 ```
 
@@ -672,7 +680,7 @@ print("n =", n, "ok =", flag)
 - `print()` writes one newline.
 - `print` returns `Nil`.
 - `print` is reserved and cannot be declared, stored, passed, or used as a
-  value. `base64` is reserved the same way.
+  value. `base64`, `range`, `now`, `sleep`, and `cores` are reserved the same way.
 
 The builtin formats by the static argument type. Floating-point output uses
 ordinary notation for decimal exponents from -6 through 15 and scientific
@@ -715,7 +723,7 @@ pretty-print depth limit defaults to 16 and is configurable through
 
 A `for` statement iterates a list, slice, string, Range, Record, or Table:
 
-```nippy
+```nyx
 for value in iterable do
   ...
 end
@@ -752,7 +760,7 @@ points away from the end produces an empty range. A literal or folded zero step
 is rejected at compile time; another zero step traps when the range is created.
 Iteration stops before the end without overflowing the element type.
 
-```nippy
+```nyx
 var numbers: Range<Int64> = range(0, 5)
 for n in numbers do print(n) end       -- 0 through 4
 for n in range(5, 0, -2) do print(n) end  -- 5, 3, 1
@@ -771,12 +779,408 @@ same.
 Iteration is by byte for strings; UTF-8 codepoint iteration is not implemented.
 `map` and `filter` are not implemented.
 
+## Defer
+
+`defer do ... end` runs a block later, when control leaves the block that
+contains the `defer`. It is for work that must happen however the block ends.
+
+```nyx
+fun f(n: Int32): Int32
+  defer do print("a") end
+  defer do print("b") end
+  if n > 0 then
+    defer do print("c") end
+    return n * 2
+  end
+  print("body")
+  return 0
+end
+
+print(f(1))   -- c, b, a, then 2
+print(f(0))   -- body, b, a, then 0
+```
+
+- A block is left by reaching its end, or by `return`, `break`, or `continue`.
+  Each exit runs the defers of every block it leaves, innermost block first.
+  Within one block they run in reverse order of writing.
+- A defer runs only if control reached it. A `defer` after an early `return`, or
+  in a branch that was not taken, never runs.
+- A `defer` in a loop body runs at the end of each iteration, and on `break` and
+  `continue`.
+- `return expression` evaluates the expression first. The defers then run, and
+  the function returns the value computed before they ran. A defer can change a
+  variable but cannot change a value already being returned.
+- The deferred block runs where the exit happens, so it reads variables as they
+  are then, not as they were when the `defer` was written. It can use any name
+  declared before the `defer` and in scope there. A name declared after it is not
+  visible.
+- What a `typeof` test or `match` proved before the `defer` does not carry into
+  its block, because the variable may change before the block runs. The block
+  may test and narrow its own values.
+- A deferred block cannot `return`, and cannot `break` or `continue` out of
+  itself. A loop that is entirely inside the block may use them. Defers may be
+  nested: an inner one runs when the outer block ends.
+- A defer in the body of a `scope` runs before that scope's Store is released
+  and may allocate in it. A defer written outside the `scope` runs after it.
+- A trap ends the program without running pending defers, as it does for
+  Stores.
+- A `defer` is a statement of a function body or of a block inside one, or of a
+  block at program level such as the body of a `while` or `if`. A `defer`
+  directly at program level is an error. `defer` is a reserved word.
+
+## Time
+
+Two builtins read and wait on a monotonic clock. They work in functions as
+well as at program level.
+
+```nyx
+var start: Int64 = now()
+sleep(250)
+print(now() - start >= 250)   -- true
+```
+
+- `now()` takes no arguments and returns an `Int64`: the number of whole
+  milliseconds on the system's monotonic clock. The origin is unspecified, so
+  only differences between two readings are meaningful. The value never goes
+  backwards and does not change when the wall clock is adjusted.
+- `sleep(ms)` takes one `Int64` count of milliseconds, waits at least that long,
+  and returns `Nil`. It is a statement-like call and cannot be used as a value.
+  An integer literal takes the `Int64` type; an `Int32` or a float argument is
+  rejected, so `sleep(n)` for `n: Int32` needs `Int64(n)`.
+- `sleep(0)` returns immediately. A negative literal is a compile-time error,
+  and a negative value computed at run time traps with
+  `nyx: FILE:LINE:COL (byte N): sleep duration cannot be negative`.
+- `sleep` blocks the calling thread, which is the whole program because there
+  are no other threads yet. A signal that interrupts the wait does not shorten
+  it.
+- `now` and `sleep` are reserved and cannot be declared, like `print`.
+- If the system's monotonic clock cannot be read, `now()` traps with
+  `monotonic clock is unavailable`.
+- Using either builtin makes the generated C depend on POSIX.1-2008
+  (`clock_gettime`, `nanosleep`): the emitted source defines
+  `_POSIX_C_SOURCE` before its first include. Programs that use neither are
+  plain C11.
+
+## Atomic cells
+
+An `Atomic` is a global cell that any thread may read and update without a data
+race. It is a resource like a Store, not a value.
+
+```nyx
+global stop: Atomic<Bool> = Atomic(false)
+global served: Atomic<Int64> = Atomic(0)
+
+print(served.add(1))     -- 0: add returns the value the cell held before
+print(served.load())     -- 1
+stop.store(true)
+```
+
+- `global name: Atomic<T> = Atomic(literal)`. `T` is `Bool` or an integer type
+  (`Int8` to `Int64`, `Uint8` to `Uint64`, `Byte`). The initial value is a
+  literal of that type, negated if it is a signed integer. An Atomic must be
+  `global`; it cannot be a local, a parameter, a field, or a `const`.
+- `load()` returns the value, `store(v)` replaces it and returns `Nil`, and
+  `add(n)` adds `n` and returns the **previous** value, so it can hand out unique
+  tickets. `add` needs an integer cell. Integer addition wraps on overflow, as C11
+  defines it for atomics. Every operation is sequentially consistent.
+- An Atomic cannot be copied, passed, returned, stored, or assigned; its name
+  can only start a `load`, `store`, or `add` call. Like a global Store, its name
+  is visible in every function, including a function an arm calls.
+- A function that uses an Atomic is safe to run in a `parallel` arm; a function
+  that uses a global Store is not.
+- The generated C declares a static `_Atomic` cell and uses `<stdatomic.h>`
+  through three wrapper macros, so the memory order is written in one place.
+  Programs that use no Atomic and no `parallel` block do not include it.
+
+## Parallel blocks
+
+A `parallel` block runs several function calls at the same time and waits for
+all of them. Each call is an **arm**.
+
+```nyx
+fun square(n: Int32): Int32 return n * n end
+
+var a: Int32 = 0
+var b: Int32 = 0
+parallel do
+  with a = square(6)
+  with b = square(7)
+end
+print(a, b)   -- 36 49
+```
+
+The block ends when every arm has returned. No arm outlives it.
+
+```text
+parallel [ name = Store(capacity) ] do
+  [ var or const declarations ]
+  with [ var ] [ target = ] call(arguments) [ for lane in range(first, last) ]
+  ...
+[ then
+  statements ]
+end
+```
+
+- **Setup.** `var` and `const` declarations may stand between `do` and the first
+  `with`. They run on the calling thread after the pool exists and before any
+  arm starts, and their names are visible to the arms' arguments and to the
+  `then` section. They are how a block makes the pool channels its arms share
+  (see Pool channels). Any other statement there is a syntax error.
+
+- **Arms.** An arm is a call to a named, non-generic function declared earlier,
+  not to a method, a function value, or the function that contains the block.
+  The arguments are evaluated first, in the order written, in the thread that
+  runs the block, and **copied** into the arm. The first arm runs on the calling
+  thread, the others on worker threads, so a UI loop can be the first arm and
+  stay on the main thread. Workers are reused: when an arm ends its thread waits
+  for the next block instead of exiting, and a new thread is started only when
+  every worker is busy, so an arm that blocks never delays another. A program
+  that opens a block every frame pays thread start-up only for its first.
+- **Plain values.** An argument must be a plain value: an integer, float, `Bool`,
+  `Byte`, `Nil`, `Error`, fixed `String<N>`, or a struct, union, fixed `Array`,
+  or `Range` made only of those. `Text`, `TextBuilder`, `Handle`, `List`,
+  `Slice`, `Table`, `Record`, a function, and a Store (other than the block's own
+  pool) are rejected, because they would let two threads reach the same memory.
+  A `Channel<T>` value (see Pool channels) is the one other thing an arm may
+  receive, because every operation on a channel is synchronised.
+- **Results.** `with target = call` assigns the result to an existing variable
+  when the block ends; the variable must have exactly the result's type, must
+  not be a `const`, no other arm may assign it, and the result must be a plain
+  value. `with var name = call` declares `name` in the `then` section, where it
+  can be any type the pool holds. An arm with no binding discards its result, and
+  may be a function that returns nothing.
+- **The pool.** `parallel pool = Store(n) do` creates a Store, visible to the arms
+  and the `then` section, that every arm may allocate in. Its capacity is a hard
+  limit, not an initial reservation, and it never moves; allocation takes the next
+  bytes with one atomic operation, so arms never wait for one another. A full
+  pool traps with `nyx: parallel store is full`. A negative capacity traps. The
+  pool is released when the block ends, including by `return`, `break`, or
+  `continue` in the `then` section.
+- **Objects stay private until the arms return.** An arm gets only plain values
+  and the pool, and cannot read a global Store, so it has no way to hold a
+  pointer to another arm's object. Nothing races on what the arms build. The
+  `then` section runs after every arm has returned, on one thread, and may read
+  and change anything they produced.
+- **Escape.** A value from the pool is checked like a value from a `scope`
+  Store: it cannot be stored in a variable, or returned, where it outlives the
+  block. Copy what must persist into a longer-lived Store inside the `then`
+  section.
+- **Repeated arms.** `with f(lane) for lane in range(first, last)` runs the call
+  once for each `lane` in `first` up to but not including `last`, each on its
+  own thread, with `lane` an `Int32` that the arguments may use. The bounds are
+  `Int32` expressions evaluated once. An empty range runs nothing. `with target =
+  call for lane in range(...)` collects the results: `target` must be an existing
+  fixed `Array<R,N>` variable, where `R` is the call's plain result type. When
+  the block ends the Array holds one element per lane, in lane order, and its
+  length is the number of lanes; more lanes than `N` traps with `a repeated arm
+  produced more results than its Array holds`. `with var` cannot be repeated.
+  `cores()` gives a sensible count.
+- **The audit.** Every function an arm can reach, through named calls, must avoid
+  global Stores and calls through function values. Atomics, channels, `print`,
+  `now`, `sleep`, scopes, and the arm's own `parallel` blocks are fine. The compiler
+  rejects a program that breaks this and names the function.
+- **Failure.** A trap in any arm ends the program. If two arms trap together, the
+  message is printed once. A thread that cannot start traps with
+  `nyx: cannot start a thread`.
+- **Printing.** Each `print` statement writes as one unit, so lines from different
+  arms never interleave inside a line. The order between arms is unspecified.
+- **Per thread.** The recursion guard counts each thread separately, so several
+  arms may each recurse nearly as deep as one thread may.
+
+`cores()` takes no arguments and returns the number of processors online, as an
+`Int32` of at least 1. It is reserved.
+
+A `parallel` block is a statement of a function body or of a block at program
+level. An arm cannot `return`, `break`, or `continue`; the `then` section can,
+and its `defer` blocks run before the pool is released.
+
+The generated C uses POSIX threads and `<stdatomic.h>`, defines
+`_POSIX_C_SOURCE`, and is built with `-pthread`. Programs without `parallel`
+generate the same C as before.
+
+## Channels
+
+A channel carries plain values from one thread to another. It is a global
+resource like a Store or an `Atomic`: declared once at program level, visible in
+every function and every `parallel` arm, and used only through its operations.
+
+```nyx
+type Input
+  key: Int32
+end
+
+global input: Channel<Input> = Channel(64)
+
+input.send(Input(3))
+var ev = input.recv()          -- Input | Nil
+if typeof ev is Input then print(ev.key) end
+input.close()
+```
+
+- `global name: Channel<T> = Channel(capacity)`. The capacity is a literal from 0
+  to 65536 and the whole buffer, which is static, is at most 64 MiB. `T` is a
+  plain value (the same rule as an arm's arguments), not `Nil` and not a union; a
+  message that must be optional goes in a one-field struct. A message is also
+  bounded by the by-value limit (64 KiB unless `max_value_bytes` says otherwise).
+- Capacity `0` is a **rendezvous** channel: `send(v)` waits until a receiver has
+  taken the value, so a send that returns `true` means the value was received.
+  If the channel is closed first, the parked value is withdrawn and `send`
+  returns `false`. A rendezvous channel has no room to try, so `try_send` and a
+  `when` send arm on it are errors; `recv`, `try_recv`, a `when` receive arm,
+  `close`, and `closed` work as on any channel.
+- `send(v)` waits while the channel is full, copies `v` in, and returns `true`;
+  it returns `false`, without waiting, if the channel is closed.
+- `recv()` waits until a value is queued and returns it as `T | Nil`. It returns
+  `nil` only when the channel is closed and empty.
+- `try_send(v)` and `try_recv()` never wait. `try_send` returns `false` if the
+  channel is full or closed, and `try_recv` returns `nil` if nothing is queued
+  right now.
+- `close()` returns `Nil`. After it no value can be sent, but queued values can
+  still be received. A closed channel stays closed, and `close` may be repeated.
+- `closed()` is `true` once the channel is closed **and** every queued value has
+  been received. A loop that polls with `try_recv` and stops when `closed()` is
+  true cannot lose a message.
+- Values leave in the order they entered. Any number of threads may send or
+  receive on one channel.
+- A global channel cannot be copied, passed, returned, stored, or assigned; its
+  name can only start an operation. (A pool channel is a value; see Pool
+  channels.) A channel works in a program with no `parallel` block, as a queue for
+  one thread.
+- All channel state is guarded by one process-wide lock, so every operation is
+  safe from any thread. The generated C uses POSIX threads.
+
+### Pool channels
+
+A channel can also be made at run time, in a `parallel` block's pool, so each
+run of a block gets its own, with its own closed state, and a program can have
+as many as it has lanes:
+
+```nyx
+fun producer(jobs: Channel<Int64>)
+  for i in range(1, 6) do jobs.send(Int64(i)) end
+  jobs.close()
+end
+
+fun worker(jobs: Channel<Int64>, results: Channel<Int64>)
+  while true do
+    var j = jobs.recv()
+    if typeof j is Int64 then results.send(j * j) else break end
+  end
+  results.close()
+end
+
+parallel pool = Store(4096) do
+  var jobs = pool.channel<Int64>(2)
+  var results = pool.channel<Int64>(2)
+  with producer(jobs)
+  with worker(jobs, results)
+  with report(results)
+end
+```
+
+- `pool.channel<T>(capacity)` returns a `Channel<T>`. The element follows the same
+  rules as a global channel's. The capacity is an `Int32` expression from 1 to
+  65536, with a buffer of at most 64 MiB; there are no pool rendezvous channels.
+  The state and buffer come from the pool, and a full pool traps as usual.
+- It is allowed only on a parallel block's pool. The pool never moves, so a
+  thread waiting on a channel never finds it gone. On any other Store the
+  program traps with `a channel can be allocated only in a parallel block's pool`.
+- A `Channel<T>` value has all six operations, and `when` arms may use one. It
+  can be a local variable or `const`, a parameter, or an argument to a function
+  or to an arm. It cannot be a field, a collection element, a union
+  alternative, a type argument, or a return type, cannot be compared or
+  printed, and cannot be a channel's own element.
+- A pool channel is checked like any value from a pool: it cannot be stored where
+  it outlives the block (the analyser rejects that), and using one after the
+  block has ended traps with `stale handle`.
+- Deadlock detection and `when` treat pool channels exactly like global ones.
+
+### Timers
+
+`Every(ms)` declares a timer, a channel with no queue that receives a value every
+`ms` milliseconds:
+
+```nyx
+global tick: Channel<Int64> = Every(16)
+
+var t = tick.recv()      -- waits for the next tick: the time it was due
+```
+
+- The interval is a positive literal, in milliseconds, and the type is
+  `Channel<Int64>`. The value of a tick is the `now()` reading at which it was
+  due.
+- The first tick arrives one interval after the timer is first used.
+- A tick nobody has taken is replaced by later ones, so a slow receiver sees the
+  latest tick and no backlog builds up.
+- `send` and `try_send` on a timer return `false`. `close()` stops it, and a
+  closed timer receives `nil`.
+- A wait on a timer wakes by itself when the tick is due. It is not a deadlock.
+
+### Waiting on several channels
+
+`when` waits until one of several channel operations can proceed and runs that
+arm. Its arms have the shape of a `match` arm.
+
+```nyx
+when
+  with t = tick.recv() then
+    step()
+  with cmd = commands.recv() then
+    if typeof cmd is Command then apply(cmd) else break end
+  with ok = frames.send(world) then
+    print("frame accepted:", ok)
+else
+  idle()
+end
+```
+
+- An arm is `with [name =] channel.recv() then block` or
+  `with [name =] channel.send(value) then block`. A `recv` arm binds the same
+  `T | Nil` that `recv()` returns, and a `send` arm binds the `Bool` that `send`
+  returns. The name is declared at the start of the arm's block.
+- The value of every send arm is evaluated once, from the first arm down, before
+  anything waits.
+- A receive arm is ready when a value is queued, when the channel is closed and
+  empty (it then gives `nil`), or when a timer's tick is due. A send arm is ready
+  when there is room or the channel is closed (it then gives `false`).
+- The **first ready arm in source order** runs, so the order of the arms is their
+  priority. Put the arm that must never starve first. The runtime does not
+  rotate or randomise the choice.
+- With an `else` block, `when` never waits: if nothing is ready the else block
+  runs. Without one it waits until an arm is ready.
+- The operation is performed while the lock is held, and the arm's block runs
+  after it is released.
+- `break` and `continue` in an arm apply to the enclosing loop; `when` is not a
+  loop. `return` and `defer` work as in any block. A `when` whose arms (and else)
+  all return does not fall through.
+
+### Deadlock
+
+A program that can never make progress is reported, not left to hang. The
+runtime counts the threads that are alive, the threads waiting on a channel, and
+the threads waiting for the arms of a `parallel` block to end. When a thread is
+about to wait on a channel, or a thread ends, and every live thread is waiting,
+the program traps:
+
+```text
+nyx: FILE:LINE:COL (byte N): deadlock: every thread is waiting on a channel
+```
+
+The position is the wait that completed the deadlock. A trap found when a thread
+ends has no position. A thread that is running, sleeping, or waiting on a timer
+is never counted as waiting, because it will wake without help; a thread that is
+about to be woken by a send is not counted either. A thread blocked in something
+other than a channel is counted as running, so it can never cause a false
+report. Nyx has no file or socket input yet; when it does, a program whose
+threads are all stuck in such waits is outside what the report can see, and
+the report will need to learn about those waits.
+
 ## Local variables and blocks
 
 Function bodies and every block (`if`/`elseif`/`else`, `while`, `for`, and
 `match` arms) may declare locals:
 
-```nippy
+```nyx
 fun sum_three(): Int32
   var a: Int32 = 1
   var b = 2
@@ -804,7 +1208,7 @@ end
 
 Struct fields are read and written with `.`:
 
-```nippy
+```nyx
 type Point
   x: Int32
   y: Int32
@@ -829,7 +1233,7 @@ p.x = 3
 
 A variable or parameter is mutable. Assignment is a statement:
 
-```nippy
+```nyx
 var x: Int32 = 1
 x = 2
 
@@ -864,7 +1268,7 @@ end
 Inside `if typeof x is T then`, `x` is narrowed to `T`. An assignment to `x` is
 allowed, but it invalidates that narrowing:
 
-```nippy
+```nyx
 if typeof x is Int32 then
   x = true
   if typeof x is Bool then
@@ -884,7 +1288,7 @@ Dynamic memory is managed only by arenas, called **Stores**. A Store declared
 with `global` lasts for the program. A Store introduced by `scope` lasts through
 its body. Either can be passed to a function with a `Store` parameter.
 
-```nippy
+```nyx
 global points: Store = Store(4096)
 
 scope scratch = Store(256) do
@@ -973,11 +1377,13 @@ originating Store and the destination:
 
 The analysis runs only when a program contains a `scope`; without one every
 Store is global. Runtime generation and bounds checks remain in the generated
-program as a second line of defence.
+program as a second line of defence, except that a program with no `scope` and
+no parallel pool omits the generation comparison: no Store's generation can
+change while it runs, so the comparison could never fail.
 
 Allocation returns an opaque handle:
 
-```nippy
+```nyx
 var p: Handle<Point> = points.alloc<Point>(Point(1, 2))
 var n: Handle<Int32> = points.alloc<Int32>(13)
 var b: Handle<Byte> = points.alloc<Byte>(7)
@@ -995,7 +1401,7 @@ are read.
 `Handle<T>` records a store reference, a byte offset, and the store generation. It is
 opaque: there is no field access. Its operations are:
 
-```nippy
+```nyx
 var x: Point = p.read()
 p.write(Point(3, 4))
 ```
@@ -1008,16 +1414,18 @@ p.write(Point(3, 4))
   different types. Both operators validate every handle operand first, so
   comparing a stale handle traps even when the types differ.
 - Both check the store reference, the store generation, and the offset bounds. A
-  failure is a deterministic runtime diagnostic, not undefined behaviour.
+  failure is a deterministic runtime diagnostic, not undefined behaviour. (In a
+  program with no `scope` and no parallel pool the generation never changes, so
+  that comparison is not emitted.)
 - Handles survive growth because they use a stable Store reference and an offset
   into the movable buffer.
 
 A Store's generation changes only when its storage is released, which the
 compiler's escape check keeps unreachable from safe programs. There is no
-per-object free. A stale handle would trap (`nippy: stale handle`).
+per-object free. A stale handle would trap (`nyx: stale handle`).
 
 Allocation failure (running out of memory while growing) aborts with
-`nippy: out of memory`. Allocation never returns uninitialized memory.
+`nyx: out of memory`. Allocation never returns uninitialized memory.
 
 
 ## Lists
@@ -1028,7 +1436,7 @@ Collections split into fixed inline Arrays and mutable store-backed Lists.
 
 An Array has inline capacity `N` and a runtime length:
 
-```nippy
+```nyx
 var xs: Array<Int32, 3> = [1, 2]
 
 var n: Int32 = xs.len()       // 2
@@ -1064,7 +1472,7 @@ var last: Int32 | Nil = xs.pop()
 
 A dynamic list grows in a Store:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var xs: List<Int32> = arena.list<Int32>(2)
@@ -1111,7 +1519,7 @@ structs, unions, handles, `Text`, `String<N>`, function types, and `Error`.
 
 `Record<K,V,N>` is a fixed inline hash map:
 
-```nippy
+```nyx
 var x: Record<String<8>, Bool, 4> = {
   "a": true,
   "b": false
@@ -1137,7 +1545,7 @@ x.len()       -> Int32
 
 `Table<K,V>` is dynamic and arena-backed:
 
-```nippy
+```nyx
 var t: Table<String<8>, Int32> =
   arena.table<String<8>, Int32>(4)
 ```
@@ -1153,7 +1561,7 @@ var t: Table<String<8>, Int32> =
 Both use FNV-1a hashing and linear probing. They print as
 `{key: value, ...}`; hash order is unspecified. Iteration:
 
-```nippy
+```nyx
 for key, value in map do
   ...
 end
@@ -1175,7 +1583,7 @@ the item rules.
 `[a, b, c]` is always an Array. It can be typed by an expected Array
 context or inferred when every element has one common type:
 
-```nippy
+```nyx
 var xs: Array<Int32, 3> = [1, 2, 3]       // explicit context
 var zs = [1, 2, 3]                       // inferred Array<Int32,3>
 var strings = ["a", "b"]                 // inferred Array<Text,2>
@@ -1192,7 +1600,7 @@ context, or elements with no common type.
 
 A slice is a read-only, non-owning view over a dynamic list:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var xs: List<Int32> = arena.list<Int32>(3)
@@ -1230,7 +1638,7 @@ var first: Int32 = s[0]  // 20
 A dynamic string is an immutable byte sequence whose length is not part of its
 type. It is backed by a Store or by static literal data:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var greeting: Text = "hello"          // static, no allocation
@@ -1266,7 +1674,7 @@ var same: Bool = joined == "hello world"
 
 Store methods:
 
-```nippy
+```nyx
 var a: Text = arena.copy("hello")       // allocate a copy
 var b: Text = arena.concat(a, " world") // allocate concatenation
 var f: String<8> = "hi"
@@ -1285,7 +1693,7 @@ implemented yet.
 A builder grows a byte sequence with amortized capacity and finishes with an
 immutable `Text` copy:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var b: TextBuilder = arena.builder(16)
@@ -1325,7 +1733,7 @@ static dynamic text.
 
 A fixed string is an immutable value with capacity `N` bytes, stored inline:
 
-```nippy
+```nyx
 var name: String<16> = "nyx"
 var n: Int32 = name.byte_len()
 var b: Byte = name.byte_at(1)
@@ -1334,7 +1742,7 @@ var same: Bool = name == "nyx"
 
 - `N` is a byte capacity in `0..max_string_capacity`. The default maximum is
   4096; `CompilerConfig.max_string_capacity` can raise or lower it up to the
-  hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). The by-value size cap still
+  hard limit `NYX_MAX_STRING_CAPACITY` (1 MiB). The by-value size cap still
   applies: a `String<N>` over 64 KiB must live behind a `Handle`, not in a
   local, field, parameter, or return value. `String<0>` can hold only the empty
   string.
@@ -1346,7 +1754,7 @@ var same: Bool = name == "nyx"
 - `byte_len()` returns the byte length, not the capacity.
 - `byte_at(i)` returns a `Byte` and checks `0 <= i < byte_len()`. An
   out-of-bounds index is a deterministic runtime error
-  (`nippy: string index out of bounds`).
+  (`nyx: string index out of bounds`).
 - `==` and `!=` compare content with `String<N>` of any capacity or `Text`.
   Different capacities are different types for `===`.
 - `Text` and `String<N>` are distinct types; the only implemented conversion
@@ -1355,7 +1763,7 @@ var same: Bool = name == "nyx"
 
 A fixed string can be stored in a Store like any other sized value:
 
-```nippy
+```nyx
 global arena: Store = Store(64)
 var h: Handle<String<16>> = arena.alloc<String<16>>("nyx")
 var s: String<16> = h.read()
@@ -1382,7 +1790,7 @@ end
 It is constructed positionally and its fields are read directly. The field
 methods remain available:
 
-```nippy
+```nyx
 var e: Error = Error("E_CONCAT", "concat failed", "main.nip", 3, 7, 42)
 
 var line: Int32 = e.line
@@ -1392,7 +1800,7 @@ var description: String<128> = e.description
 
 The compiler can fill in the source position:
 
-```nippy
+```nyx
 var e: Error = Error::throw("E_CONCAT", "concat failed")
 ```
 
@@ -1532,6 +1940,9 @@ The statements are:
 - `return expression`, or bare `return` in a function without a return type;
 - `if condition then ... elseif condition then ... else ... end`;
 - `while condition do ... end`;
+- `defer do ... end`;
+- `parallel ... do ... end`;
+- `when ... end`;
 - `for bindings in iterable do ... end`;
 - `match ... with ... end`;
 - a local `var` or `const` declaration;
@@ -1562,7 +1973,7 @@ whose body may reach its end is rejected.
 
 A function whose every return expression calls itself directly is rejected.
 Other direct self-recursion is guarded at runtime: exceeding a fixed depth traps
-with a deterministic `nippy: recursion depth exceeded` diagnostic instead of
+with a deterministic `nyx: recursion depth exceeded` diagnostic instead of
 overflowing the C stack.
 
 A function body may declare local variables, but cannot contain a bare nested
@@ -1700,7 +2111,7 @@ language's behaviour:
   compiles without warnings. Unused parameters get the same treatment at the
   start of the function.
 - Each declaration and statement is preceded by `#line <line> "<source>"`, so a
-  C compiler diagnostic points at the Nippy source rather than the generated
+  C compiler diagnostic points at the Nyx source rather than the generated
   file.
 - A store becomes an entry in a global `nyx_store` table. The generated source
   carries the arena helpers: initialize, grow, allocate, bounds/generation
@@ -1734,7 +2145,7 @@ that cannot be read, an unwritable output path, a failing C compiler) are not
 source-positioned but do name the path involved.
 
 Runtime failures identify the source file, line, column, and byte offset after
-the `nippy:` prefix. The recursion-depth guard identifies the recursive
+the `nyx:` prefix. The recursion-depth guard identifies the recursive
 function's declaration; other failures identify the operation that failed.
 Runtime failures flush standard output before writing their diagnostic to
 standard error.
@@ -1763,8 +2174,8 @@ If compilation fails with no diagnostic recorded, the message is exactly
   the implemented dynamic-memory model; there is no per-object free and no
   first-class store value.
 - Exposing handle fields (`index`, `store`, `generation`); handles are opaque.
-- Compile-time folding of arithmetic for numeric widths other than `Int32`,
-  and `const` bindings of other numeric types inside constant expressions.
+- Compile-time overflow errors for numeric widths other than `Int32`, and
+  `const` bindings of other numeric types inside constant expressions.
 - Runtime base64 encoding and decoding (`base64` is a compile-time literal
   form only), hexadecimal byte-string literals, and long base64 blobs, since a
   string literal cannot span lines.
@@ -1782,7 +2193,14 @@ If compilation fails with no diagnostic recorded, the message is exactly
   runtime generation fields.
 - Array slices and dynamic list literals.
 - Scoped `access` blocks for reading store data; `read` currently copies.
-- Concurrency and multithreading.
+- Channels that carry anything but a plain value (a `Text`, a `List`, a handle,
+  or a Store), channels allocated in any Store but a parallel pool, pool
+  rendezvous channels, and a pool channel as a field or a result.
+- Collecting the results of a repeated `parallel` arm into a pool-backed `List`
+  (today they fill a fixed `Array`), and passing existing Store data to an arm
+  by reference.
+- A deadlock report that accounts for threads blocked in file or socket
+  operations, once the language has them.
 - Modules and imports.
 - Whether a bare expression may be a whole program (today it is rejected: a
   program is a sequence of items, and a bare expression is not an item).

@@ -4,7 +4,7 @@
 
 #include "harness.h"
 
-#ifdef NIPPY_COVERAGE
+#ifdef NYX_COVERAGE
 void __gcov_dump(void);
 #endif
 
@@ -337,7 +337,7 @@ static void run_child(const Entry *entry, const char *root, size_t index,
                                      : entry->run();
     fflush(stdout);
     fflush(stderr);
-#ifdef NIPPY_COVERAGE
+#ifdef NYX_COVERAGE
     /* _exit skips the exit handlers that write coverage counts. */
     __gcov_dump();
 #endif
@@ -537,7 +537,7 @@ static void print_usage(const char *program)
            "  -v, --verbose      print every test with its time\n"
            "  -l, --list         list the selected tests by group and exit\n"
            "  -j, --jobs N       run N tests at once (default: one per CPU, or "
-           "$NIPPY_TEST_JOBS)\n"
+           "$NYX_TEST_JOBS)\n"
            "  -x, --fail-fast    stop starting new tests after the first "
            "failure\n"
            "  -t, --timeout S    kill a test after S seconds (default %d)\n"
@@ -550,7 +550,7 @@ static void print_usage(const char *program)
 static bool parse_options(int argc, char **argv, Options *options)
 {
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    const char *env_jobs = getenv("NIPPY_TEST_JOBS");
+    const char *env_jobs = getenv("NYX_TEST_JOBS");
     int i;
 
     memset(options, 0, sizeof(*options));
@@ -697,7 +697,7 @@ int test_main(int argc, char **argv, const char *title)
         return 2;
     }
 
-    snprintf(root_template, sizeof(root_template), "%s/nippy-test-XXXXXX",
+    snprintf(root_template, sizeof(root_template), "%s/nyx-test-XXXXXX",
              temporary != NULL && temporary[0] != '\0' ? temporary : "/tmp");
     root = mkdtemp(root_template);
     outcomes = calloc(selected_count, sizeof(Outcome));

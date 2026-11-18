@@ -1,5 +1,5 @@
-#ifndef NIPPY_TYPED_PROGRAM_H
-#define NIPPY_TYPED_PROGRAM_H
+#ifndef NYX_TYPED_PROGRAM_H
+#define NYX_TYPED_PROGRAM_H
 
 #include "identifier.h"
 #include "list.h"
@@ -94,47 +94,80 @@ typedef enum {
     TYPED_ERROR_CONSTRUCT,
     TYPED_ERROR_THROW,
     TYPED_ERROR_FIELD,
-    TYPED_SCOPE
+    TYPED_SCOPE,
+    TYPED_CLOCK_NOW,
+    TYPED_SLEEP,
+    TYPED_DEFER,
+    TYPED_ATOMIC_DECLARATION,
+    TYPED_ATOMIC_LOAD,
+    TYPED_ATOMIC_STORE,
+    TYPED_ATOMIC_ADD,
+    TYPED_PARALLEL,
+    TYPED_PARALLEL_ARM,
+    TYPED_PARALLEL_RESULT,
+    TYPED_CORES,
+    TYPED_CHANNEL_DECLARATION,
+    TYPED_CHANNEL_OP,
+    TYPED_WHEN,
+    TYPED_WHEN_ARM,
+    TYPED_WHEN_RESULT,
+    /* pool.channel<T>(capacity): a channel allocated in a parallel pool. */
+    TYPED_CHANNEL_CREATE,
+    /* Not a node kind: the number of kinds, for tables indexed by kind. */
+    TYPED_NODE_KIND_COUNT
 } TypedNodeKind;
 
+/* The operation a TYPED_CHANNEL_OP performs, kept in `integer_value`. */
 typedef enum {
-    NIPPY_TYPE_UNKNOWN,
-    NIPPY_TYPE_INT32,
-    NIPPY_TYPE_BOOL,
-    NIPPY_TYPE_BYTE,
-    NIPPY_TYPE_NIL,
-    NIPPY_TYPE_STRUCT,
-    NIPPY_TYPE_FUNCTION,
-    NIPPY_TYPE_UNION,
-    NIPPY_TYPE_STORE,
-    NIPPY_TYPE_HANDLE,
-    NIPPY_TYPE_STRING,
-    NIPPY_TYPE_DYNAMIC_STRING,
-    NIPPY_TYPE_TEXT_BUILDER,
-    NIPPY_TYPE_LIST,
-    NIPPY_TYPE_FIXED_LIST,
-    NIPPY_TYPE_SLICE,
-    NIPPY_TYPE_RANGE,
-    NIPPY_TYPE_RECORD,
-    NIPPY_TYPE_TABLE,
-    NIPPY_TYPE_STRING_LITERAL,
-    NIPPY_TYPE_ERROR,
-    NIPPY_TYPE_INT8,
-    NIPPY_TYPE_INT16,
-    NIPPY_TYPE_INT64,
-    NIPPY_TYPE_UINT16,
-    NIPPY_TYPE_UINT32,
-    NIPPY_TYPE_UINT64,
-    NIPPY_TYPE_FLOAT32,
-    NIPPY_TYPE_FLOAT64
-} NippyType;
+    CHANNEL_OP_SEND,
+    CHANNEL_OP_RECV,
+    CHANNEL_OP_TRY_SEND,
+    CHANNEL_OP_TRY_RECV,
+    CHANNEL_OP_CLOSE,
+    CHANNEL_OP_CLOSED
+} ChannelOp;
 
-bool nippy_type_is_integer(NippyType kind);
-bool nippy_type_is_signed_integer(NippyType kind);
-bool nippy_type_is_unsigned_integer(NippyType kind);
-bool nippy_type_is_float(NippyType kind);
-bool nippy_type_is_numeric(NippyType kind);
-unsigned nippy_type_bit_width(NippyType kind);
+typedef enum {
+    NYX_TYPE_UNKNOWN,
+    NYX_TYPE_INT32,
+    NYX_TYPE_BOOL,
+    NYX_TYPE_BYTE,
+    NYX_TYPE_NIL,
+    NYX_TYPE_STRUCT,
+    NYX_TYPE_FUNCTION,
+    NYX_TYPE_UNION,
+    NYX_TYPE_STORE,
+    NYX_TYPE_HANDLE,
+    NYX_TYPE_STRING,
+    NYX_TYPE_DYNAMIC_STRING,
+    NYX_TYPE_TEXT_BUILDER,
+    NYX_TYPE_LIST,
+    NYX_TYPE_FIXED_LIST,
+    NYX_TYPE_SLICE,
+    NYX_TYPE_RANGE,
+    NYX_TYPE_RECORD,
+    NYX_TYPE_TABLE,
+    NYX_TYPE_STRING_LITERAL,
+    NYX_TYPE_ERROR,
+    NYX_TYPE_INT8,
+    NYX_TYPE_INT16,
+    NYX_TYPE_INT64,
+    NYX_TYPE_UINT16,
+    NYX_TYPE_UINT32,
+    NYX_TYPE_UINT64,
+    NYX_TYPE_FLOAT32,
+    NYX_TYPE_FLOAT64,
+    NYX_TYPE_CHANNEL, /* Channel<T>: one child, the element type */
+    /* Not a type: the number of kinds, for tables indexed by kind. */
+    NYX_TYPE_KIND_COUNT
+} NyxType;
+
+bool nyx_type_is_integer(NyxType kind);
+bool nyx_type_is_signed_integer(NyxType kind);
+bool nyx_type_is_unsigned_integer(NyxType kind);
+bool nyx_type_is_float(NyxType kind);
+bool nyx_type_is_numeric(NyxType kind);
+unsigned nyx_type_bit_width(NyxType kind);
 
 /* A resolved type. Struct types refer to their declaration name and, for an
    instantiated generic, a run of type arguments. Union types refer to a
@@ -142,14 +175,14 @@ unsigned nippy_type_bit_width(NippyType kind);
    The record holds indices only, never pointers, so it can be stored inline in
    a List. */
 typedef struct {
-    NippyType kind;
-    size_t name_index;      /* TYPED_NO_NODE unless NIPPY_TYPE_STRUCT */
-    size_t signature_index; /* TYPED_NO_NODE unless NIPPY_TYPE_FUNCTION */
+    NyxType kind;
+    size_t name_index;      /* TYPED_NO_NODE unless NYX_TYPE_STRUCT */
+    size_t signature_index; /* TYPED_NO_NODE unless NYX_TYPE_FUNCTION */
     size_t first_child;     /* union alternatives or struct type arguments */
     size_t child_count;
-    size_t declaration_node; /* TYPED_NO_NODE unless NIPPY_TYPE_STRUCT */
+    size_t declaration_node; /* TYPED_NO_NODE unless NYX_TYPE_STRUCT */
     size_t source_name_index; /* source struct name, TYPED_NO_NODE otherwise */
-    size_t fixed_length;      /* byte capacity for NIPPY_TYPE_STRING */
+    size_t fixed_length;      /* byte capacity for NYX_TYPE_STRING */
 } TypedType;
 
 typedef struct {
@@ -161,7 +194,7 @@ typedef struct {
 /* Symbols are copied, not borrowed: the typed program owns its text so that it
    outlives the syntax tree it was checked from. */
 typedef struct {
-    char text[NIPPY_IDENTIFIER_MAX];
+    char text[NYX_IDENTIFIER_MAX];
 } TypedSymbol;
 
 typedef struct {
@@ -171,7 +204,7 @@ typedef struct {
     int integer_value;
     uint64_t integer_value_u;
     double float_value;
-    NippyOperator op;
+    NyxOperator op;
     size_t name_index;
     /* TYPED_FOR: the value binding when an index binding is present. */
     size_t second_name_index;
@@ -184,6 +217,9 @@ typedef struct {
     /* Global Store id for allocation nodes, or TYPED_NO_NODE with name_index
        identifying a Store capability. Handle reads and writes carry neither. */
     size_t store_id;
+    /* TYPED_PARALLEL: the block of declarations that runs after the pool is
+       made and before any arm starts, or TYPED_NO_NODE. */
+    size_t setup_block;
     /* TYPED_STRING_LITERAL points into TypedProgram.bytes. */
     size_t string_offset;
     size_t string_length;
@@ -228,10 +264,8 @@ typedef struct {
     int error_filename_capacity;
     int max_string_capacity;
     int max_list_capacity;
+    int max_value_bytes;
     int max_print_depth;
-    /* True once a TYPED_SCOPE node has been pushed. The analyser and the
-       generator read it instead of scanning every node. */
-    bool contains_scope;
 } TypedProgram;
 
 void typed_program_init(TypedProgram *program);
@@ -243,6 +277,17 @@ size_t typed_program_copy_symbol(TypedProgram *program, const char *text,
                                  size_t length);
 const char *typed_program_symbol_text(const TypedProgram *program, size_t index);
 const TypedType *typed_program_type(const TypedProgram *program, size_t index);
+/* The kind of the type of node `node_index`, or NYX_TYPE_KIND_COUNT when the
+   node or its type does not exist, so a caller can compare without checking
+   each link. */
+NyxType typed_program_node_kind(const TypedProgram *program, size_t node_index);
+/* Two types are equivalent when they would be the same C type: structs by
+   name, the rest by structure down to `depth` levels. */
+bool typed_types_equivalent(const TypedProgram *program, size_t first,
+                            size_t second, unsigned depth);
+size_t typed_type_part_count(const TypedProgram *program, const TypedType *type);
+bool typed_type_part(const TypedProgram *program, const TypedType *type,
+                     size_t index, size_t *out_type);
 bool typed_program_add_type(TypedProgram *program, const TypedType *type,
                             size_t *out_index);
 const TypedFunctionSignature *typed_program_signature(

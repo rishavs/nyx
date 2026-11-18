@@ -1,5 +1,5 @@
-#ifndef NIPPY_MESSAGES_H
-#define NIPPY_MESSAGES_H
+#ifndef NYX_MESSAGES_H
+#define NYX_MESSAGES_H
 
 /* Single source of truth for every message the compiler emits to a user,
    diagnostic or otherwise. Stage code and the driver reference these names
@@ -17,6 +17,34 @@
     "checker: a function without a return type cannot return a value"
 #define MESSAGE_CHECKER_VOID_VALUE \
     "checker: a call without a result cannot be used as a value"
+
+/* Fragments: words and phrases that a message or the driver substitutes into
+   another message (a %s argument), plus placeholders. They are wording, so they
+   live here with the messages rather than in stage code. */
+#define MESSAGE_FRAGMENT_POSITION_PREFIX "%s:%zu:%zu (byte %zu): "
+#define MESSAGE_FRAGMENT_UNNAMED_SOURCE "<source>"
+#define MESSAGE_FRAGMENT_DEFAULT_SOURCE_NAME "nyx.nip"
+#define MESSAGE_FRAGMENT_MISSING_NAME "<missing>"
+#define MESSAGE_FRAGMENT_VALUE "value"
+#define MESSAGE_FRAGMENT_FUNCTION "function"
+#define MESSAGE_FRAGMENT_UNION "union"
+#define MESSAGE_FRAGMENT_STRUCT "struct"
+#define MESSAGE_FRAGMENT_STRING_LITERAL "string literal"
+#define MESSAGE_FRAGMENT_GENERATED_CALLEE "method or generic function"
+#define MESSAGE_FRAGMENT_INNER_SCOPE "an inner scope"
+/* Followed by the Store's name and a closing quote. */
+#define MESSAGE_FRAGMENT_STORE_PREFIX "Store '"
+#define MESSAGE_FRAGMENT_LONGER_LIVED "longer-lived memory"
+#define MESSAGE_FRAGMENT_NO_ARGUMENTS "no arguments"
+#define MESSAGE_FRAGMENT_CHANNEL_VALUE "one value of the channel's type"
+#define MESSAGE_FRAGMENT_ATOMIC_VALUE "one value of the Atomic's type"
+
+/* What a program prints for a value that has no text of its own. */
+#define MESSAGE_RUNTIME_PRINT_TRUNCATED "<...>"
+#define MESSAGE_RUNTIME_PRINT_FUNCTION "<function>"
+#define MESSAGE_RUNTIME_PRINT_INVALID_UNION "<invalid union>"
+#define MESSAGE_RUNTIME_PRINT_HANDLE \
+    "<handle store=%zu offset=%zu generation=%llu>"
 
 /* Lexer */
 #define MESSAGE_LEXER_INTEGER_OUT_OF_RANGE \
@@ -57,6 +85,8 @@
     "compiler: max_print_depth must be in 1..%d"
 #define MESSAGE_COMPILER_LIST_CAPACITY \
     "compiler: max_list_capacity must be between 1 and %d"
+#define MESSAGE_COMPILER_VALUE_BYTES \
+    "compiler: max_value_bytes must be between 1 and %d"
 #define MESSAGE_COMPILER_SOURCE_TOO_LARGE \
     "compiler: source exceeds the configured limit of %d bytes"
 
@@ -117,6 +147,20 @@
     "parser: expected 'do' after scope capacity"
 #define MESSAGE_PARSER_EXPECTED_WHILE_DO \
     "parser: expected 'do' after the while condition"
+#define MESSAGE_PARSER_EXPECTED_DEFER_DO \
+    "parser: expected 'do' after 'defer'"
+#define MESSAGE_PARSER_WHEN_ARM \
+    "parser: a when block needs a 'with' arm"
+#define MESSAGE_PARSER_WHEN_THEN \
+    "parser: expected 'then' after the channel operation of a when arm"
+#define MESSAGE_PARSER_EXPECTED_PARALLEL_DO \
+    "parser: expected 'do' after 'parallel' or its store"
+#define MESSAGE_PARSER_PARALLEL_ARM \
+    "parser: a parallel block needs a 'with' arm, after any var or const declarations"
+#define MESSAGE_PARSER_PARALLEL_BINDING \
+    "parser: expected a name and '=' after 'with var'"
+#define MESSAGE_PARSER_PARALLEL_LANE \
+    "parser: expected 'for name in range(first, last)' to repeat a parallel arm"
 #define MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END \
     "parser: expected a statement or 'end'"
 #define MESSAGE_PARSER_EXPECTED_THEN \
@@ -158,6 +202,96 @@
     "checker: range step cannot be zero"
 #define MESSAGE_RUNTIME_RANGE_ZERO_STEP \
     "range step cannot be zero"
+#define MESSAGE_CHECKER_WHEN_OPERATION \
+    "checker: a when arm waits on a channel's recv() or send(value)"
+#define MESSAGE_CHECKER_CHANNEL_NOT_GLOBAL \
+    "checker: a Channel must be declared with global"
+#define MESSAGE_CHECKER_CHANNEL_ELEMENT \
+    "checker: a channel carries plain values"
+#define MESSAGE_CHECKER_CHANNEL_UNION \
+    "checker: a channel element cannot be Nil or a union; wrap it in a struct"
+#define MESSAGE_CHECKER_CHANNEL_CAPACITY \
+    "checker: channel capacity must be a literal from 0 to %d, with a buffer of at most %d bytes"
+#define MESSAGE_CHECKER_CHANNEL_RENDEZVOUS_SEND \
+    "checker: a rendezvous channel (capacity 0) is sent to with send(); try_send and a when send arm need a buffer"
+#define MESSAGE_CHECKER_CHANNEL_INITIALIZER \
+    "checker: global '%s' needs the initialiser Channel(capacity) or Every(milliseconds)"
+#define MESSAGE_CHECKER_CHANNEL_TIMER_TYPE \
+    "checker: a timer channel is a Channel<Int64>"
+#define MESSAGE_CHECKER_CHANNEL_TIMER_INTERVAL \
+    "checker: a timer interval is a positive literal number of milliseconds"
+#define MESSAGE_CHECKER_CHANNEL_NOT_VALUE \
+    "checker: '%s' is a Channel; use send, recv, try_send, try_recv, close, or closed"
+#define MESSAGE_CHECKER_CHANNEL_USE \
+    "checker: a Channel value can only be a local variable, a parameter, or an argument"
+#define MESSAGE_CHECKER_CHANNEL_CREATE \
+    "checker: channel<T>(capacity) takes an element type and one capacity"
+#define MESSAGE_CHECKER_CHANNEL_METHOD \
+    "checker: a Channel has send, recv, try_send, try_recv, close, and closed, not '%s'"
+#define MESSAGE_CHECKER_CHANNEL_ARGUMENTS \
+    "checker: Channel %s expects %s"
+#define MESSAGE_CHECKER_ATOMIC_NOT_GLOBAL \
+    "checker: an Atomic must be declared with global"
+#define MESSAGE_CHECKER_ATOMIC_TYPE \
+    "checker: Atomic holds a Bool or an integer type"
+#define MESSAGE_CHECKER_ATOMIC_INITIALIZER \
+    "checker: global '%s' needs the initialiser Atomic(constant)"
+#define MESSAGE_CHECKER_ATOMIC_CONSTANT \
+    "checker: the Atomic initial value of '%s' must be a literal of its type"
+#define MESSAGE_CHECKER_ATOMIC_NOT_VALUE \
+    "checker: '%s' is an Atomic; use load(), store(value), or add(n)"
+#define MESSAGE_CHECKER_ATOMIC_USE \
+    "checker: Atomic can only be the type of a global declaration"
+#define MESSAGE_CHECKER_ATOMIC_METHOD \
+    "checker: an Atomic has load(), store(value), and add(n), not '%s'"
+#define MESSAGE_CHECKER_ATOMIC_ARGUMENTS \
+    "checker: Atomic %s expects %s"
+#define MESSAGE_CHECKER_ATOMIC_ADD_TYPE \
+    "checker: add needs an Atomic of an integer type"
+#define MESSAGE_CHECKER_PARALLEL_CAPACITY \
+    "checker: the store of a parallel block needs an Int32 capacity"
+#define MESSAGE_CHECKER_PARALLEL_CALL \
+    "checker: a parallel arm calls a named, non-generic function"
+#define MESSAGE_CHECKER_PARALLEL_SELF \
+    "checker: a parallel arm cannot call the function that contains it"
+#define MESSAGE_CHECKER_PARALLEL_ARGUMENT \
+    "checker: argument %zu of a parallel arm is not a plain value"
+#define MESSAGE_CHECKER_PARALLEL_STORE \
+    "checker: a parallel arm can receive only the store of its own block"
+#define MESSAGE_CHECKER_PARALLEL_LANE_RANGE \
+    "checker: a repeated arm counts over range(first, last) of Int32"
+#define MESSAGE_CHECKER_PARALLEL_LANE_RESULT \
+    "checker: a repeated arm can collect its results only with 'with target =', not 'with var'"
+#define MESSAGE_CHECKER_PARALLEL_LANE_TARGET \
+    "checker: '%s' must be an existing Array of the arm's result type to collect the results of a repeated arm"
+#define MESSAGE_CHECKER_PARALLEL_TARGET \
+    "checker: '%s' is not a variable a parallel arm can assign"
+#define MESSAGE_CHECKER_PARALLEL_TARGET_TYPE \
+    "checker: the result of the arm does not have the type of '%s'"
+#define MESSAGE_CHECKER_PARALLEL_RESULT_PLAIN \
+    "checker: a result assigned to a variable must be a plain value"
+#define MESSAGE_CHECKER_PARALLEL_RESULT_STORE \
+    "checker: a result that is not a plain value needs the store of the block"
+#define MESSAGE_CHECKER_PARALLEL_VAR_THEN \
+    "checker: 'with var' needs a then section to use the result in"
+#define MESSAGE_CHECKER_PARALLEL_DUPLICATE_TARGET \
+    "checker: two parallel arms assign '%s'"
+#define MESSAGE_CHECKER_CORES_ARGUMENTS \
+    "checker: cores takes no arguments"
+#define MESSAGE_CHECKER_DEFER_EXIT \
+    "checker: a defer block cannot return, break, or continue out of itself"
+#define MESSAGE_CHECKER_DEFER_TOP_LEVEL \
+    "checker: defer must be inside a block"
+#define MESSAGE_CHECKER_NOW_ARGUMENTS \
+    "checker: now takes no arguments"
+#define MESSAGE_CHECKER_SLEEP_ARGUMENTS \
+    "checker: sleep expects one Int64 duration in milliseconds"
+#define MESSAGE_CHECKER_SLEEP_NEGATIVE \
+    "checker: sleep duration cannot be negative"
+#define MESSAGE_RUNTIME_SLEEP_NEGATIVE \
+    "sleep duration cannot be negative"
+#define MESSAGE_RUNTIME_CLOCK_UNAVAILABLE \
+    "monotonic clock is unavailable"
 #define MESSAGE_PARSER_MATCH_EXPECTED_ELSE \
     "parser: expression match needs an else branch"
 #define MESSAGE_PARSER_EXPECTED_MEMBER_NAME \
@@ -421,9 +555,9 @@
 #define MESSAGE_PARSER_EXPECTED_TABLE_GT \
     "parser: expected '>' after Table value type"
 #define MESSAGE_RUNTIME_RECORD_FULL \
-    "nippy: Record is at capacity"
+    "nyx: Record is at capacity"
 #define MESSAGE_RUNTIME_MAP_MISSING \
-    "nippy: key is not present"
+    "nyx: key is not present"
 #define MESSAGE_CHECKER_PRINT_STATEMENT \
     "checker: print is a statement and cannot be used as a value"
 #define MESSAGE_CHECKER_PRINT_NAMED \
@@ -543,6 +677,10 @@
     "analyser: out of memory while validating Store capabilities"
 #define MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE \
     "analyser: program root index %zu is out of range"
+#define MESSAGE_ANALYSER_PARALLEL_GLOBAL_STORE \
+    "analyser: a parallel arm reaches '%s', which uses a global Store"
+#define MESSAGE_ANALYSER_PARALLEL_INDIRECT \
+    "analyser: a parallel arm reaches '%s', which calls through a function value"
 #define MESSAGE_ANALYSER_INVALID_NODE_LINK \
     "analyser: program contains an invalid node link at index %zu"
 #define MESSAGE_ANALYSER_INVALID_NAME_INDEX \
@@ -571,6 +709,10 @@
     "analyser: node %zu has an invalid Error shape"
 #define MESSAGE_ANALYSER_INVALID_NUMERIC \
     "analyser: node %zu has an invalid numeric shape"
+#define MESSAGE_ANALYSER_TYPE_ORDER \
+    "analyser: type %zu depends on itself by value, or on a type that is missing"
+#define MESSAGE_ANALYSER_UNSUPPORTED_TYPE \
+    "analyser: type %zu cannot be printed or compared"
 #define MESSAGE_ANALYSER_ESCAPE_ASSIGN \
     "analyser: a value from %s cannot be stored in '%s', which outlives it"
 #define MESSAGE_ANALYSER_ESCAPE_WRITE \
@@ -611,7 +753,13 @@
     "generator: out of memory while generating source"
 
 /* Runtime diagnostics embedded in generated C. */
-#define MESSAGE_RUNTIME_PREFIX "nippy: "
+#define MESSAGE_RUNTIME_PREFIX "nyx: "
+#define MESSAGE_RUNTIME_PARALLEL_RESULTS \
+    MESSAGE_RUNTIME_PREFIX "a repeated arm produced more results than its Array holds"
+#define MESSAGE_RUNTIME_DEADLOCK \
+    MESSAGE_RUNTIME_PREFIX "deadlock: every thread is waiting on a channel"
+#define MESSAGE_RUNTIME_THREAD_START MESSAGE_RUNTIME_PREFIX "cannot start a thread"
+#define MESSAGE_RUNTIME_POOL_FULL MESSAGE_RUNTIME_PREFIX "parallel store is full"
 #define MESSAGE_RUNTIME_OUT_OF_MEMORY MESSAGE_RUNTIME_PREFIX "out of memory"
 #define MESSAGE_RUNTIME_POSITION MESSAGE_RUNTIME_PREFIX "%s:%zu:%zu (byte %zu): %s"
 #define MESSAGE_RUNTIME_STALE_HANDLE MESSAGE_RUNTIME_PREFIX "stale handle"
@@ -621,6 +769,10 @@
 #define MESSAGE_RUNTIME_LIST_BOUNDS MESSAGE_RUNTIME_PREFIX "list index out of bounds"
 #define MESSAGE_RUNTIME_ARRAY_FULL MESSAGE_RUNTIME_PREFIX "array capacity exceeded"
 #define MESSAGE_RUNTIME_NEGATIVE_CAPACITY MESSAGE_RUNTIME_PREFIX "capacity cannot be negative"
+#define MESSAGE_RUNTIME_CHANNEL_POOL \
+    MESSAGE_RUNTIME_PREFIX "a channel can be allocated only in a parallel block's pool"
+#define MESSAGE_RUNTIME_CHANNEL_CAPACITY \
+    MESSAGE_RUNTIME_PREFIX "a channel capacity must be from 1 to 65536, and its buffer at most 64 MiB"
 #define MESSAGE_RUNTIME_DIVISION_ZERO MESSAGE_RUNTIME_PREFIX "division by zero"
 #define MESSAGE_RUNTIME_INTEGER_OVERFLOW MESSAGE_RUNTIME_PREFIX "integer overflow"
 #define MESSAGE_RUNTIME_FOR_MUTATED \

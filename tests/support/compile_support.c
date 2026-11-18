@@ -1,4 +1,6 @@
 #include "compile_support.h"
+
+#include <dirent.h>
 #include "alloc.h"
 #include "analyser.h"
 #include "ast.h"
@@ -176,4 +178,33 @@ TestResult compile_accepts(const char *source, const char *what)
     }
     compiler_result_free(&result);
     return status;
+}
+
+bool check_directory(const char *path, bool recurse, SourceCheck check)
+{
+    DIR *dir = opendir(path);
+    struct dirent *entry;
+    bool ok = true;
+
+    if (dir == NULL) {
+        fprintf(stderr, "  cannot read %s\n", path);
+        return false;
+    }
+    while ((entry = readdir(dir)) != NULL) {
+        char child[512];
+        size_t length = strlen(entry->d_name);
+        int written;
+
+        if (entry->d_name[0] == '.') continue;
+        written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(child)) {
+            ok = false;
+        } else if (length > 2 && strcmp(entry->d_name + length - 2, ".c") == 0) {
+            if (!check(child)) ok = false;
+        } else if (recurse && strchr(entry->d_name, '.') == NULL) {
+            if (!check_directory(child, false, check)) ok = false;
+        }
+    }
+    closedir(dir);
+    return ok;
 }

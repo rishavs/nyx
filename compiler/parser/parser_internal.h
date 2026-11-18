@@ -1,5 +1,5 @@
-#ifndef NIPPY_PARSER_INTERNAL_H
-#define NIPPY_PARSER_INTERNAL_H
+#ifndef NYX_PARSER_INTERNAL_H
+#define NYX_PARSER_INTERNAL_H
 
 #include "macros.h"
 #include "parser.h"
@@ -27,7 +27,7 @@ typedef bool (*ParseLevel)(const TokenList *tokens,
 
 typedef struct {
     TokenType token;
-    NippyOperator op;
+    NyxOperator op;
 } BinaryOperator;
 
 
@@ -103,6 +103,12 @@ bool parse_scope(const TokenList *tokens, const List *string_bytes, Ast *ast,
                  size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_while(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
+bool parse_defer(const TokenList *tokens, const List *string_bytes, Ast *ast,
+    size_t *cursor, size_t *out_index, ErrorState *errors);
+bool parse_parallel(const TokenList *tokens, const List *string_bytes, Ast *ast,
+    size_t *cursor, size_t *out_index, ErrorState *errors);
+bool parse_when(const TokenList *tokens, const List *string_bytes, Ast *ast,
+    size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_for(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
 bool assignment_ahead(const TokenList *tokens, size_t cursor);
@@ -118,6 +124,17 @@ bool parse_expression_statement(const TokenList *tokens, const List *string_byte
     Ast *ast, size_t *cursor, size_t *out_index, ErrorState *errors);
 bool parse_statement(const TokenList *tokens, const List *string_bytes, Ast *ast,
     size_t *cursor, size_t *out_index, ErrorState *errors);
+
+/* The statements that may appear at the top level as well as in a block. */
+typedef enum {
+    STATEMENT_NONE,   /* the next tokens start no such statement */
+    STATEMENT_PARSED,
+    STATEMENT_FAILED  /* an error is reported */
+} StatementOutcome;
+
+StatementOutcome parse_shared_statement(const TokenList *tokens,
+    const List *string_bytes, Ast *ast, size_t *cursor, size_t *out_index,
+    ErrorState *errors);
 bool parse_var_declaration(const TokenList *tokens, const List *string_bytes,
     Ast *ast, size_t *cursor, SourcePos declaration_pos, bool is_global,
     bool is_const, bool as_statement, size_t *out_index, ErrorState *errors);

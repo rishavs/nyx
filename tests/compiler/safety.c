@@ -18,7 +18,7 @@ TEST("unknown layouts fail closed")
     error_init(&errors);
     list_init(&instances, sizeof(StructInstantiation));
     list_init(&cache, sizeof(ValueLayoutCache));
-    unknown.kind = NIPPY_TYPE_UNKNOWN;
+    unknown.kind = NYX_TYPE_UNKNOWN;
     if (!typed_program_add_type(&program, &unknown, &index)) return TEST_ERROR;
     ctx.program = &program;
     ctx.errors = &errors;
@@ -43,7 +43,7 @@ TEST("type size includes array metadata and alignment")
     snprintf(source + used, sizeof(source) - used, "end\n");
     return compile_fails(source, "array metadata in layout",
                          MESSAGE_CHECKER_VALUE_TOO_LARGE, (size_t)65600,
-                         (size_t)NIPPY_MAX_VALUE_BYTES);
+                         (size_t)NYX_MAX_VALUE_BYTES);
 }
 
 TEST("an unused oversized type alias is rejected")
@@ -55,7 +55,7 @@ TEST("an unused oversized type alias is rejected")
     config.max_list_capacity = 65536;
     result = compiler_compile("type Big = Array<Byte,65536>\n", &config);
     expect_message(expected, sizeof(expected), MESSAGE_CHECKER_VALUE_TOO_LARGE,
-                   (size_t)65540, (size_t)NIPPY_MAX_VALUE_BYTES);
+                   (size_t)65540, (size_t)NYX_MAX_VALUE_BYTES);
     ok = !result.succeeded && result.error_message != NULL &&
          strstr(result.error_message, expected) != NULL;
     compiler_result_free(&result);
@@ -78,7 +78,7 @@ TEST("type size is checked through deeply nested structs")
     snprintf(source + used, sizeof(source) - used,
              "type TooBig value: T35 extra: Byte end\n");
     return compile_fails(source, "deep type layout", MESSAGE_CHECKER_VALUE_TOO_LARGE,
-                         (size_t)65540, (size_t)NIPPY_MAX_VALUE_BYTES);
+                         (size_t)65540, (size_t)NYX_MAX_VALUE_BYTES);
 }
 
 TEST("literal division by zero")
@@ -334,7 +334,7 @@ TEST("by-value size cap")
         "  a19: String<4096>\n"
         "end\n",
         "by-value size cap", MESSAGE_CHECKER_VALUE_TOO_LARGE,
-        (size_t)82080, (size_t)NIPPY_MAX_VALUE_BYTES);
+        (size_t)82080, (size_t)NYX_MAX_VALUE_BYTES);
 }
 
 TEST("local inference contexts")
@@ -361,4 +361,99 @@ TEST("parenthesized type rparen")
 {
     return compile_fails("var x: (Int32 = 1\n", "missing type rparen",
                          MESSAGE_PARSER_EXPECTED_RPAREN);
+}
+
+/* "a + a + ... + a" with `terms` terms, after `prefix`. */
+static char *sum_chain(const char *prefix, const char *term, size_t terms,
+                       const char *suffix)
+{
+    size_t length = strlen(prefix) + strlen(suffix) + terms * (strlen(term) + 3) + 1;
+    char *text = nyx_malloc(length);
+    size_t i;
+
+    if (text == NULL) return NULL;
+    strcpy(text, prefix);
+    for (i = 0; i < terms; i++) {
+        if (i > 0) strcat(text, " + ");
+        strcat(text, term);
+    }
+    strcat(text, suffix);
+    return text;
+}
+
+TEST("a long chain of constants folds, and an overflow in it is found")
+{
+    char *fits = sum_chain("const k: Int32 = 1\nvar x: Int32 = ", "k", 600, "\n");
+    char *overflows = sum_chain("var x: Int32 = 2147483647 + ", "1", 600, "\n");
+    TestResult result;
+
+    if (fits == NULL || overflows == NULL) {
+        free(fits);
+        free(overflows);
+        return TEST_ERROR;
+    }
+    result = compile_accepts(fits, "a 600-term constant sum");
+    if (result == TEST_PASS) {
+        result = compile_fails(overflows, "an overflow at the start of a long sum",
+                               MESSAGE_CHECKER_CONST_OVERFLOW);
+    }
+    free(fits);
+    free(overflows);
+    return result;
+}
+
+TEST("folding one expression does not remember what it found for the next")
+{
+    /* Both statements fold the same shape of tree under different constants. */
+    return compile_fails(
+        "const small: Int32 = 1\n"
+        "const big: Int32 = 2147483647\n"
+        "var a: Int32 = small + small + small + small\n"
+        "var b: Int32 = big + big + big + big\n",
+        "the second sum overflows", MESSAGE_CHECKER_CONST_OVERFLOW);
+}
+
+TEST("a divisor that is a folded constant is still checked")
+{
+    return compile_fails(
+        "const two: Int32 = 2\n"
+        "var a: Int32 = 10\n"
+        "var b: Int32 = a / (two - two + (two - two))\n",
+        "a divisor that folds to zero", MESSAGE_CHECKER_ZERO_DIVISOR, "/");
+}
+
+TEST("a constant is folded in the type of its expression")
+{
+    /* 4000000000 does not fit Int32 but is an ordinary Int64. */
+    TestResult wide = compile_accepts(
+        "var a: Int64 = 1\n"
+        "var y: Int64 = a + (2000000000 + 2000000000)\n"
+        "var z: Int64 = a * (3000000000 - 1) + (4000000000 * 2)\n",
+        "an Int64 sum that overflows Int32");
+    TestResult narrow;
+
+    if (wide != TEST_PASS) return wide;
+    narrow = compile_fails(
+        "var a: Int32 = 1\n"
+        "var y: Int32 = a + (2000000000 + 2000000000)\n",
+        "the same sum in Int32", MESSAGE_CHECKER_CONST_OVERFLOW);
+    if (narrow != TEST_PASS) return narrow;
+    return compile_fails(
+        "var a: Int64 = 1\n"
+        "var y: Int64 = a * (9223372036854775807 + 1)\n"
+        "var z: Int64 = a / (9223372036854775807 - 9223372036854775807)\n",
+        "a divisor that folds to zero in Int64",
+        MESSAGE_CHECKER_ZERO_DIVISOR, "/");
+}
+
+TEST("a constant shift count is checked against the width it shifts")
+{
+    TestResult fits = compile_accepts(
+        "var a: Int64 = 1\nvar y: Int64 = a << (30 + 30)\n",
+        "a shift count of 60 in Int64");
+
+    if (fits != TEST_PASS) return fits;
+    return compile_fails(
+        "var a: Int64 = 1\nvar y: Int64 = a << (40 + 30)\n",
+        "a shift count of 70 in Int64", MESSAGE_CHECKER_SHIFT_RANGE);
 }

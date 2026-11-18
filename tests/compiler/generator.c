@@ -1,13 +1,31 @@
 /* Generator stage defensive tests: typed programs the generator must refuse. */
 
 #include "compile_support.h"
+#include "../../compiler/generator/generator_internal.h"
+
+/* These programs are built by hand, so the facts come from the collector
+   alone, with no validation. */
+static bool generate_with_facts(const TypedProgram *program,
+                                const char *header_name,
+                                const char *source_name, char **c_source,
+                                char **h_source, ErrorState *errors)
+{
+    Analysis analysis;
+    bool ok;
+
+    if (!analysis_collect(program, &analysis, errors)) return false;
+    ok = generator_generate(program, &analysis, header_name, source_name,
+                            c_source, h_source, errors);
+    analysis_free(&analysis);
+    return ok;
+}
 
 static size_t push_int32_type(TypedProgram *program)
 {
     TypedType type = {0};
     size_t index = 0;
 
-    type.kind = NIPPY_TYPE_INT32;
+    type.kind = NYX_TYPE_INT32;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = TYPED_NO_NODE;
     typed_program_add_type(program, &type, &index);
@@ -54,7 +72,7 @@ TEST("unsupported root")
     typed_program_push(&program, &node, &(size_t){0});
     list_push(&program.roots, &(size_t){0});
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_ROOT)) {
         fprintf(stderr, "  unsupported root did not produce its diagnostic\n");
@@ -95,13 +113,13 @@ TEST("unsupported field")
     type_decl.children_count = 1;
     typed_program_push(&program, &type_decl, &decl_index);
     list_push(&program.roots, &decl_index);
-    struct_type.kind = NIPPY_TYPE_STRUCT;
+    struct_type.kind = NYX_TYPE_STRUCT;
     struct_type.name_index = name;
     struct_type.declaration_node = decl_index;
     struct_type.source_name_index = name;
     typed_program_add_type(&program, &struct_type, &struct_type_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_FIELD)) {
         fprintf(stderr, "  unsupported field did not produce its diagnostic\n");
@@ -141,7 +159,7 @@ TEST("invalid identifier")
     typed_program_push(&program, &var, &var_index);
     list_push(&program.roots, &var_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER)) {
         fprintf(stderr, "  invalid identifier did not produce its diagnostic\n");
@@ -161,7 +179,7 @@ TEST("invalid header name")
     make_int_var_program(&program);
     error_init(&errors);
 
-    if (generator_generate(&program, "../bad", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "../bad", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_INVALID_HEADER_NAME)) {
         fprintf(stderr, "  invalid header name did not produce its diagnostic\n");
@@ -181,7 +199,7 @@ TEST("invalid line name")
     make_int_var_program(&program);
     error_init(&errors);
 
-    if (generator_generate(&program, "ok.h", "bad\"name", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "bad\"name", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_INVALID_LINE_NAME)) {
         fprintf(stderr, "  invalid #line name did not produce its diagnostic\n");
@@ -220,7 +238,7 @@ TEST("unsupported expression")
     typed_program_push(&program, &var, &var_index);
     list_push(&program.roots, &var_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION)) {
         fprintf(stderr, "  unsupported expression did not produce its diagnostic\n");
@@ -251,7 +269,7 @@ TEST("unsupported function")
     typed_program_push(&program, &function, &function_index);
     list_push(&program.roots, &function_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION)) {
         fprintf(stderr, "  unsupported function did not produce its diagnostic\n");
@@ -289,7 +307,7 @@ TEST("unsupported type")
     typed_program_push(&program, &var, &var_index);
     list_push(&program.roots, &var_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE)) {
         fprintf(stderr, "  unsupported type did not produce its diagnostic\n");
@@ -328,7 +346,7 @@ TEST("unsupported statement")
     signature.parameter_count = 0;
     signature.return_type = int32_type;
     typed_program_add_signature(&program, &signature, &signature_index);
-    function_type.kind = NIPPY_TYPE_FUNCTION;
+    function_type.kind = NYX_TYPE_FUNCTION;
     function_type.name_index = TYPED_NO_NODE;
     function_type.signature_index = signature_index;
     typed_program_add_type(&program, &function_type, &function_type_index);
@@ -359,7 +377,7 @@ TEST("unsupported statement")
     typed_program_push(&program, &function, &function_index);
     list_push(&program.roots, &function_index);
 
-    if (generator_generate(&program, "ok.h", "ok.nip", &c_source, &h_source,
+    if (generate_with_facts(&program, "ok.h", "ok.nip", &c_source, &h_source,
                            &errors) ||
         !error_contains(&errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT)) {
         fprintf(stderr, "  unsupported statement did not produce its diagnostic\n");
@@ -368,6 +386,37 @@ TEST("unsupported statement")
     }
     typed_program_free(&program);
     return TEST_PASS;
+}
+
+/* One program using every runtime that checks a handle's generation: a Handle,
+   a List, a Slice, a Text, a TextBuilder, and a Table. */
+#define EVERY_HANDLE_USER \
+    "global s: Store = Store(1024)\n" \
+    "var p: Handle<Int32> = s.alloc<Int32>(1)\n" \
+    "var xs: List<Int32> = s.list<Int32>(4)\n" \
+    "var window: Slice<Int32> = xs.slice(0, 0)\n" \
+    "var t: Text = s.copy(\"hi\")\n" \
+    "var b: TextBuilder = s.builder(4)\n" \
+    "var table: Table<String<4>, Bool> = s.table<String<4>, Bool>(1)\n"
+
+static int stale_checks_in(const char *source)
+{
+    CompilerConfig config = {.header_name = "test.h",
+                             .source_name = "test.nip"};
+    CompilerResult result = compiler_compile(source, &config);
+    int found = -1;
+
+    if (result.succeeded && result.c_source != NULL) {
+        const char *at = result.c_source;
+
+        found = 0;
+        while ((at = strstr(at, MESSAGE_RUNTIME_STALE_HANDLE)) != NULL) {
+            found++;
+            at++;
+        }
+    }
+    compiler_result_free(&result);
+    return found;
 }
 
 TEST("store: runtime diagnostics emitted")
@@ -385,7 +434,6 @@ TEST("store: runtime diagnostics emitted")
     }
     ok = result.c_source != NULL &&
          strstr(result.c_source, MESSAGE_RUNTIME_OUT_OF_MEMORY) != NULL &&
-         strstr(result.c_source, MESSAGE_RUNTIME_STALE_HANDLE) != NULL &&
          strstr(result.c_source, MESSAGE_RUNTIME_HANDLE_BOUNDS) != NULL &&
          strstr(result.c_source, MESSAGE_RUNTIME_STORE_RANGE) != NULL;
     compiler_result_free(&result);
@@ -394,4 +442,84 @@ TEST("store: runtime diagnostics emitted")
         return TEST_FAIL;
     }
     return TEST_PASS;
+}
+
+TEST("a program with no scope has no generation checks")
+{
+    int found = stale_checks_in(EVERY_HANDLE_USER);
+
+    if (found != 0) {
+        fprintf(stderr, "  %d stale-handle checks emitted, expected none\n",
+                found);
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TEST("a program with a scope keeps its generation checks")
+{
+    int found = stale_checks_in(
+        EVERY_HANDLE_USER
+        "fun f(): Int32\n scope t = Store(16) do\n  return 1\n end\nend\n");
+
+    /* Handle, string, builder, list, slice, and table each check once. */
+    if (found < 6) {
+        fprintf(stderr, "  %d stale-handle checks emitted, expected 6\n",
+                found);
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TEST("a parallel pool keeps its generation checks")
+{
+    int found = stale_checks_in(
+        EVERY_HANDLE_USER
+        "fun sq(n: Int32): Int32 return n * n end\n"
+        "parallel pool = Store(64) do\n with sq(3)\nend\n");
+
+    if (found < 6) {
+        fprintf(stderr, "  %d stale-handle checks emitted, expected 6\n",
+                found);
+        return TEST_FAIL;
+    }
+    return TEST_PASS;
+}
+
+TEST("a buffer that ran out of memory stays failed and takes no more text")
+{
+    TextBuffer buffer;
+    bool ok;
+
+    buffer_init(&buffer);
+    nyx_alloc_fail_after(0);
+    ok = !buffer_append(&buffer, "first") && buffer.failed;
+    nyx_alloc_reset();
+    /* Memory is available again, but the buffer does not recover: a run of
+       writes is checked once, where it ends. */
+    ok = ok && !buffer_append(&buffer, "second") &&
+         !buffer_appendf(&buffer, "%s", "third") && buffer.length == 0;
+    buffer_free(&buffer);
+    return ok && !buffer.failed ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("a part that failed fails the buffer it is appended to")
+{
+    TextBuffer whole, part;
+    bool ok;
+
+    buffer_init(&whole);
+    buffer_init(&part);
+    part.failed = true;
+    ok = !buffer_append_buffer(&whole, &part) && whole.failed;
+    buffer_free(&whole);
+    buffer_free(&part);
+    buffer_init(&whole);
+    buffer_init(&part);
+    ok = ok && buffer_append(&part, "ab") &&
+         buffer_append_buffer(&whole, &part) && whole.length == 2 &&
+         !whole.failed;
+    buffer_free(&whole);
+    buffer_free(&part);
+    return ok ? TEST_PASS : TEST_FAIL;
 }

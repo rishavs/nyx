@@ -36,7 +36,7 @@ static bool ast_depth_within_limit_refs(const AstNode *node, size_t *j, size_t i
             free(depths);
             error_report_at(errors, node->pos,
                             MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                            NIPPY_MAX_AST_DEPTH);
+                            NYX_MAX_AST_DEPTH);
             return false;
         }
         if (depths[child] >= (*depth)) {
@@ -51,7 +51,7 @@ static bool ast_depth_within_limit_refs(const AstNode *node, size_t *j, size_t i
             free(depths);
             error_report_at(errors, node->pos,
                             MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                            NIPPY_MAX_AST_DEPTH);
+                            NYX_MAX_AST_DEPTH);
             return false;
         }
         if (depths[*child] >= (*depth)) {
@@ -70,7 +70,7 @@ static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
         error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         return false;
     }
-    depths = nippy_malloc(ast->nodes.length * sizeof(*depths));
+    depths = nyx_malloc(ast->nodes.length * sizeof(*depths));
     if (depths == NULL && ast->nodes.length != 0) {
         error_report(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
         return false;
@@ -91,7 +91,7 @@ static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
                 free(depths);
                 error_report_at(errors, node->pos,
                                 MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                                NIPPY_MAX_AST_DEPTH);
+                                NYX_MAX_AST_DEPTH);
                 return false;
             }
             if (depths[*child] >= depth) {
@@ -99,11 +99,11 @@ static bool ast_depth_within_limit(const Ast *ast, ErrorState *errors)
             }
         }
         depths[i] = depth;
-        if (depth > NIPPY_MAX_AST_DEPTH) {
+        if (depth > NYX_MAX_AST_DEPTH) {
             free(depths);
             error_report_at(errors, node->pos,
                             MESSAGE_PARSER_TREE_DEPTH_LIMIT,
-                            NIPPY_MAX_AST_DEPTH);
+                            NYX_MAX_AST_DEPTH);
             return false;
         }
     }
@@ -134,7 +134,7 @@ static void report_lexer_errors(const LexerErrorList *errors, ErrorState *state)
                             error->character);
         } else if (error->kind == LEXER_IDENTIFIER_TOO_LONG) {
             error_report_at(state, error->pos, MESSAGE_LEXER_IDENTIFIER_TOO_LONG,
-                            NIPPY_IDENTIFIER_MAX - 1);
+                            NYX_IDENTIFIER_MAX - 1);
         } else if (error->kind == LEXER_UNTERMINATED_STRING) {
             error_report_at(state, error->pos,
                             MESSAGE_LEXER_UNTERMINATED_STRING);
@@ -160,7 +160,7 @@ static void report_lexer_errors(const LexerErrorList *errors, ErrorState *state)
 static char *copy_text(const char *text)
 {
     size_t length = strlen(text) + 1;
-    char *copy = nippy_malloc(length);
+    char *copy = nyx_malloc(length);
 
     if (copy != NULL) {
         memcpy(copy, text, length);
@@ -208,11 +208,11 @@ static bool compiler_compile_ast_initialized(ErrorState *errors, const CompilerC
         int max_string = config->max_string_capacity;
 
         if (max_string == 0) {
-            max_string = NIPPY_DEFAULT_MAX_STRING_CAPACITY;
+            max_string = NYX_DEFAULT_MAX_STRING_CAPACITY;
         }
-        if (max_string < 1 || max_string > NIPPY_MAX_STRING_CAPACITY) {
+        if (max_string < 1 || max_string > NYX_MAX_STRING_CAPACITY) {
             error_report(errors, MESSAGE_COMPILER_STRING_CAPACITY,
-                         NIPPY_MAX_STRING_CAPACITY);
+                         NYX_MAX_STRING_CAPACITY);
             return true;
         }
         (*program).max_string_capacity = max_string;
@@ -220,39 +220,52 @@ static bool compiler_compile_ast_initialized(ErrorState *errors, const CompilerC
             int max_list = config->max_list_capacity;
 
             if (max_list == 0) {
-                max_list = NIPPY_DEFAULT_MAX_LIST_CAPACITY;
+                max_list = NYX_DEFAULT_MAX_LIST_CAPACITY;
             }
-            if (max_list < 1 || max_list > NIPPY_MAX_LIST_CAPACITY) {
+            if (max_list < 1 || max_list > NYX_MAX_LIST_CAPACITY) {
                 error_report(errors, MESSAGE_COMPILER_LIST_CAPACITY,
-                             NIPPY_MAX_LIST_CAPACITY);
+                             NYX_MAX_LIST_CAPACITY);
                 return true;
             }
             (*program).max_list_capacity = max_list;
         }
         {
+            int max_value = config->max_value_bytes;
+
+            if (max_value == 0) {
+                max_value = NYX_MAX_VALUE_BYTES;
+            }
+            if (max_value < 1 || max_value > NYX_MAX_VALUE_BYTES_HARD) {
+                error_report(errors, MESSAGE_COMPILER_VALUE_BYTES,
+                             NYX_MAX_VALUE_BYTES_HARD);
+                return true;
+            }
+            (*program).max_value_bytes = max_value;
+        }
+        {
             int max_print = config->max_print_depth;
 
             if (max_print == 0) {
-                max_print = NIPPY_DEFAULT_MAX_PRINT_DEPTH;
+                max_print = NYX_DEFAULT_MAX_PRINT_DEPTH;
             }
-            if (max_print < 1 || max_print > NIPPY_MAX_PRINT_DEPTH) {
+            if (max_print < 1 || max_print > NYX_MAX_PRINT_DEPTH) {
                 error_report(errors, MESSAGE_COMPILER_PRINT_DEPTH,
-                             NIPPY_MAX_PRINT_DEPTH);
+                             NYX_MAX_PRINT_DEPTH);
                 return true;
             }
             (*program).max_print_depth = max_print;
         }
         if (!resolve_error_capacity(
                 config->error_header_capacity,
-                NIPPY_DEFAULT_ERROR_HEADER_CAPACITY, "header", max_string,
+                NYX_DEFAULT_ERROR_HEADER_CAPACITY, "header", max_string,
                 &(*program).error_header_capacity, errors) ||
             !resolve_error_capacity(
                 config->error_description_capacity,
-                NIPPY_DEFAULT_ERROR_DESCRIPTION_CAPACITY, "description",
+                NYX_DEFAULT_ERROR_DESCRIPTION_CAPACITY, "description",
                 max_string, &(*program).error_description_capacity, errors) ||
             !resolve_error_capacity(
                 config->error_filename_capacity,
-                NIPPY_DEFAULT_ERROR_FILENAME_CAPACITY, "filename", max_string,
+                NYX_DEFAULT_ERROR_FILENAME_CAPACITY, "filename", max_string,
                 &(*program).error_filename_capacity, errors)) {
             return true;
         }
@@ -260,13 +273,15 @@ static bool compiler_compile_ast_initialized(ErrorState *errors, const CompilerC
     return false;
 }
 
-static bool compiler_compile_max_source(const CompilerConfig *config, const char *source, ErrorState *errors, LexerResult *lexed, Ast *ast, bool *ast_initialized, TypedProgram *program, CompilerResult *result)
+static bool compiler_compile_max_source(const CompilerConfig *config, const char *source, ErrorState *errors, LexerResult *lexed, Ast *ast, bool *ast_initialized, TypedProgram *program, Analysis *analysis_out, CompilerResult *result)
 {
+    Analysis *analysis = analysis_out;
+
     {
         int max_source = config == NULL ? 0 : config->max_source_bytes;
 
         if (max_source <= 0) {
-            max_source = NIPPY_DEFAULT_MAX_SOURCE_BYTES;
+            max_source = NYX_DEFAULT_MAX_SOURCE_BYTES;
         }
         if (strlen(source) > (size_t)max_source) {
             error_report(errors, MESSAGE_COMPILER_SOURCE_TOO_LARGE,
@@ -304,12 +319,18 @@ static bool compiler_compile_max_source(const CompilerConfig *config, const char
     ast_free(ast);
     (*ast_initialized) = false;
 
-    if (!(config != NULL && config->skip_escape_analysis
-              ? analyser_validate(program, errors)
-              : analyser_analyse(program, errors))) {
+    if (config != NULL && config->skip_escape_analysis) {
+        if (!analyser_validate(program, errors)) {
+            return true;
+        }
+        if (!analysis_collect(program, analysis, errors)) {
+            return true;
+        }
+    } else if (!analyser_analyse(program, analysis, errors)) {
         return true;
     }
-    if (!generator_generate(program, config == NULL ? NULL : config->header_name,
+    if (!generator_generate(program, analysis,
+                            config == NULL ? NULL : config->header_name,
                             config == NULL ? NULL : config->source_name,
                             &(*result).c_source, &(*result).h_source, errors)) {
         return true;
@@ -324,6 +345,7 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
     LexerResult lexed = {0};
     Ast ast;
     TypedProgram program;
+    Analysis analysis = {0};
     bool ast_initialized = {0};
     if (compiler_compile_ast_initialized(&errors, config, &program, &ast_initialized)) {
         goto failed;
@@ -333,16 +355,18 @@ CompilerResult compiler_compile(const char *source, const CompilerConfig *config
         error_report(&errors, MESSAGE_COMPILER_SOURCE_IS_NULL);
         goto failed;
     }
-    if (compiler_compile_max_source(config, source, &errors, &lexed, &ast, &ast_initialized, &program, &result)) {
+    if (compiler_compile_max_source(config, source, &errors, &lexed, &ast, &ast_initialized, &program, &analysis, &result)) {
         goto failed;
     }
 
     result.succeeded = true;
     lexer_result_free(&lexed);
+    analysis_free(&analysis);
     typed_program_free(&program);
     return result;
 
 failed:
+    analysis_free(&analysis);
     error_unknown_if_none(&errors);
     if (lexed.tokens.item_size != 0 || lexed.errors.item_size != 0) {
         lexer_result_free(&lexed);

@@ -1,5 +1,5 @@
-#ifndef NIPPY_TOOL_SUPPORT_H
-#define NIPPY_TOOL_SUPPORT_H
+#ifndef NYX_TOOL_SUPPORT_H
+#define NYX_TOOL_SUPPORT_H
 
 /* Helpers for tests that run the compiler or its generated programs as
    separate processes. Every file such a test writes goes through test_path(),
@@ -22,13 +22,13 @@ int file_has_content(const char *path);
 int file_contains(const char *path, const char *needle);
 int file_equals(const char *path, const char *expected);
 
-/* The compiler binary the tool tests run: $NIPPY_BIN, else ./bin/nippy. The
+/* The compiler binary the tool tests run: $NYX_BIN, else ./bin/nyx. The
    poisoned-list build (`make test-poison`) points it at its own binary. */
-const char *nippy_binary(void);
+const char *nyx_binary(void);
 
 /* Runs the compiler on `source binary`, sending its output to `log`. */
 int run_compiler(const char *source_path, const char *binary, const char *log);
-/* The same with NIPPY_FAIL_ALLOC_AFTER set, to fail the nth allocation. */
+/* The same with NYX_FAIL_ALLOC_AFTER set, to fail the nth allocation. */
 int run_with_alloc_failure(size_t index, const char *source_path,
                            const char *binary, const char *log);
 int run_command(const char *command, const char *log);
@@ -37,10 +37,24 @@ int run_command(const char *command, const char *log);
    and standard output exactly equal to `expected`. */
 TestResult run_generated(const char *source, const char *expected,
                          const char *what);
+/* As run_generated, with CompilerConfig.max_value_bytes (and the list
+   capacity bound) set to `max_value_bytes`. */
+TestResult run_generated_limit(const char *source, int max_value_bytes,
+                               const char *expected, const char *what);
 /* As run_generated, but links the program's `main` renamed to
    nyx_generated_main with `driver`, a C file that supplies its own main. */
 TestResult run_generated_driver(const char *source, const char *driver,
                                 const char *expected, const char *what);
+/* As run_generated_driver, but require a non-zero exit status with
+   `log_needle` somewhere in the output, as run_generated_failure does. */
+TestResult run_generated_driver_failure(const char *source, const char *driver,
+                                        const char *log_needle,
+                                        const char *what);
+/* As run_generated_failure, and also require that `absent` is not in the
+   output. */
+TestResult run_generated_failure_lacking(const char *source,
+                                         const char *log_needle,
+                                         const char *absent, const char *what);
 /* Compile `source`, build and run it, and require a non-zero exit status with
    `log_needle` somewhere in its output. */
 TestResult run_generated_failure(const char *source, const char *log_needle,

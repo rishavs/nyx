@@ -254,6 +254,22 @@ TEST("nil type mismatch")
                          "Int32");
 }
 
+TEST("union type written in a mismatch")
+{
+    return compile_fails("var x: Int32 | Bool = 1.5\n",
+                         "a float initialising a union of Int32 and Bool",
+                         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "x",
+                         "Int32 | Bool");
+}
+
+TEST("applied type written in a mismatch")
+{
+    return compile_fails("type Box<T> v: T end\nvar b: Box<Int32> = 5\n",
+                         "an integer initialising a Box<Int32>",
+                         MESSAGE_CHECKER_INITIALISER_TYPE_MISMATCH, "b",
+                         "Box<Int32>");
+}
+
 TEST("Nil as a value")
 {
     return compile_fails("var x = Nil\n", "the Nil type used as a value",

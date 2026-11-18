@@ -4,7 +4,7 @@
 #include "../../compiler/checker/checker_internal.h"
 #include "../../compiler/generator/generator_internal.h"
 
-static bool add_region_type(TypedProgram *program, NippyType kind,
+static bool add_region_type(TypedProgram *program, NyxType kind,
                             size_t first, size_t count, size_t declaration)
 {
     TypedType type = {0};
@@ -50,7 +50,7 @@ TEST("Store capability references preserve their binding")
     memcpy(parameter.name, "output", 7);
     parameter.type_index = 0;
     ok = symbol != AST_NO_NODE && list_push(&ast.nodes, &receiver) &&
-         add_region_type(&program, NIPPY_TYPE_STORE, 0, 0, TYPED_NO_NODE) &&
+         add_region_type(&program, NYX_TYPE_STORE, 0, 0, TYPED_NO_NODE) &&
          list_push(&locals, &parameter) &&
          member_store(&ctx, &call, "copy", &store) &&
          set_store_reference(&ctx, &typed, &store) &&

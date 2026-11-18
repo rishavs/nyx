@@ -1,6 +1,6 @@
 #include "checker_internal.h"
 
-bool builtin_type(CheckContext *ctx, NippyType kind, size_t *out_index)
+bool builtin_type(CheckContext *ctx, NyxType kind, size_t *out_index)
 {
     size_t i;
 
@@ -27,7 +27,7 @@ bool string_type(CheckContext *ctx, int capacity, size_t *out_index)
     for (i = 0; i < ctx->program->types.length; i++) {
         const TypedType *type = typed_program_type(ctx->program, i);
 
-        if (type != NULL && type->kind == NIPPY_TYPE_STRING &&
+        if (type != NULL && type->kind == NYX_TYPE_STRING &&
             type->fixed_length == (size_t)capacity) {
             *out_index = i;
             return true;
@@ -36,14 +36,13 @@ bool string_type(CheckContext *ctx, int capacity, size_t *out_index)
     {
         TypedType type = {0};
 
-        type.kind = NIPPY_TYPE_STRING;
+        type.kind = NYX_TYPE_STRING;
         type.name_index = TYPED_NO_NODE;
         type.signature_index = TYPED_NO_NODE;
         type.fixed_length = (size_t)capacity;
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        if (!checker_add_type(ctx, &type, out_index)) {
             return false;
         }
         return true;
@@ -57,7 +56,7 @@ bool string_literal_type(CheckContext *ctx, size_t *out_index)
     for (i = 0; i < ctx->program->types.length; i++) {
         const TypedType *type = typed_program_type(ctx->program, i);
 
-        if (type != NULL && type->kind == NIPPY_TYPE_STRING_LITERAL) {
+        if (type != NULL && type->kind == NYX_TYPE_STRING_LITERAL) {
             *out_index = i;
             return true;
         }
@@ -65,13 +64,12 @@ bool string_literal_type(CheckContext *ctx, size_t *out_index)
     {
         TypedType type = {0};
 
-        type.kind = NIPPY_TYPE_STRING_LITERAL;
+        type.kind = NYX_TYPE_STRING_LITERAL;
         type.name_index = TYPED_NO_NODE;
         type.signature_index = TYPED_NO_NODE;
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        if (!checker_add_type(ctx, &type, out_index)) {
             return false;
         }
         return true;
@@ -89,7 +87,7 @@ bool error_type(CheckContext *ctx, size_t *out_index)
     for (i = 0; i < ctx->program->types.length; i++) {
         const TypedType *type = typed_program_type(ctx->program, i);
 
-        if (type != NULL && type->kind == NIPPY_TYPE_ERROR) {
+        if (type != NULL && type->kind == NYX_TYPE_ERROR) {
             *out_index = i;
             return true;
         }
@@ -101,24 +99,20 @@ bool error_type(CheckContext *ctx, size_t *out_index)
         return false;
     }
     children_start = ctx->program->type_children.length;
-    if (!typed_program_add_type_child(ctx->program, header) ||
-        !typed_program_add_type_child(ctx->program, description) ||
-        !typed_program_add_type_child(ctx->program, filename)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
+    checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, header), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, description), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, filename), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     {
         TypedType type = {0};
 
-        type.kind = NIPPY_TYPE_ERROR;
+        type.kind = NYX_TYPE_ERROR;
         type.name_index = TYPED_NO_NODE;
         type.signature_index = TYPED_NO_NODE;
         type.first_child = children_start;
         type.child_count = 3;
         type.declaration_node = TYPED_NO_NODE;
         type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+        if (!checker_add_type(ctx, &type, out_index)) {
             return false;
         }
         return true;
@@ -130,7 +124,7 @@ bool error_field_type(CheckContext *ctx, size_t error_index,
 {
     const TypedType *error = typed_program_type(ctx->program, error_index);
 
-    if (error == NULL || error->kind != NIPPY_TYPE_ERROR ||
+    if (error == NULL || error->kind != NYX_TYPE_ERROR ||
         error->child_count != 3) {
         return false;
     }
@@ -144,278 +138,112 @@ bool error_field_type(CheckContext *ctx, size_t error_index,
         *out_type = *type;
         return true;
     }
-    return builtin_type(ctx, NIPPY_TYPE_INT32, out_type);
+    return builtin_type(ctx, NYX_TYPE_INT32, out_type);
 }
+
+static bool kind_in(NyxType kind, const NyxType *kinds, size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        if (kinds[i] == kind) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The kinds of type that have a size, besides the numbers. */
+static const NyxType sized_kinds[] = {
+    NYX_TYPE_BOOL,   NYX_TYPE_NIL,      NYX_TYPE_STRUCT,
+    NYX_TYPE_HANDLE, NYX_TYPE_CHANNEL,  NYX_TYPE_STRING,
+    NYX_TYPE_DYNAMIC_STRING, NYX_TYPE_TEXT_BUILDER, NYX_TYPE_LIST,
+    NYX_TYPE_FIXED_LIST, NYX_TYPE_SLICE, NYX_TYPE_RANGE,
+    NYX_TYPE_RECORD, NYX_TYPE_TABLE,    NYX_TYPE_UNION,
+    NYX_TYPE_FUNCTION, NYX_TYPE_ERROR,
+};
 
 bool is_sized_type(const TypedProgram *program, size_t type_index)
 {
     const TypedType *type = typed_program_type(program, type_index);
 
-    if (type == NULL) {
-        return false;
-    }
-    return nippy_type_is_numeric(type->kind) ||
-           type->kind == NIPPY_TYPE_BOOL || type->kind == NIPPY_TYPE_NIL ||
-           type->kind == NIPPY_TYPE_STRUCT ||
-           type->kind == NIPPY_TYPE_HANDLE ||
-           type->kind == NIPPY_TYPE_STRING ||
-           type->kind == NIPPY_TYPE_DYNAMIC_STRING ||
-           type->kind == NIPPY_TYPE_TEXT_BUILDER ||
-           type->kind == NIPPY_TYPE_LIST ||
-           type->kind == NIPPY_TYPE_FIXED_LIST ||
-           type->kind == NIPPY_TYPE_SLICE ||
-           type->kind == NIPPY_TYPE_RANGE ||
-           type->kind == NIPPY_TYPE_RECORD ||
-           type->kind == NIPPY_TYPE_TABLE ||
-           type->kind == NIPPY_TYPE_UNION ||
-           type->kind == NIPPY_TYPE_FUNCTION ||
-           type->kind == NIPPY_TYPE_ERROR;
+    return type != NULL &&
+           (nyx_type_is_numeric(type->kind) ||
+            kind_in(type->kind, sized_kinds, NYX_COUNT_OF(sized_kinds)));
 }
 
-bool is_fixed_type_depth(const TypedProgram *program, size_t type_index, unsigned depth);
-
-static bool is_fixed_type_depth_declaration(const TypedProgram *program, const TypedType *type, size_t *i, unsigned int depth)
+/* A type that has a handle-less structural identity: the one with these parts
+   (and fixed length) if it exists, otherwise a new one. */
+static bool intern_type(CheckContext *ctx, NyxType kind, const size_t *parts,
+                        size_t count, size_t fixed_length, size_t *out_index)
 {
-    const TypedNode *declaration = typed_program_node(
-        program, type->declaration_node);
-
-    if (declaration == NULL) {
-        return false;
-    }
-    for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
-        size_t child = *(const size_t *)list_get(
-            &program->children, declaration->children_start + (*i));
-        const TypedNode *field = typed_program_node(program, child);
-
-        if (field == NULL ||
-            !is_fixed_type_depth(program, field->type_index,
-                                 depth - 1)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool is_fixed_type_depth(const TypedProgram *program, size_t type_index, unsigned depth);
-
-static bool is_fixed_type_depth_alternative(const TypedType *type, const TypedProgram *program, unsigned int depth, size_t *i)
-{
-    switch (type->kind) {
-    case NIPPY_TYPE_BOOL:
-    case NIPPY_TYPE_NIL:
-    case NIPPY_TYPE_STRING:
-    case NIPPY_TYPE_FUNCTION:
-    case NIPPY_TYPE_ERROR:
-    case NIPPY_TYPE_RANGE:
-    case NIPPY_TYPE_HANDLE:
-        return true;
-    case NIPPY_TYPE_FIXED_LIST:
-        if (type->child_count != 1) {
-            return false;
-        }
-        return is_fixed_type_depth(
-            program, *(const size_t *)list_get(&program->type_children,
-                                               type->first_child),
-            depth - 1);
-    case NIPPY_TYPE_UNION:
-        for ((*i) = 0; (*i) < type->child_count; (*i)++) {
-            size_t alternative = *(const size_t *)list_get(
-                &program->type_children, type->first_child + (*i));
-
-            if (!is_fixed_type_depth(program, alternative, depth - 1)) {
-                return false;
-            }
-        }
-        return true;
-    case NIPPY_TYPE_STRUCT: {
-        if (!is_fixed_type_depth_declaration(program, type, i, depth)) {
-        return false;
-    }
-        return true;
-    }
-    default:
-        return false;
-    }
-}
-
-bool is_fixed_type_depth(const TypedProgram *program, size_t type_index,
-                                unsigned depth)
-{
-    const TypedType *type = typed_program_type(program, type_index);
+    TypedProgram *program = ctx->program;
+    TypedType type = {0};
     size_t i;
+    size_t j;
 
-    if (type == NULL || depth == 0) {
-        return false;
-    }
-    if (nippy_type_is_numeric(type->kind)) {
-        return true;
-    }
-    return is_fixed_type_depth_alternative(type, program, depth, &i);
-}
+    for (i = 0; i < program->types.length; i++) {
+        const TypedType *existing = typed_program_type(program, i);
+        bool same = existing != NULL && existing->kind == kind &&
+                    existing->child_count == count &&
+                    existing->fixed_length == fixed_length;
 
-bool is_fixed_type(const TypedProgram *program, size_t type_index)
-{
-    return is_fixed_type_depth(program, type_index, NIPPY_TYPE_DEPTH);
-}
-
-static bool check_handle_payload_field(const size_t *child, const TypedProgram *program, const TypedNode **field)
-{
-    (*field) = child == NULL ? NULL :
-                             typed_program_node(program, *child);
-    if ((*field) == NULL || (*field)->kind != TYPED_FIELD) return true;
-    return false;
-}
-
-static int check_handle_payload_nippy_malloc(unsigned char **seen, const TypedProgram *program, CheckContext *ctx, List *pending, size_t *type_index)
-{
-    (*seen) = nippy_malloc(program->types.length == 0 ? 1 : program->types.length);
-    if ((*seen) == NULL) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return 2;
-    }
-    memset((*seen), 0, program->types.length);
-    list_init(pending, sizeof(size_t));
-    if (!list_push(pending, type_index)) return 1;
-    return 0;
-}
-
-/* Payload validation follows handle edges too; recursive handle graphs are
-   finite even when their inline layout is recursive through an opaque handle. */
-bool check_handle_payload(CheckContext *ctx, size_t type_index, bool *valid)
-{
-    const TypedProgram *program = ctx->program;
-    unsigned char *seen;
-    List pending;
-    bool ok = false;
-
-    *valid = false;
-    {
-        int status = check_handle_payload_nippy_malloc(&seen, program, ctx, &pending, &type_index);
-
-        if (status == 1) {
-            goto out_of_memory;
+        for (j = 0; same && j < count; j++) {
+            same = same_type(program,
+                             *(const size_t *)list_get(&program->type_children,
+                                                       existing->first_child + j),
+                             parts[j]);
         }
-        if (status == 2) {
-            return false;
+        if (same) {
+            *out_index = i;
+            return true;
         }
     }
-    while (pending.length != 0) {
-        const TypedType *type;
-        size_t current;
-        size_t i;
-
-        if (!list_pop(&pending, &current)) goto out_of_memory;
-        if (current >= program->types.length) goto done;
-        if (seen[current]) continue;
-        seen[current] = 1;
-        type = typed_program_type(program, current);
-        if (type == NULL) goto done;
-        if (nippy_type_is_numeric(type->kind)) continue;
-        switch (type->kind) {
-        case NIPPY_TYPE_BOOL:
-        case NIPPY_TYPE_NIL:
-        case NIPPY_TYPE_STRING:
-        case NIPPY_TYPE_DYNAMIC_STRING:
-        case NIPPY_TYPE_FUNCTION:
-        case NIPPY_TYPE_ERROR:
-        case NIPPY_TYPE_RANGE:
-            break;
-        case NIPPY_TYPE_HANDLE:
-        case NIPPY_TYPE_FIXED_LIST:
-        case NIPPY_TYPE_UNION:
-            if ((type->kind == NIPPY_TYPE_HANDLE ||
-                 type->kind == NIPPY_TYPE_FIXED_LIST) && type->child_count != 1)
-                goto done;
-            for (i = 0; i < type->child_count; i++) {
-                const size_t *child = list_get(&program->type_children,
-                                               type->first_child + i);
-                if (child == NULL) goto done;
-                if (!list_push(&pending, child)) goto out_of_memory;
-            }
-            break;
-        case NIPPY_TYPE_STRUCT: {
-            const TypedNode *decl = typed_program_node(program, type->declaration_node);
-            if (decl == NULL || decl->kind != TYPED_TYPE_DECLARATION) goto done;
-            for (i = 0; i < decl->children_count; i++) {
-                const size_t *child = list_get(&program->children,
-                                               decl->children_start + i);
-                const TypedNode *field = {0};
-                if (check_handle_payload_field(child, program, &field)) {
-        goto done;
+    type.kind = kind;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    type.first_child = program->type_children.length;
+    type.child_count = count;
+    type.fixed_length = fixed_length;
+    type.declaration_node = TYPED_NO_NODE;
+    type.source_name_index = TYPED_NO_NODE;
+    for (j = 0; j < count; j++) {
+        checker_ok(ctx->errors,
+                   typed_program_add_type_child(program, parts[j]),
+                   MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     }
-                if (!list_push(&pending, &field->type_index)) goto out_of_memory;
-            }
-            break;
-        }
-        default:
-            goto done;
-        }
-    }
-    *valid = true;
-done:
-    ok = true;
-    goto cleanup;
-out_of_memory:
-    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-cleanup:
-    list_free(&pending);
-    free(seen);
-    return ok;
+    return checker_add_type(ctx, &type, out_index);
 }
 
 bool handle_type(CheckContext *ctx, size_t element, size_t *out_index)
 {
-    size_t i;
+    bool valid = true;
 
-    if (ctx->handle_depth == 0) {
-        bool valid;
-        if (!check_handle_payload(ctx, element, &valid)) return false;
-        if (!valid) {
-            error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
-            return false;
-        }
+    if (ctx->handle_depth == 0 && !check_handle_payload(ctx, element, &valid)) {
+        return false;
     }
-    for (i = 0; i < ctx->program->types.length; i++) {
-        const TypedType *type = typed_program_type(ctx->program, i);
-
-        if (type == NULL || type->kind != NIPPY_TYPE_HANDLE ||
-            type->child_count != 1) {
-            continue;
-        }
-        {
-            size_t existing = *(const size_t *)list_get(
-                &ctx->program->type_children, type->first_child);
-
-            if (same_type(ctx->program, existing, element)) {
-                *out_index = i;
-                return true;
-            }
-        }
+    if (!valid) {
+        error_report(ctx->errors, MESSAGE_CHECKER_HANDLE_FIXED);
+        return false;
     }
-    {
-        TypedType type = {0};
-        size_t first = ctx->program->type_children.length;
-
-        if (!typed_program_add_type_child(ctx->program, element)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-        type.kind = NIPPY_TYPE_HANDLE;
-        type.name_index = TYPED_NO_NODE;
-        type.signature_index = TYPED_NO_NODE;
-        type.first_child = first;
-        type.child_count = 1;
-        type.declaration_node = TYPED_NO_NODE;
-        type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-        return true;
-    }
+    return intern_type(ctx, NYX_TYPE_HANDLE, &element, 1, 0, out_index);
 }
 
-bool add_type_record(CheckContext *ctx, NippyType kind,
+/* Channel<T>: a value naming a channel in a parallel pool. */
+/* Channel<T>: a value naming a channel in a parallel pool. */
+bool channel_type(CheckContext *ctx, size_t element, size_t *out_index)
+{
+    return intern_type(ctx, NYX_TYPE_CHANNEL, &element, 1, 0, out_index);
+}
+
+bool type_is_channel(const TypedProgram *program, size_t type_index)
+{
+    const TypedType *type = typed_program_type(program, type_index);
+
+    return type != NULL && type->kind == NYX_TYPE_CHANNEL;
+}
+
+bool add_type_record(CheckContext *ctx, NyxType kind,
                             size_t name_index, size_t signature_index,
                             size_t *out_index)
 {
@@ -428,8 +256,7 @@ bool add_type_record(CheckContext *ctx, NippyType kind,
     type.child_count = 0;
     type.declaration_node = TYPED_NO_NODE;
     type.source_name_index = TYPED_NO_NODE;
-    if (!typed_program_add_type(ctx->program, &type, out_index)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    if (!checker_add_type(ctx, &type, out_index)) {
         return false;
     }
     return true;
@@ -439,241 +266,77 @@ bool text_builder_type(CheckContext *ctx, size_t *out_index)
 {
     size_t dynamic_string;
 
-    if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, &dynamic_string)) {
+    if (!builtin_type(ctx, NYX_TYPE_DYNAMIC_STRING, &dynamic_string)) {
         return false;
     }
-    return builtin_type(ctx, NIPPY_TYPE_TEXT_BUILDER, out_index);
+    return builtin_type(ctx, NYX_TYPE_TEXT_BUILDER, out_index);
 }
 
-bool is_list_element_type(CheckContext *ctx, size_t element_type,
-                                 bool fixed)
+/* What a list, array, slice or map cannot hold. */
+static const NyxType unholdable_kinds[] = {
+    NYX_TYPE_STORE,  NYX_TYPE_CHANNEL, NYX_TYPE_LIST,       NYX_TYPE_FIXED_LIST,
+    NYX_TYPE_SLICE,  NYX_TYPE_RECORD,  NYX_TYPE_TABLE,      NYX_TYPE_TEXT_BUILDER,
+};
+
+bool is_list_element_type(CheckContext *ctx, size_t element_type, bool fixed)
 {
     const TypedType *type = typed_program_type(ctx->program, element_type);
 
     (void)fixed;
-    if (type == NULL || type->kind == NIPPY_TYPE_STORE ||
-        type->kind == NIPPY_TYPE_LIST ||
-        type->kind == NIPPY_TYPE_FIXED_LIST ||
-        type->kind == NIPPY_TYPE_SLICE ||
-        type->kind == NIPPY_TYPE_RECORD ||
-        type->kind == NIPPY_TYPE_TABLE ||
-        type->kind == NIPPY_TYPE_TEXT_BUILDER) {
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_FUNCTION) {
-        return true;
-    }
-    if (type->kind == NIPPY_TYPE_UNION) {
-        return true;
-    }
-    return is_sized_type(ctx->program, element_type);
+    return type != NULL &&
+           !kind_in(type->kind, unholdable_kinds, NYX_COUNT_OF(unholdable_kinds)) &&
+           is_sized_type(ctx->program, element_type);
 }
 
-static bool map_type_key(CheckContext *ctx, size_t key_type, size_t value_type, bool fixed, size_t capacity, size_t *out_index, bool *outcome)
+bool map_type(CheckContext *ctx, size_t key_type, size_t value_type, bool fixed,
+              size_t capacity, size_t *out_index)
 {
     const TypedType *key = typed_program_type(ctx->program, key_type);
-    size_t i;
+    size_t parts[2] = {key_type, value_type};
 
-    if (key == NULL || key->kind != NIPPY_TYPE_STRING) {
+    if (key == NULL || key->kind != NYX_TYPE_STRING) {
         error_report(ctx->errors, MESSAGE_CHECKER_MAP_KEY);
-        do { *outcome = (false); return true; } while (0);
+        return false;
     }
     if (!is_list_element_type(ctx, value_type, fixed)) {
         error_report(ctx->errors, MESSAGE_CHECKER_MAP_VALUE);
-        do { *outcome = (false); return true; } while (0);
+        return false;
     }
     if (fixed && capacity > (size_t)ctx->program->max_list_capacity) {
         error_report(ctx->errors, MESSAGE_CHECKER_RECORD_CAPACITY);
-        do { *outcome = (false); return true; } while (0);
+        return false;
     }
-    for (i = 0; i < ctx->program->types.length; i++) {
-        const TypedType *type = typed_program_type(ctx->program, i);
-
-        if (type == NULL ||
-            type->kind != (fixed ? NIPPY_TYPE_RECORD : NIPPY_TYPE_TABLE) ||
-            type->child_count != 2) {
-            continue;
-        }
-        {
-            size_t existing_key = *(const size_t *)list_get(
-                &ctx->program->type_children, type->first_child);
-            size_t existing_value = *(const size_t *)list_get(
-                &ctx->program->type_children, type->first_child + 1);
-
-            if (same_type(ctx->program, existing_key, key_type) &&
-                same_type(ctx->program, existing_value, value_type) &&
-                (!fixed || type->fixed_length == capacity)) {
-                *out_index = i;
-                do { *outcome = (true); return true; } while (0);
-            }
-        }
-    }
-    return false;
-}
-
-bool map_type(CheckContext *ctx, size_t key_type, size_t value_type,
-                     bool fixed, size_t capacity, size_t *out_index)
-{
-    {
-        bool outcome;
-
-        if (map_type_key(ctx, key_type, value_type, fixed, capacity, out_index, &outcome)) {
-            return outcome;
-        }
-    }
-    {
-        TypedType type = {0};
-
-        type.kind = fixed ? NIPPY_TYPE_RECORD : NIPPY_TYPE_TABLE;
-        type.name_index = TYPED_NO_NODE;
-        type.signature_index = TYPED_NO_NODE;
-        type.first_child = ctx->program->type_children.length;
-        type.child_count = 2;
-        type.fixed_length = fixed ? capacity : 0;
-        type.declaration_node = TYPED_NO_NODE;
-        type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type_child(ctx->program, key_type) ||
-            !typed_program_add_type_child(ctx->program, value_type) ||
-            !typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-        return true;
-    }
+    return intern_type(ctx, fixed ? NYX_TYPE_RECORD : NYX_TYPE_TABLE, parts, 2,
+                       fixed ? capacity : 0, out_index);
 }
 
 bool list_type(CheckContext *ctx, size_t element_type, bool fixed,
-                      size_t capacity, size_t *out_index)
+               size_t capacity, size_t *out_index)
 {
-    size_t i;
-
     if (!is_list_element_type(ctx, element_type, fixed)) {
-        error_report(ctx->errors,
-                     fixed ? MESSAGE_CHECKER_ARRAY_ELEMENT
-                           : MESSAGE_CHECKER_COLLECTION_ELEMENT);
+        error_report(ctx->errors, fixed ? MESSAGE_CHECKER_ARRAY_ELEMENT
+                                        : MESSAGE_CHECKER_COLLECTION_ELEMENT);
         return false;
     }
-    for (i = 0; i < ctx->program->types.length; i++) {
-        const TypedType *type = typed_program_type(ctx->program, i);
-
-        if (type == NULL) {
-            continue;
-        }
-        if (type->kind != (fixed ? NIPPY_TYPE_FIXED_LIST
-                                 : NIPPY_TYPE_LIST)) {
-            continue;
-        }
-        if (type->child_count == 1) {
-            size_t existing = *(const size_t *)list_get(
-                &ctx->program->type_children, type->first_child);
-
-            if (same_type(ctx->program, existing, element_type) &&
-                (!fixed || type->fixed_length == capacity)) {
-                *out_index = i;
-                return true;
-            }
-        }
-    }
-    {
-        TypedType type = {0};
-
-        type.kind = fixed ? NIPPY_TYPE_FIXED_LIST : NIPPY_TYPE_LIST;
-        type.name_index = TYPED_NO_NODE;
-        type.signature_index = TYPED_NO_NODE;
-        type.first_child = ctx->program->type_children.length;
-        type.child_count = 1;
-        type.fixed_length = fixed ? capacity : 0;
-        type.declaration_node = TYPED_NO_NODE;
-        type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-        if (!typed_program_add_type_child(ctx->program, element_type)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-            return false;
-        }
-        return true;
-    }
+    return intern_type(ctx, fixed ? NYX_TYPE_FIXED_LIST : NYX_TYPE_LIST,
+                       &element_type, 1, fixed ? capacity : 0, out_index);
 }
 
-bool slice_type(CheckContext *ctx, size_t element_type,
-                       size_t *out_index)
+bool slice_type(CheckContext *ctx, size_t element_type, size_t *out_index)
 {
-    size_t i;
-
     if (!is_list_element_type(ctx, element_type, false)) {
         error_report(ctx->errors, MESSAGE_CHECKER_SLICE_ELEMENT);
         return false;
     }
-    for (i = 0; i < ctx->program->types.length; i++) {
-        const TypedType *type = typed_program_type(ctx->program, i);
-
-        if (type == NULL || type->kind != NIPPY_TYPE_SLICE ||
-            type->child_count != 1) {
-            continue;
-        }
-        {
-            size_t existing = *(const size_t *)list_get(
-                &ctx->program->type_children, type->first_child);
-
-            if (same_type(ctx->program, existing, element_type)) {
-                *out_index = i;
-                return true;
-            }
-        }
-    }
-    {
-        TypedType type = {0};
-
-        type.kind = NIPPY_TYPE_SLICE;
-        type.name_index = TYPED_NO_NODE;
-        type.signature_index = TYPED_NO_NODE;
-        type.first_child = ctx->program->type_children.length;
-        type.child_count = 1;
-        type.declaration_node = TYPED_NO_NODE;
-        type.source_name_index = TYPED_NO_NODE;
-        if (!typed_program_add_type(ctx->program, &type, out_index)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-        if (!typed_program_add_type_child(ctx->program, element_type)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-            return false;
-        }
-        return true;
-    }
+    return intern_type(ctx, NYX_TYPE_SLICE, &element_type, 1, 0, out_index);
 }
 
 bool range_type(CheckContext *ctx, size_t element_type, size_t *out_index)
 {
     const TypedType *element = typed_program_type(ctx->program, element_type);
-    TypedType type = {0};
-    size_t i;
-    if (element == NULL || !nippy_type_is_integer(element->kind)) return false;
-    for (i = 0; i < ctx->program->types.length; i++) {
-        const TypedType *existing = typed_program_type(ctx->program, i);
-        if (existing != NULL && existing->kind == NIPPY_TYPE_RANGE &&
-            existing->child_count == 1 && same_type(ctx->program, element_type,
-                *(const size_t *)list_get(&ctx->program->type_children,
-                                           existing->first_child))) {
-            *out_index = i;
-            return true;
-        }
-    }
-    type.kind = NIPPY_TYPE_RANGE;
-    type.name_index = TYPED_NO_NODE;
-    type.signature_index = TYPED_NO_NODE;
-    type.first_child = ctx->program->type_children.length;
-    type.child_count = 1;
-    type.declaration_node = TYPED_NO_NODE;
-    type.source_name_index = TYPED_NO_NODE;
-    if (!typed_program_add_type(ctx->program, &type, out_index) ||
-        !typed_program_add_type_child(ctx->program, element_type)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
-    return true;
+
+    return element != NULL && nyx_type_is_integer(element->kind) &&
+           intern_type(ctx, NYX_TYPE_RANGE, &element_type, 1, 0, out_index);
 }
 
 bool add_function_type(CheckContext *ctx, const List *parameter_types,
@@ -690,23 +353,17 @@ bool add_function_type(CheckContext *ctx, const List *parameter_types,
     for (i = 0; i < parameter_types->length; i++) {
         size_t parameter_type = *(const size_t *)list_get(parameter_types, i);
 
-        if (!typed_program_add_signature_parameter(ctx->program,
-                                                   parameter_type)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
+        checker_ok(ctx->errors, typed_program_add_signature_parameter(ctx->program, parameter_type), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     }
-    if (!typed_program_add_signature(ctx->program, &signature,
-                                     &signature_index)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    if (!checker_add_signature(ctx, &signature, &signature_index)) {
         return false;
     }
-    return add_type_record(ctx, NIPPY_TYPE_FUNCTION, TYPED_NO_NODE,
+    return add_type_record(ctx, NYX_TYPE_FUNCTION, TYPED_NO_NODE,
                            signature_index, out_index);
 }
 
 size_t type_parameter_index(
-    char parameters[][NIPPY_IDENTIFIER_MAX], size_t count, const char *name)
+    char parameters[][NYX_IDENTIFIER_MAX], size_t count, const char *name)
 {
     size_t i;
 
@@ -731,68 +388,12 @@ bool env_lookup(const TypeEnv *env, const char *name, size_t *out)
     return false;
 }
 
-bool add_builtin_type(CheckContext *ctx, NippyType kind,
+bool add_builtin_type(CheckContext *ctx, NyxType kind,
                              size_t *out_index)
 {
     return add_type_record(ctx, kind, TYPED_NO_NODE, TYPED_NO_NODE, out_index);
 }
 
-
-static bool type_contains_error_depth(const TypedProgram *program,
-                                      size_t type_index, unsigned depth)
-{
-    const TypedType *type = typed_program_type(program, type_index);
-    size_t i;
-
-    if (type == NULL || depth == 0) {
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_ERROR) {
-        return true;
-    }
-    if (type->kind == NIPPY_TYPE_STRUCT) {
-        const TypedNode *declaration = typed_program_node(
-            program, type->declaration_node);
-
-        if (declaration != NULL) {
-            for (i = 0; i < declaration->children_count; i++) {
-                size_t child = *(const size_t *)list_get(
-                    &program->children, declaration->children_start + i);
-                const TypedNode *field = typed_program_node(program, child);
-
-                if (field != NULL && field->kind == TYPED_FIELD &&
-                    type_contains_error_depth(program, field->type_index,
-                                              depth - 1)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    if (type->kind == NIPPY_TYPE_UNION ||
-        type->kind == NIPPY_TYPE_HANDLE ||
-        type->kind == NIPPY_TYPE_LIST ||
-        type->kind == NIPPY_TYPE_FIXED_LIST ||
-        type->kind == NIPPY_TYPE_SLICE ||
-        type->kind == NIPPY_TYPE_RECORD ||
-        type->kind == NIPPY_TYPE_TABLE) {
-        for (i = 0; i < type->child_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &program->type_children, type->first_child + i);
-
-            if (type_contains_error_depth(program, child, depth - 1)) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-
-bool type_contains_error(const TypedProgram *program, size_t type_index)
-{
-    return type_contains_error_depth(program, type_index, NIPPY_TYPE_DEPTH);
-}
 
 typedef struct {
     size_t size;
@@ -825,21 +426,190 @@ static void layout_member(ValueLayout *aggregate, ValueLayout member)
 
 #define SCALAR_LAYOUT(T) (ValueLayout){sizeof(T), _Alignof(T)}
 
-static bool type_layout_depth(CheckContext *ctx, size_t type_index, unsigned depth, ValueLayout *out);
+/* Kinds whose layout is a fixed list of C members, in order. */
+#define LAYOUT_MAX_MEMBERS 5
 
-static bool type_layout_depth_payload(size_t *i, const TypedType *type, const TypedProgram *program, CheckContext *ctx, unsigned int depth, ValueLayout *child, ValueLayout *result)
+/* A constant initialiser; SCALAR_LAYOUT's compound literal is not one. */
+#define LAYOUT_INIT(T) {sizeof(T), _Alignof(T)}
+
+typedef struct {
+    ValueLayout members[LAYOUT_MAX_MEMBERS];
+    size_t count;
+} LayoutRecipe;
+
+#define U8 LAYOUT_INIT(uint8_t)
+#define U32 LAYOUT_INIT(uint32_t)
+#define U64 LAYOUT_INIT(uint64_t)
+#define SIZE LAYOUT_INIT(size_t)
+#define PTR LAYOUT_INIT(void *)
+
+static const LayoutRecipe layout_recipes[] = {
+    [NYX_TYPE_INT8] = {{LAYOUT_INIT(int8_t)}, 1},
+    [NYX_TYPE_BYTE] = {{U8}, 1},
+    [NYX_TYPE_NIL] = {{U8}, 1},
+    [NYX_TYPE_BOOL] = {{LAYOUT_INIT(bool)}, 1},
+    [NYX_TYPE_INT16] = {{LAYOUT_INIT(int16_t)}, 1},
+    [NYX_TYPE_UINT16] = {{LAYOUT_INIT(uint16_t)}, 1},
+    [NYX_TYPE_INT32] = {{LAYOUT_INIT(int32_t)}, 1},
+    [NYX_TYPE_UINT32] = {{U32}, 1},
+    [NYX_TYPE_INT64] = {{LAYOUT_INIT(int64_t)}, 1},
+    [NYX_TYPE_UINT64] = {{U64}, 1},
+    [NYX_TYPE_FLOAT32] = {{LAYOUT_INIT(float)}, 1},
+    [NYX_TYPE_FLOAT64] = {{LAYOUT_INIT(double)}, 1},
+    [NYX_TYPE_FUNCTION] = {{LAYOUT_INIT(void (*)(void))}, 1},
+    [NYX_TYPE_HANDLE] = {{PTR, SIZE, U64}, 3},
+    [NYX_TYPE_CHANNEL] = {{PTR, SIZE, U64}, 3},
+    [NYX_TYPE_LIST] = {{PTR, SIZE, U64}, 3},
+    [NYX_TYPE_TEXT_BUILDER] = {{PTR, SIZE, U64}, 3},
+    [NYX_TYPE_TABLE] = {{PTR, SIZE, U64}, 3},
+    [NYX_TYPE_DYNAMIC_STRING] = {{LAYOUT_INIT(const uint8_t *), PTR, SIZE,
+                                  SIZE, U64}, 5},
+    [NYX_TYPE_SLICE] = {{PTR, SIZE, SIZE, SIZE, U64}, 5},
+};
+
+/* The walk a layout rule continues: the checker state and the depth left. */
+typedef struct {
+    CheckContext *ctx;
+    unsigned depth;
+} LayoutWalk;
+
+typedef bool (*LayoutRule)(const LayoutWalk *walk, const TypedType *type,
+                           ValueLayout *result);
+
+static bool type_layout_depth(CheckContext *ctx, size_t type_index,
+                              unsigned depth, ValueLayout *out);
+
+static bool layout_of_type(const LayoutWalk *walk, size_t type_index,
+                           ValueLayout *out)
+{
+    return type_layout_depth(walk->ctx, type_index, walk->depth - 1, out);
+}
+
+/* The layouts of exactly `count` child types. */
+static bool layout_children(const LayoutWalk *walk, const TypedType *type,
+                            size_t count, ValueLayout *out)
+{
+    size_t i;
+
+    if (type->child_count != count) {
+        return false;
+    }
+    for (i = 0; i < count; i++) {
+        size_t child = *(const size_t *)list_get(
+            &walk->ctx->program->type_children, type->first_child + i);
+
+        if (!layout_of_type(walk, child, &out[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static size_t layout_count(size_t length)
+{
+    return length == 0 ? 1 : length;
+}
+
+static bool layout_string(const LayoutWalk *walk, const TypedType *type,
+                          ValueLayout *result)
+{
+    (void)walk;
+    layout_member(result,
+                  (ValueLayout){layout_add_saturated(type->fixed_length, 1), 1});
+    layout_member(result, SCALAR_LAYOUT(uint32_t));
+    return true;
+}
+
+static bool layout_range(const LayoutWalk *walk, const TypedType *type,
+                         ValueLayout *result)
+{
+    ValueLayout bound;
+
+    if (!layout_children(walk, type, 1, &bound)) {
+        return false;
+    }
+    layout_member(result, bound);
+    layout_member(result, bound);
+    layout_member(result, SCALAR_LAYOUT(int64_t));
+    return true;
+}
+
+static bool layout_fixed_list(const LayoutWalk *walk, const TypedType *type,
+                              ValueLayout *result)
+{
+    ValueLayout element;
+
+    if (!layout_children(walk, type, 1, &element)) {
+        return false;
+    }
+    element.size = layout_multiply(element.size, layout_count(type->fixed_length));
+    layout_member(result, element);
+    layout_member(result, SCALAR_LAYOUT(uint32_t));
+    return true;
+}
+
+static bool layout_record(const LayoutWalk *walk, const TypedType *type,
+                          ValueLayout *result)
+{
+    ValueLayout parts[2];
+    size_t buckets = type->fixed_length == 0 ? 1 : type->fixed_length + 1;
+
+    if (!layout_children(walk, type, 2, parts)) {
+        return false;
+    }
+    parts[0].size = layout_multiply(parts[0].size, buckets);
+    parts[1].size = layout_multiply(parts[1].size, buckets);
+    layout_member(result, parts[0]);
+    layout_member(result, parts[1]);
+    layout_member(result, (ValueLayout){buckets, 1});
+    layout_member(result, SCALAR_LAYOUT(size_t));
+    return true;
+}
+
+static bool layout_error(const LayoutWalk *walk, const TypedType *type,
+                         ValueLayout *result)
+{
+    ValueLayout parts[3];
+    size_t i;
+
+    if (!layout_children(walk, type, 3, parts)) {
+        return false;
+    }
+    for (i = 0; i < 3; i++) {
+        layout_member(result, parts[i]);
+    }
+    for (i = 0; i < 3; i++) {
+        layout_member(result, SCALAR_LAYOUT(int32_t));
+    }
+    return true;
+}
+
+/* A tag, then room for the largest alternative that carries a value. */
+static bool layout_union(const LayoutWalk *walk, const TypedType *type,
+                         ValueLayout *result)
 {
     ValueLayout payload = {0, 1};
     bool has_payload = false;
-    for ((*i) = 0; (*i) < type->child_count; (*i)++) {
-        size_t alternative = *(const size_t *)list_get(&program->type_children,
-                                                        type->first_child + (*i));
-        const TypedType *alt = typed_program_type(program, alternative);
-        if (alt == NULL) return false;
-        if (alt->kind == NIPPY_TYPE_NIL) continue;
-        if (!type_layout_depth(ctx, alternative, depth - 1, child)) return false;
-        if ((*child).size > payload.size) payload.size = (*child).size;
-        if ((*child).align > payload.align) payload.align = (*child).align;
+    size_t i;
+
+    for (i = 0; i < type->child_count; i++) {
+        size_t alternative = *(const size_t *)list_get(
+            &walk->ctx->program->type_children, type->first_child + i);
+        const TypedType *alt = typed_program_type(walk->ctx->program,
+                                                  alternative);
+        ValueLayout child;
+
+        if (alt == NULL) {
+            return false;
+        }
+        if (alt->kind == NYX_TYPE_NIL) {
+            continue;
+        }
+        if (!layout_of_type(walk, alternative, &child)) {
+            return false;
+        }
+        payload.size = child.size > payload.size ? child.size : payload.size;
+        payload.align = child.align > payload.align ? child.align : payload.align;
         has_payload = true;
     }
     layout_member(result, SCALAR_LAYOUT(uint32_t));
@@ -850,168 +620,114 @@ static bool type_layout_depth_payload(size_t *i, const TypedType *type, const Ty
     return true;
 }
 
-static bool type_layout_depth(CheckContext *ctx, size_t type_index, unsigned depth, ValueLayout *out);
-
-static bool type_layout_depth_declaration(const TypedProgram *program, const TypedType *type, size_t *i, CheckContext *ctx, unsigned int depth, ValueLayout *child, ValueLayout *result)
+static bool layout_struct(const LayoutWalk *walk, const TypedType *type,
+                          ValueLayout *result)
 {
-    const TypedNode *declaration = typed_program_node(program, type->declaration_node);
-    if (declaration == NULL) return false;
-    for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
-        size_t child_index = *(const size_t *)list_get(&program->children,
-                                                       declaration->children_start + (*i));
-        const TypedNode *field = typed_program_node(program, child_index);
+    const TypedProgram *program = walk->ctx->program;
+    const TypedNode *declaration =
+        typed_program_node(program, type->declaration_node);
+    size_t i;
+
+    if (declaration == NULL) {
+        return false;
+    }
+    for (i = 0; i < declaration->children_count; i++) {
+        const TypedNode *field = typed_program_node(
+            program, *(const size_t *)list_get(
+                         &program->children, declaration->children_start + i));
+        ValueLayout member;
+
         if (field == NULL || field->kind != TYPED_FIELD ||
-            !type_layout_depth(ctx, field->type_index, depth - 1, child)) return false;
-        layout_member(result, (*child));
+            !layout_of_type(walk, field->type_index, &member)) {
+            return false;
+        }
+        layout_member(result, member);
     }
     return true;
 }
 
-static bool type_layout_depth_i(const TypedType *type, const ValueLayoutCache *cached, ValueLayout *out, unsigned int depth, bool *outcome)
+static const LayoutRule layout_rules[] = {
+    [NYX_TYPE_STRING] = layout_string,
+    [NYX_TYPE_RANGE] = layout_range,
+    [NYX_TYPE_FIXED_LIST] = layout_fixed_list,
+    [NYX_TYPE_RECORD] = layout_record,
+    [NYX_TYPE_UNION] = layout_union,
+    [NYX_TYPE_STRUCT] = layout_struct,
+    [NYX_TYPE_ERROR] = layout_error,
+};
+
+/* Lays the members of `type` out, as the recipe table or the kind's rule
+   directs. Returns false for a kind with neither. */
+static bool layout_members(const LayoutWalk *walk, const TypedType *type,
+                           ValueLayout *result)
 {
-    if (type == NULL) do { *outcome = (false); return true; } while (0);
-    if (cached != NULL && cached->valid) {
-        *out = (ValueLayout){cached->size, cached->align};
-        do { *outcome = (true); return true; } while (0);
+    size_t i;
+
+    if ((size_t)type->kind < NYX_COUNT_OF(layout_recipes) &&
+        layout_recipes[type->kind].count != 0) {
+        for (i = 0; i < layout_recipes[type->kind].count; i++) {
+            layout_member(result, layout_recipes[type->kind].members[i]);
+        }
+        return true;
     }
-    if (depth == 0) do { *outcome = (false); return true; } while (0);
-    return false;
-}
-
-static bool type_layout_depth(CheckContext *ctx, size_t type_index, unsigned depth, ValueLayout *out);
-
-static bool type_layout_depth_buckets(const TypedType *type, CheckContext *ctx, const TypedProgram *program, unsigned int depth, ValueLayout *child, ValueLayout *second, size_t *buckets)
-{
-    (*buckets) = type->fixed_length == 0 ? 1 : type->fixed_length + 1;
-    if (type->child_count != 2 ||
-        !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
-                           type->first_child), depth - 1, child) ||
-        !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
-                           type->first_child + 1), depth - 1, second)) return false;
-    return true;
+    if ((size_t)type->kind >= NYX_COUNT_OF(layout_rules) ||
+        layout_rules[type->kind] == NULL) {
+        return false;
+    }
+    return layout_rules[type->kind](walk, type, result);
 }
 
 static bool type_layout_depth(CheckContext *ctx, size_t type_index,
                               unsigned depth, ValueLayout *out)
 {
-    const TypedProgram *program = ctx->program;
-    const TypedType *type = typed_program_type(program, type_index);
-    const ValueLayoutCache *cached = list_get(ctx->layout_cache, type_index);
-    ValueLayout result = {0, 1}, child, second;
-    size_t i = {0};
-    {
-        bool outcome;
+    const TypedType *type = typed_program_type(ctx->program, type_index);
+    ValueLayoutCache *slot = (ValueLayoutCache *)list_get(ctx->layout_cache, type_index);
+    LayoutWalk walk = {ctx, depth};
+    ValueLayout result = {0, 1};
 
-        if (type_layout_depth_i(type, cached, out, depth, &outcome)) {
-            return outcome;
-        }
-    }
-    switch (type->kind) {
-    case NIPPY_TYPE_INT8: *out = SCALAR_LAYOUT(int8_t); return true;
-    case NIPPY_TYPE_BYTE: case NIPPY_TYPE_NIL: *out = SCALAR_LAYOUT(uint8_t); return true;
-    case NIPPY_TYPE_BOOL: *out = SCALAR_LAYOUT(bool); return true;
-    case NIPPY_TYPE_INT16: *out = SCALAR_LAYOUT(int16_t); return true;
-    case NIPPY_TYPE_UINT16: *out = SCALAR_LAYOUT(uint16_t); return true;
-    case NIPPY_TYPE_INT32: *out = SCALAR_LAYOUT(int32_t); return true;
-    case NIPPY_TYPE_UINT32: *out = SCALAR_LAYOUT(uint32_t); return true;
-    case NIPPY_TYPE_INT64: *out = SCALAR_LAYOUT(int64_t); return true;
-    case NIPPY_TYPE_UINT64: *out = SCALAR_LAYOUT(uint64_t); return true;
-    case NIPPY_TYPE_FLOAT32: *out = SCALAR_LAYOUT(float); return true;
-    case NIPPY_TYPE_FLOAT64: *out = SCALAR_LAYOUT(double); return true;
-    case NIPPY_TYPE_FUNCTION: *out = SCALAR_LAYOUT(void (*)(void)); return true;
-    case NIPPY_TYPE_STRING:
-        layout_member(&result, (ValueLayout){layout_add_saturated(type->fixed_length, 1), 1});
-        layout_member(&result, SCALAR_LAYOUT(uint32_t));
-        break;
-    case NIPPY_TYPE_HANDLE:
-    case NIPPY_TYPE_LIST:
-    case NIPPY_TYPE_TEXT_BUILDER:
-    case NIPPY_TYPE_TABLE:
-        layout_member(&result, SCALAR_LAYOUT(void *));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(uint64_t));
-        break;
-    case NIPPY_TYPE_DYNAMIC_STRING:
-        layout_member(&result, SCALAR_LAYOUT(const uint8_t *));
-        layout_member(&result, SCALAR_LAYOUT(void *));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(uint64_t));
-        break;
-    case NIPPY_TYPE_SLICE:
-        layout_member(&result, SCALAR_LAYOUT(void *));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        layout_member(&result, SCALAR_LAYOUT(uint64_t));
-        break;
-    case NIPPY_TYPE_RANGE:
-        if (type->child_count != 1 ||
-            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
-                               type->first_child), depth - 1, &child)) return false;
-        layout_member(&result, child);
-        layout_member(&result, child);
-        layout_member(&result, SCALAR_LAYOUT(int64_t));
-        break;
-    case NIPPY_TYPE_FIXED_LIST:
-        if (type->child_count != 1 ||
-            !type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
-                               type->first_child), depth - 1, &child)) return false;
-        child.size = layout_multiply(child.size, type->fixed_length == 0 ? 1 : type->fixed_length);
-        layout_member(&result, child);
-        layout_member(&result, SCALAR_LAYOUT(uint32_t));
-        break;
-    case NIPPY_TYPE_RECORD: {
-        size_t buckets = {0};
-        if (!type_layout_depth_buckets(type, ctx, program, depth, &child, &second, &buckets)) {
+    if (type == NULL) {
         return false;
     }
-        child.size = layout_multiply(child.size, buckets);
-        second.size = layout_multiply(second.size, buckets);
-        layout_member(&result, child);
-        layout_member(&result, second);
-        layout_member(&result, (ValueLayout){buckets, 1});
-        layout_member(&result, SCALAR_LAYOUT(size_t));
-        break;
+    if (slot != NULL && slot->valid) {
+        *out = (ValueLayout){slot->size, slot->align};
+        return true;
     }
-    case NIPPY_TYPE_UNION: {
-        if (!type_layout_depth_payload(&i, type, program, ctx, depth, &child, &result)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_STRUCT: {
-        if (!type_layout_depth_declaration(program, type, &i, ctx, depth, &child, &result)) {
-        return false;
-    }
-        break;
-    }
-    case NIPPY_TYPE_ERROR:
-        if (type->child_count != 3) return false;
-        for (i = 0; i < 3; i++) {
-            if (!type_layout_depth(ctx, *(const size_t *)list_get(&program->type_children,
-                                   type->first_child + i), depth - 1, &child)) return false;
-            layout_member(&result, child);
-        }
-        for (i = 0; i < 3; i++) layout_member(&result, SCALAR_LAYOUT(int32_t));
-        break;
-    default:
+    if (depth == 0 || !layout_members(&walk, type, &result)) {
         return false;
     }
     result.size = layout_round(result.size, result.align);
-    {
-        ValueLayoutCache *slot = (ValueLayoutCache *)list_get(ctx->layout_cache, type_index);
-        if (slot != NULL) {
-            slot->size = result.size;
-            slot->align = result.align;
-            slot->valid = true;
-        }
+    if (slot != NULL) {
+        slot->size = result.size;
+        slot->align = result.align;
+        slot->valid = true;
     }
     *out = result;
     return true;
 }
 
+#undef LAYOUT_INIT
+#undef U8
+#undef U32
+#undef U64
+#undef SIZE
+#undef PTR
 #undef SCALAR_LAYOUT
+
+bool type_value_bytes(CheckContext *ctx, size_t type_index, size_t *out)
+{
+    ValueLayout layout;
+
+    while (ctx->layout_cache->length < ctx->program->types.length) {
+        ValueLayoutCache empty = {0};
+        checker_ok(ctx->errors, list_push(ctx->layout_cache, &empty), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    if (!type_layout_depth(ctx, type_index, NYX_MAX_LAYOUT_DEPTH, &layout)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_LAYOUT_UNAVAILABLE);
+        return false;
+    }
+    *out = layout.size;
+    return true;
+}
 
 bool check_type_value_size(CheckContext *ctx, size_t type_index,
                            SourcePos pos)
@@ -1021,12 +737,9 @@ bool check_type_value_size(CheckContext *ctx, size_t type_index,
 
     while (ctx->layout_cache->length < ctx->program->types.length) {
         ValueLayoutCache empty = {0};
-        if (!list_push(ctx->layout_cache, &empty)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
+        checker_ok(ctx->errors, list_push(ctx->layout_cache, &empty), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     }
-    if (!type_layout_depth(ctx, type_index, NIPPY_MAX_LAYOUT_DEPTH, &layout)) {
+    if (!type_layout_depth(ctx, type_index, NYX_MAX_LAYOUT_DEPTH, &layout)) {
         for (i = 0; i < ctx->struct_instantiations->length; i++) {
             const StructInstantiation *record = list_get(ctx->struct_instantiations, i);
             if (record->in_progress) return true;
@@ -1035,10 +748,34 @@ bool check_type_value_size(CheckContext *ctx, size_t type_index,
         return false;
     }
     size = layout.size;
-    if (size <= NIPPY_MAX_VALUE_BYTES) {
+    if (size <= (size_t)ctx->program->max_value_bytes) {
         return true;
     }
     error_report_at(ctx->errors, pos, MESSAGE_CHECKER_VALUE_TOO_LARGE, size,
-                    (size_t)NIPPY_MAX_VALUE_BYTES);
+                    (size_t)ctx->program->max_value_bytes);
     return false;
+}
+
+/* T | Nil, the type of a value that may be missing. */
+bool optional_type(CheckContext *ctx, size_t element, size_t *result)
+{
+    size_t nil_type;
+    List alternatives;
+    bool ok;
+
+    if (!builtin_type(ctx, NYX_TYPE_NIL, &nil_type)) {
+        return false;
+    }
+    if (same_type(ctx->program, element, nil_type)) {
+        *result = element;
+        return true;
+    }
+    list_init(&alternatives, sizeof(size_t));
+    checker_ok(ctx->errors, list_push(&alternatives, &element),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    checker_ok(ctx->errors, list_push(&alternatives, &nil_type),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    ok = !ctx->errors->fatal && intern_union(ctx, &alternatives, result);
+    list_free(&alternatives);
+    return ok;
 }

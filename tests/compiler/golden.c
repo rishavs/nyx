@@ -107,7 +107,7 @@ static TestResult run_golden(void *data)
     char *expected_c;
     char *expected_h;
     TestResult result = TEST_ERROR;
-    const char *update = getenv("NIPPY_UPDATE_GOLDEN");
+    const char *update = getenv("NYX_UPDATE_GOLDEN");
 
     snprintf(path, sizeof(path), "%s.nip", stem);
     source = read_file(path);

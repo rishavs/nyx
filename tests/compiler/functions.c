@@ -155,6 +155,52 @@ TEST("cannot infer type parameter")
                          MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "make");
 }
 
+TEST("argument that does not match a generic parameter")
+{
+    return compile_fails(
+        "fun count<T>(items: List<T>): Int32\n  return 1\nend\n"
+        "var n: Int32 = count(5)\n",
+        "an argument whose type cannot bind the parameter's type variable",
+        MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "count");
+}
+
+TEST("argument that does not match a Handle parameter")
+{
+    return compile_fails(
+        "fun count<T>(handle: Handle<T>): Int32\n  return 1\nend\n"
+        "var n: Int32 = count(5)\n",
+        "an argument that is not a Handle cannot bind the Handle's type variable",
+        MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "count");
+}
+
+TEST("argument that does not match a generic struct parameter")
+{
+    return compile_fails(
+        "type Pair<T> first: T end\n"
+        "fun count<T>(pair: Pair<T>): Int32\n  return 1\nend\n"
+        "var n: Int32 = count(5)\n",
+        "an argument that is not an instance cannot bind the struct's type variable",
+        MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "count");
+}
+
+TEST("positional constructor argument does not bind a type parameter")
+{
+    return compile_fails(
+        "type Box<T> items: List<T> end\n"
+        "var b = Box(5)\n",
+        "a constructor argument whose type cannot bind the type variable",
+        MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "Box");
+}
+
+TEST("named constructor argument does not bind a type parameter")
+{
+    return compile_fails(
+        "type Box<T> items: List<T> end\n"
+        "var b = Box(items = 5)\n",
+        "a named constructor argument that cannot bind the type variable",
+        MESSAGE_CHECKER_CANNOT_INFER_TYPE, "T", "Box");
+}
+
 TEST("generic function as value")
 {
     const char *source =
@@ -188,7 +234,7 @@ TEST("more generic instantiations than the limit")
     }
     /* The poisoned build copies a list on every push, so thousands of nodes
        make it quadratic. It adds nothing here: the limit is a plain count. */
-    if (getenv("NIPPY_POISON_BUILD") != NULL) {
+    if (getenv("NYX_POISON_BUILD") != NULL) {
         fprintf(stderr, "  skipped: too slow in the poisoned build\n");
         free(source);
         return TEST_TODO;

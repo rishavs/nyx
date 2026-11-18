@@ -1,8 +1,24 @@
 #include "checker_internal.h"
 
 
-static bool typed_statement_breaks_loop(const TypedProgram *program,
-                                        size_t index)
+/* Questions about how control leaves a typed statement (does it always
+   return, always stop, ever break the loop around it) share one walk. A query
+   is a table saying, for each kind of statement, how its answer follows from
+   the statement's parts; a kind the table leaves out answers no. */
+typedef struct FlowQuery FlowQuery;
+typedef bool (*FlowRule)(const TypedProgram *program, size_t index,
+                         const TypedNode *node, const FlowQuery *query);
+typedef struct {
+    TypedNodeKind kind;
+    FlowRule rule;
+} FlowEntry;
+struct FlowQuery {
+    const FlowEntry *entries;
+    size_t count;
+};
+
+static bool flow_holds(const TypedProgram *program, size_t index,
+                       const FlowQuery *query)
 {
     const TypedNode *node = typed_program_node(program, index);
     size_t i;
@@ -10,155 +26,194 @@ static bool typed_statement_breaks_loop(const TypedProgram *program,
     if (node == NULL) {
         return false;
     }
-    if (node->kind == TYPED_BREAK) {
-        return true;
-    }
-    if (node->kind == TYPED_SCOPE) {
-        return typed_statement_breaks_loop(program, node->right_child);
-    }
-    if (node->kind == TYPED_MATCH_BIND_STATEMENT) {
-        return typed_statement_breaks_loop(program, node->right_child);
-    }
-    if (node->kind == TYPED_WHILE || node->kind == TYPED_FOR) {
-        return false;
-    }
-    if (node->kind == TYPED_BLOCK) {
-        for (i = 0; i < node->children_count; i++) {
-            size_t child = *(const size_t *)list_get(
-                &program->children, node->children_start + i);
-
-            if (typed_statement_breaks_loop(program, child)) {
-                return true;
-            }
-        }
-    }
-    if (node->kind == TYPED_IF && node->children_count >= 1) {
-        size_t then_block = *(const size_t *)list_get(
-            &program->children, node->children_start);
-
-        if (typed_statement_breaks_loop(program, then_block)) {
-            return true;
-        }
-        if (node->children_count == 2) {
-            size_t else_block = *(const size_t *)list_get(
-                &program->children, node->children_start + 1);
-
-            return typed_statement_breaks_loop(program, else_block);
+    for (i = 0; i < query->count; i++) {
+        if (query->entries[i].kind == node->kind) {
+            return query->entries[i].rule(program, index, node, query);
         }
     }
     return false;
 }
 
+static size_t flow_child(const TypedProgram *program, const TypedNode *node,
+                         size_t i)
+{
+    return *(const size_t *)list_get(&program->children,
+                                     node->children_start + i);
+}
 
-static bool typed_while_never_falls_through(const TypedProgram *program,
-                                            const TypedNode *node)
+/* An `if` has a then and maybe an else; a `when` has its arms and maybe an
+   else. */
+static size_t flow_branch_count(const TypedNode *node)
+{
+    return node->kind == TYPED_IF
+               ? node->children_count
+               : node->children_count + (node->right_child != TYPED_NO_NODE);
+}
+
+static size_t flow_branch(const TypedProgram *program, const TypedNode *node,
+                          size_t i)
+{
+    const TypedNode *arm;
+
+    if (node->kind == TYPED_IF) {
+        return flow_child(program, node, i);
+    }
+    if (i == node->children_count) {
+        return node->right_child;
+    }
+    arm = typed_program_node(program, flow_child(program, node, i));
+    return arm == NULL ? TYPED_NO_NODE : arm->right_child;
+}
+
+static bool flow_yes(const TypedProgram *program, size_t index,
+                     const TypedNode *node, const FlowQuery *query)
+{
+    (void)program;
+    (void)index;
+    (void)node;
+    (void)query;
+    return true;
+}
+
+static bool flow_no(const TypedProgram *program, size_t index,
+                    const TypedNode *node, const FlowQuery *query)
+{
+    (void)program;
+    (void)index;
+    (void)node;
+    (void)query;
+    return false;
+}
+
+/* The answer is the answer for the statement inside (a scope, a match arm). */
+static bool flow_through(const TypedProgram *program, size_t index,
+                         const TypedNode *node, const FlowQuery *query)
+{
+    (void)index;
+    return flow_holds(program, node->right_child, query);
+}
+
+static bool flow_any_child(const TypedProgram *program, size_t index,
+                           const TypedNode *node, const FlowQuery *query)
+{
+    size_t i;
+
+    (void)index;
+    for (i = 0; i < node->children_count; i++) {
+        if (flow_holds(program, flow_child(program, node, i), query)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool flow_any_branch(const TypedProgram *program, size_t index,
+                            const TypedNode *node, const FlowQuery *query)
+{
+    size_t i;
+
+    (void)index;
+    for (i = 0; i < flow_branch_count(node); i++) {
+        if (flow_holds(program, flow_branch(program, node, i), query)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Exactly one branch runs, so the answer holds only if it holds for every one.
+   An `if` without an else has a branch that does nothing. */
+static bool flow_all_branches(const TypedProgram *program, size_t index,
+                              const TypedNode *node, const FlowQuery *query)
+{
+    size_t i;
+
+    (void)index;
+    if (node->kind == TYPED_IF && node->children_count != 2) {
+        return false;
+    }
+    for (i = 0; i < flow_branch_count(node); i++) {
+        if (!flow_holds(program, flow_branch(program, node, i), query)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static const FlowEntry breaks_loop_entries[] = {
+    {TYPED_BREAK, flow_yes},
+    {TYPED_SCOPE, flow_through},
+    {TYPED_MATCH_BIND_STATEMENT, flow_through},
+    {TYPED_WHILE, flow_no},
+    {TYPED_FOR, flow_no},
+    {TYPED_WHEN, flow_any_branch},
+    {TYPED_BLOCK, flow_any_child},
+    {TYPED_IF, flow_any_branch},
+};
+static const FlowQuery breaks_loop_query = {breaks_loop_entries,
+                                            NYX_COUNT_OF(breaks_loop_entries)};
+
+/* `while true` with no break never reaches the statement after it. */
+static bool flow_endless_loop(const TypedProgram *program, size_t index,
+                              const TypedNode *node, const FlowQuery *query)
 {
     const TypedNode *condition;
 
-    if (node == NULL || node->kind != TYPED_WHILE ||
-        node->left_child == TYPED_NO_NODE ||
+    (void)index;
+    (void)query;
+    if (node->left_child == TYPED_NO_NODE ||
         node->right_child == TYPED_NO_NODE) {
         return false;
     }
     condition = typed_program_node(program, node->left_child);
     return condition != NULL && condition->kind == TYPED_BOOL_LITERAL &&
            condition->integer_value != 0 &&
-           !typed_statement_breaks_loop(program, node->right_child);
+           !flow_holds(program, node->right_child, &breaks_loop_query);
 }
 
+static bool flow_block_returns(const TypedProgram *program, size_t index,
+                               const TypedNode *node, const FlowQuery *query)
+{
+    (void)node;
+    (void)query;
+    return typed_block_returns(program, index);
+}
+
+static const FlowEntry returns_entries[] = {
+    {TYPED_RETURN, flow_yes},
+    {TYPED_SCOPE, flow_through},
+    {TYPED_MATCH_BIND_STATEMENT, flow_through},
+    {TYPED_BLOCK, flow_block_returns},
+    {TYPED_WHEN, flow_all_branches},
+    {TYPED_WHILE, flow_endless_loop},
+    {TYPED_IF, flow_all_branches},
+};
+static const FlowQuery returns_query = {returns_entries,
+                                        NYX_COUNT_OF(returns_entries)};
+
+static const FlowEntry terminates_entries[] = {
+    {TYPED_RETURN, flow_yes},
+    {TYPED_BREAK, flow_yes},
+    {TYPED_CONTINUE, flow_yes},
+    {TYPED_SCOPE, flow_through},
+    {TYPED_MATCH_BIND_STATEMENT, flow_through},
+    {TYPED_BLOCK, flow_any_child},
+    {TYPED_WHILE, flow_endless_loop},
+    {TYPED_WHEN, flow_all_branches},
+    {TYPED_IF, flow_all_branches},
+};
+static const FlowQuery terminates_query = {terminates_entries,
+                                           NYX_COUNT_OF(terminates_entries)};
 
 bool typed_statement_returns(const TypedProgram *program, size_t index)
 {
-    const TypedNode *node = typed_program_node(program, index);
-
-    if (node == NULL) {
-        return false;
-    }
-    if (node->kind == TYPED_RETURN) {
-        return true;
-    }
-    if (node->kind == TYPED_SCOPE) {
-        return typed_statement_returns(program, node->right_child);
-    }
-    if (node->kind == TYPED_MATCH_BIND_STATEMENT) {
-        return typed_statement_returns(program, node->right_child);
-    }
-    if (node->kind == TYPED_BLOCK) {
-        return typed_block_returns(program, index);
-    }
-    if (node->kind == TYPED_WHILE) {
-        return typed_while_never_falls_through(program, node);
-    }
-    if (node->kind == TYPED_IF) {
-        size_t then_block;
-        size_t else_block;
-
-        if (node->children_count != 2) {
-            return false;
-        }
-        then_block = *(const size_t *)list_get(&program->children,
-                                               node->children_start);
-        else_block = *(const size_t *)list_get(&program->children,
-                                               node->children_start + 1);
-        return typed_statement_returns(program, then_block) &&
-               typed_statement_returns(program, else_block);
-    }
-    return false;
+    return flow_holds(program, index, &returns_query);
 }
 
-
-bool typed_statement_terminates(const TypedProgram *program,
-                                       size_t index)
+bool typed_statement_terminates(const TypedProgram *program, size_t index)
 {
-    const TypedNode *node = typed_program_node(program, index);
-
-    if (node != NULL && node->kind == TYPED_SCOPE) {
-        return typed_statement_terminates(program, node->right_child);
-    }
-    if (node != NULL && node->kind == TYPED_MATCH_BIND_STATEMENT) {
-        return typed_statement_terminates(program, node->right_child);
-    }
-
-    if (node == NULL) {
-        return false;
-    }
-    if (node->kind == TYPED_RETURN || node->kind == TYPED_BREAK ||
-        node->kind == TYPED_CONTINUE) {
-        return true;
-    }
-    if (node->kind == TYPED_BLOCK) {
-        size_t i;
-
-        for (i = 0; i < node->children_count; i++) {
-            size_t child = *(const size_t *)list_get(&program->children,
-                                                     node->children_start + i);
-
-            if (typed_statement_terminates(program, child)) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if (node->kind == TYPED_WHILE) {
-        return typed_while_never_falls_through(program, node);
-    }
-    if (node->kind == TYPED_IF) {
-        size_t then_block;
-        size_t else_block;
-
-        if (node->children_count != 2) {
-            return false;
-        }
-        then_block = *(const size_t *)list_get(&program->children,
-                                               node->children_start);
-        else_block = *(const size_t *)list_get(&program->children,
-                                               node->children_start + 1);
-        return typed_statement_terminates(program, then_block) &&
-               typed_statement_terminates(program, else_block);
-    }
-    return false;
+    return flow_holds(program, index, &terminates_query);
 }
-
 
 bool typed_block_returns(const TypedProgram *program, size_t index)
 {
@@ -196,7 +251,7 @@ bool check_condition(CheckContext *ctx, size_t ast_index,
     node = typed_program_node(ctx->program, expression);
     type = node == NULL ? NULL
                         : typed_program_type(ctx->program, node->type_index);
-    if (type == NULL || type->kind != NIPPY_TYPE_BOOL) {
+    if (type == NULL || type->kind != NYX_TYPE_BOOL) {
         const AstNode *ast_node = ast_get_node(ctx->ast, ast_index);
 
         error_report_at(ctx->errors,
@@ -210,46 +265,99 @@ bool check_condition(CheckContext *ctx, size_t ast_index,
 
 static const char *access_root(const Ast *ast, size_t index)
 {
-    const AstNode *node = ast_get_node(ast, index);
+    const AstNode *root = access_root_node(ast, index);
 
-    while (node != NULL &&
-           (node->kind == AST_MEMBER_ACCESS || node->kind == AST_INDEX)) {
-        node = ast_get_node(ast, node->left_child);
-    }
-    return node != NULL && node->kind == AST_IDENTIFIER
-               ? ast_symbol_text(ast, node->name_index) : NULL;
+    return root == NULL ? NULL : ast_symbol_text(ast, root->name_index);
 }
+
+/* Expressions that are chains of operators over names and literals are
+   compared and searched by their shape: a table says which operands of each
+   kind of node are themselves expressions and which payload makes two nodes of
+   a kind equal. */
+#define SHAPE_LEFT 1u
+#define SHAPE_RIGHT 2u
+
+typedef enum {
+    PAYLOAD_NONE,
+    PAYLOAD_NAME,
+    PAYLOAD_VALUE,
+    PAYLOAD_OP
+} Payload;
+
+typedef struct {
+    AstNodeKind kind;
+    unsigned operands;
+    Payload payload;
+} AstShape;
+
+static const AstShape *shape_of(const AstShape *shapes, size_t count,
+                                AstNodeKind kind)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        if (shapes[i].kind == kind) {
+            return &shapes[i];
+        }
+    }
+    return NULL;
+}
+
+static bool operand_holds(unsigned operands, unsigned side, const Ast *ast,
+                          size_t child, bool (*test)(const Ast *, size_t))
+{
+    return (operands & side) == 0 || test(ast, child);
+}
+
+/* An index that cannot change between the test and the use: names, integer
+   literals, and operators over them. */
+static const AstShape subscript_shapes[] = {
+    {AST_IDENTIFIER, 0, PAYLOAD_NAME},
+    {AST_INTEGER_LITERAL, 0, PAYLOAD_VALUE},
+    {AST_UNARY, SHAPE_LEFT, PAYLOAD_OP},
+    {AST_BINARY, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_OP},
+};
 
 static bool stable_subscript(const Ast *ast, size_t index)
 {
     const AstNode *node = ast_get_node(ast, index);
-    if (node == NULL) return false;
-    if (node->kind == AST_IDENTIFIER || node->kind == AST_INTEGER_LITERAL)
-        return true;
-    if (node->kind == AST_UNARY)
-        return stable_subscript(ast, node->left_child);
-    if (node->kind == AST_BINARY)
-        return stable_subscript(ast, node->left_child) &&
-               stable_subscript(ast, node->right_child);
-    return false;
+    const AstShape *shape =
+        node == NULL ? NULL
+                     : shape_of(subscript_shapes,
+                                NYX_COUNT_OF(subscript_shapes), node->kind);
+
+    return shape != NULL &&
+           operand_holds(shape->operands, SHAPE_LEFT, ast, node->left_child,
+                         stable_subscript) &&
+           operand_holds(shape->operands, SHAPE_RIGHT, ast, node->right_child,
+                         stable_subscript);
+}
+
+static bool same_payload(Payload payload, const AstNode *a, const AstNode *b)
+{
+    return payload == PAYLOAD_NONE ||
+           (payload == PAYLOAD_NAME && a->name_index == b->name_index) ||
+           (payload == PAYLOAD_VALUE &&
+            a->integer_value_u == b->integer_value_u) ||
+           (payload == PAYLOAD_OP && a->op == b->op);
 }
 
 static bool same_subscript(const Ast *ast, size_t a, size_t b)
 {
     const AstNode *left = ast_get_node(ast, a);
     const AstNode *right = ast_get_node(ast, b);
-    if (left == NULL || right == NULL || left->kind != right->kind) return false;
-    if (left->kind == AST_IDENTIFIER) return left->name_index == right->name_index;
-    if (left->kind == AST_INTEGER_LITERAL)
-        return left->integer_value_u == right->integer_value_u;
-    if (left->kind == AST_UNARY)
-        return left->op == right->op &&
-               same_subscript(ast, left->left_child, right->left_child);
-    if (left->kind == AST_BINARY)
-        return left->op == right->op &&
-               same_subscript(ast, left->left_child, right->left_child) &&
-               same_subscript(ast, left->right_child, right->right_child);
-    return false;
+    const AstShape *shape;
+
+    if (left == NULL || right == NULL || left->kind != right->kind) {
+        return false;
+    }
+    shape = shape_of(subscript_shapes, NYX_COUNT_OF(subscript_shapes),
+                     left->kind);
+    return shape != NULL && same_payload(shape->payload, left, right) &&
+           ((shape->operands & SHAPE_LEFT) == 0 ||
+            same_subscript(ast, left->left_child, right->left_child)) &&
+           ((shape->operands & SHAPE_RIGHT) == 0 ||
+            same_subscript(ast, left->right_child, right->right_child));
 }
 
 static bool same_access(const Ast *ast, size_t a, size_t b)
@@ -269,40 +377,52 @@ static bool same_access(const Ast *ast, size_t a, size_t b)
     return false;
 }
 
+/* The list a subscript reads from, if the base has been checked. */
+static const TypedType *index_base_type(const CheckContext *ctx,
+                                        const AstNode *node)
+{
+    const TypedNode *base = typed_program_node(
+        ctx->program, *mapping_slot(ctx->mapping, node->left_child));
+
+    return base == NULL ? NULL
+                        : typed_program_type(ctx->program, base->type_index);
+}
+
 static bool stable_access(CheckContext *ctx, size_t index)
 {
     const AstNode *node = ast_get_node(ctx->ast, index);
+    const TypedType *base;
 
-    if (node == NULL) return false;
-    if (node->kind == AST_IDENTIFIER) return true;
-    if (node->kind == AST_MEMBER_ACCESS)
-        return stable_access(ctx, node->left_child);
-    if (node->kind == AST_INDEX) {
-        size_t mapped = *mapping_slot(ctx->mapping, node->left_child);
-        const TypedNode *base = typed_program_node(ctx->program, mapped);
-        const TypedType *type = base == NULL ? NULL :
-            typed_program_type(ctx->program, base->type_index);
-        return type != NULL &&
-               (type->kind == NIPPY_TYPE_FIXED_LIST ||
-                type->kind == NIPPY_TYPE_LIST) &&
-               stable_subscript(ctx->ast, node->right_child) &&
-               stable_access(ctx, node->left_child);
+    if (node == NULL) {
+        return false;
     }
-    return false;
+    if (node->kind == AST_IDENTIFIER) {
+        return true;
+    }
+    if (node->kind == AST_MEMBER_ACCESS) {
+        return stable_access(ctx, node->left_child);
+    }
+    if (node->kind != AST_INDEX) {
+        return false;
+    }
+    base = index_base_type(ctx, node);
+    return base != NULL &&
+           (base->kind == NYX_TYPE_FIXED_LIST || base->kind == NYX_TYPE_LIST) &&
+           stable_subscript(ctx->ast, node->right_child) &&
+           stable_access(ctx, node->left_child);
 }
 
 static bool access_has_list(CheckContext *ctx, size_t index)
 {
     const AstNode *node = ast_get_node(ctx->ast, index);
-    if (node == NULL || node->kind == AST_IDENTIFIER) return false;
-    if (node->kind == AST_INDEX) {
-        const TypedNode *base = typed_program_node(
-            ctx->program, *mapping_slot(ctx->mapping, node->left_child));
-        const TypedType *type = base == NULL ? NULL :
-            typed_program_type(ctx->program, base->type_index);
-        if (type != NULL && type->kind == NIPPY_TYPE_LIST) return true;
+    const TypedType *base;
+
+    if (node == NULL || node->kind == AST_IDENTIFIER) {
+        return false;
     }
-    return access_has_list(ctx, node->left_child);
+    base = node->kind == AST_INDEX ? index_base_type(ctx, node) : NULL;
+    return (base != NULL && base->kind == NYX_TYPE_LIST) ||
+           access_has_list(ctx, node->left_child);
 }
 
 void invalidate_aliased_narrowings(CheckContext *ctx)
@@ -314,78 +434,109 @@ void invalidate_aliased_narrowings(CheckContext *ctx)
     }
 }
 
+static const AstShape access_shapes[] = {
+    {AST_MEMBER_ACCESS, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_INDEX, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+    {AST_UNARY, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_BINARY, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+};
+
+/* Whether the access reads the variable `name` anywhere in its path. */
 static bool access_depends_on(const Ast *ast, size_t index, const char *name)
 {
     const AstNode *node = ast_get_node(ast, index);
-    if (node == NULL) return false;
+    const AstShape *shape;
+    const char *symbol;
+
+    if (node == NULL) {
+        return false;
+    }
     if (node->kind == AST_IDENTIFIER) {
-        const char *symbol = ast_symbol_text(ast, node->name_index);
+        symbol = ast_symbol_text(ast, node->name_index);
         return symbol != NULL && strcmp(symbol, name) == 0;
     }
-    if (node->kind == AST_MEMBER_ACCESS)
-        return access_depends_on(ast, node->left_child, name);
-    if (node->kind == AST_INDEX)
-        return access_depends_on(ast, node->left_child, name) ||
-               access_depends_on(ast, node->right_child, name);
-    if (node->kind == AST_UNARY)
-        return access_depends_on(ast, node->left_child, name);
-    if (node->kind == AST_BINARY)
-        return access_depends_on(ast, node->left_child, name) ||
-               access_depends_on(ast, node->right_child, name);
-    return false;
+    shape = shape_of(access_shapes, NYX_COUNT_OF(access_shapes), node->kind);
+    return shape != NULL &&
+           (((shape->operands & SHAPE_LEFT) != 0 &&
+             access_depends_on(ast, node->left_child, name)) ||
+            ((shape->operands & SHAPE_RIGHT) != 0 &&
+             access_depends_on(ast, node->right_child, name)));
 }
+
+/* A call can mutate an earlier field or element before the condition ends. */
+static const AstShape pure_shapes[] = {
+    {AST_IDENTIFIER, 0, PAYLOAD_NONE},
+    {AST_INTEGER_LITERAL, 0, PAYLOAD_NONE},
+    {AST_FLOAT_LITERAL, 0, PAYLOAD_NONE},
+    {AST_BOOL_LITERAL, 0, PAYLOAD_NONE},
+    {AST_NIL_LITERAL, 0, PAYLOAD_NONE},
+    {AST_STRING_LITERAL, 0, PAYLOAD_NONE},
+    {AST_UNARY, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_IS, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_MEMBER_ACCESS, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_BINARY, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+    {AST_INDEX, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+};
 
 /* A call can mutate an earlier field or element before the condition ends. */
 static bool condition_is_pure(const Ast *ast, size_t index)
 {
     const AstNode *node = ast_get_node(ast, index);
-    if (node == NULL) return false;
-    switch (node->kind) {
-    case AST_IDENTIFIER:
-    case AST_INTEGER_LITERAL:
-    case AST_FLOAT_LITERAL:
-    case AST_BOOL_LITERAL:
-    case AST_NIL_LITERAL:
-    case AST_STRING_LITERAL:
-        return true;
-    case AST_UNARY:
-    case AST_IS:
-    case AST_MEMBER_ACCESS:
-        return condition_is_pure(ast, node->left_child);
-    case AST_BINARY:
-    case AST_INDEX:
-        return condition_is_pure(ast, node->left_child) &&
-               condition_is_pure(ast, node->right_child);
-    default:
-        return false;
-    }
+    const AstShape *shape =
+        node == NULL ? NULL
+                     : shape_of(pure_shapes, NYX_COUNT_OF(pure_shapes),
+                                node->kind);
+
+    return shape != NULL &&
+           operand_holds(shape->operands, SHAPE_LEFT, ast, node->left_child,
+                         condition_is_pure) &&
+           operand_holds(shape->operands, SHAPE_RIGHT, ast, node->right_child,
+                         condition_is_pure);
 }
 
-static bool contains_mutating_call_name(const AstNode *node, bool include_self, bool include_functions, const Ast *ast, bool *left, bool *right)
+/* The operands of an expression that can hold a call. */
+static const AstShape call_shapes[] = {
+    {AST_MEMBER_CALL, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_MEMBER_ACCESS, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_UNARY, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_IS, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_NAMED_ARG, SHAPE_LEFT, PAYLOAD_NONE},
+    {AST_BINARY, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+    {AST_INDEX, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+    {AST_IF_EXPRESSION, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+    {AST_MATCH_EXPRESSION, SHAPE_LEFT | SHAPE_RIGHT, PAYLOAD_NONE},
+};
+
+static bool contains_mutating_call(const Ast *ast, size_t index,
+                                   bool include_self, bool include_functions);
+
+/* A method call may mutate its receiver; a plain call may mutate anything it
+   can reach, except print, which only reads. */
+static bool is_mutating_call(const Ast *ast, const AstNode *node,
+                             bool include_functions)
 {
-    if (node->kind == AST_CALL && include_self && include_functions) {
-        const char *name = ast_symbol_text(ast, node->name_index);
-        if (name == NULL || strcmp(name, "print") != 0) return false;
-    }
-    switch (node->kind) {
-    case AST_MEMBER_CALL:
-    case AST_MEMBER_ACCESS:
-    case AST_UNARY:
-    case AST_IS:
-    case AST_NAMED_ARG:
-        (*left) = true;
-        break;
-    case AST_BINARY:
-    case AST_INDEX:
-    case AST_IF_EXPRESSION:
-    case AST_MATCH_EXPRESSION:
-        (*left) = true;
-        (*right) = true;
-        break;
-    default:
-        break;
-    }
-    return true;
+    const char *name = node->kind == AST_CALL
+                           ? ast_symbol_text(ast, node->name_index)
+                           : NULL;
+
+    return node->kind == AST_MEMBER_CALL ||
+           (node->kind == AST_CALL && include_functions &&
+            (name == NULL || strcmp(name, "print") != 0));
+}
+
+static bool operands_mutate(const Ast *ast, const AstNode *node,
+                            bool include_functions)
+{
+    const AstShape *shape =
+        shape_of(call_shapes, NYX_COUNT_OF(call_shapes), node->kind);
+    unsigned operands = shape == NULL ? 0 : shape->operands;
+
+    return ((operands & SHAPE_LEFT) != 0 &&
+            contains_mutating_call(ast, node->left_child, true,
+                                   include_functions)) ||
+           ((operands & SHAPE_RIGHT) != 0 &&
+            contains_mutating_call(ast, node->right_child, true,
+                                   include_functions));
 }
 
 static bool contains_mutating_call(const Ast *ast, size_t index,
@@ -393,49 +544,72 @@ static bool contains_mutating_call(const Ast *ast, size_t index,
 {
     const AstNode *node = ast_get_node(ast, index);
     size_t i;
-    bool left = false;
-    bool right = false;
 
-    if (node == NULL) return false;
-    if (node->kind == AST_MEMBER_CALL && include_self) return true;
-    if (!contains_mutating_call_name(node, include_self, include_functions, ast, &left, &right)) {
+    if (node == NULL) {
+        return false;
+    }
+    if (include_self && is_mutating_call(ast, node, include_functions)) {
         return true;
     }
-    if ((left && contains_mutating_call(ast, node->left_child, true,
-                                        include_functions)) ||
-        (right && contains_mutating_call(ast, node->right_child, true,
-                                         include_functions))) return true;
+    if (operands_mutate(ast, node, include_functions)) {
+        return true;
+    }
     for (i = 0; i < node->children_count; i++) {
         const size_t *child = list_get(&ast->children, node->children_start + i);
-        if (child != NULL && contains_mutating_call(ast, *child, true,
-                                                   include_functions)) return true;
+
+        if (child != NULL &&
+            contains_mutating_call(ast, *child, true, include_functions)) {
+            return true;
+        }
     }
     return false;
 }
 
-void invalidate_accesses_for_expression(CheckContext *ctx, size_t ast_index)
+/* Whether any narrowing of a member or element is live, and whether any of
+   those can be reached through another name. */
+static bool narrowing_paths_live(const CheckContext *ctx, bool *aliased)
 {
-    size_t i;
     bool active = false;
-    bool aliased = false;
+    size_t i;
+
+    *aliased = false;
     for (i = 0; i < ctx->narrowings->length; i++) {
         const Narrowing *narrowing = list_get(ctx->narrowings, i);
-        if (narrowing->active && narrowing->path_ast != AST_NO_NODE) {
-            active = true;
-            if (narrowing->alias_sensitive) aliased = true;
+        bool live = narrowing->active && narrowing->path_ast != AST_NO_NODE;
+
+        active = active || live;
+        *aliased = *aliased || (live && narrowing->alias_sensitive);
+    }
+    return active;
+}
+
+/* An expression with a method call can change any member or element it
+   narrowed; one with a plain call can also change what an alias narrowed. */
+static void deactivate_narrowings(CheckContext *ctx, bool has_member,
+                                  bool has_call)
+{
+    size_t i;
+
+    for (i = 0; i < ctx->narrowings->length; i++) {
+        Narrowing *narrowing = (Narrowing *)list_get(ctx->narrowings, i);
+
+        if ((has_member && narrowing->path_ast != AST_NO_NODE) ||
+            (has_call && narrowing->alias_sensitive)) {
+            narrowing->active = false;
         }
     }
-    if (!active) return;
-    {
-        bool has_member = contains_mutating_call(ctx->ast, ast_index, false, false);
-        bool has_call = aliased &&
-                        contains_mutating_call(ctx->ast, ast_index, false, true);
-        if (!has_member && !has_call) return;
-        for (i = 0; i < ctx->narrowings->length; i++) {
-            Narrowing *narrowing = (Narrowing *)list_get(ctx->narrowings, i);
-            if ((has_member && narrowing->path_ast != AST_NO_NODE) ||
-                (has_call && narrowing->alias_sensitive)) narrowing->active = false;
-        }
+}
+
+/* An expression with a method call can change any member or element it
+   narrowed; one with a plain call can also change what an alias narrowed. */
+void invalidate_accesses_for_expression(CheckContext *ctx, size_t ast_index)
+{
+    bool aliased;
+
+    if (narrowing_paths_live(ctx, &aliased)) {
+        deactivate_narrowings(
+            ctx, contains_mutating_call(ctx->ast, ast_index, false, false),
+            aliased && contains_mutating_call(ctx->ast, ast_index, false, true));
     }
 }
 
@@ -451,86 +625,130 @@ void invalidate_access_narrowing(CheckContext *ctx, size_t ast_index)
     }
 }
 
+static TypedNode payload_node(SourcePos pos, size_t type_index, size_t tag,
+                             size_t source)
+{
+    TypedNode payload = {0};
+
+    payload.kind = TYPED_SUM_PAYLOAD;
+    payload.type_index = type_index;
+    payload.pos = pos;
+    payload.name_index = TYPED_NO_NODE;
+    payload.integer_value = (int)tag;
+    payload.left_child = source;
+    payload.right_child = TYPED_NO_NODE;
+    return payload;
+}
+
+/* Alternative `i` of the narrowed union, taken out of the source value and
+   put back into the narrowed union type. */
+static bool narrowed_alternative(CheckContext *ctx, size_t source, SourcePos pos,
+                                 const Narrowing *narrowing, size_t i,
+                                 size_t *injected, size_t *alternative)
+{
+    const TypedType *original =
+        typed_program_type(ctx->program, narrowing->original_type);
+    const TypedType *target =
+        typed_program_type(ctx->program, narrowing->type_index);
+    size_t payload_index;
+    size_t tag;
+    TypedNode payload;
+
+    *alternative = *(const size_t *)list_get(&ctx->program->type_children,
+                                             target->first_child + i);
+    if (original == NULL ||
+        !union_has_alternative(ctx->program, original, *alternative, &tag)) {
+        error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return false;
+    }
+    payload = payload_node(pos, *alternative, tag, source);
+    return checker_push_node(ctx, &payload, &payload_index,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM) &&
+           push_injection(ctx, payload_index, narrowing->type_index, i,
+                          injected);
+}
+
+/* `if source is alternative then <injected> else <chain>`. */
+static bool narrowed_select(CheckContext *ctx, size_t source, SourcePos pos,
+                            const Narrowing *narrowing, size_t bool_type,
+                            size_t alternative, size_t injected, size_t *chain)
+{
+    TypedNode test = {0};
+    TypedNode select = {0};
+    size_t condition;
+
+    test.kind = TYPED_IS;
+    test.type_index = bool_type;
+    test.auxiliary_type = alternative;
+    test.name_index = TYPED_NO_NODE;
+    test.pos = pos;
+    test.left_child = source;
+    test.right_child = TYPED_NO_NODE;
+    if (!checker_push_node(ctx, &test, &condition,
+                           MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM)) {
+        return false;
+    }
+    select.kind = TYPED_IF_EXPRESSION;
+    select.type_index = narrowing->type_index;
+    select.name_index = TYPED_NO_NODE;
+    select.pos = pos;
+    select.left_child = condition;
+    select.right_child = injected;
+    select.children_start = ctx->program->children.length;
+    select.children_count = 1;
+    checker_ok(ctx->errors, typed_program_push_child(ctx->program, *chain),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    return checker_push_node(ctx, &select, chain,
+                             MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+}
+
+/* The value of a narrowed variable. A single alternative is its payload; a
+   narrower union is chosen at run time by testing which alternative the
+   source holds. */
 bool emit_narrowed_value(CheckContext *ctx, size_t source,
                          const Narrowing *narrowing, size_t *out)
 {
     const TypedNode *source_node = typed_program_node(ctx->program, source);
-    const TypedType *target = typed_program_type(ctx->program,
-                                                 narrowing->type_index);
+    const TypedType *target =
+        typed_program_type(ctx->program, narrowing->type_index);
+    size_t chain = TYPED_NO_NODE;
+    size_t bool_type;
+    size_t count;
+    size_t i;
     SourcePos pos;
-    size_t count, i, chain = TYPED_NO_NODE, bool_type;
 
-    if (source_node == NULL || target == NULL) return false;
-    pos = source_node->pos;
-    if (target->kind != NIPPY_TYPE_UNION) {
-        TypedNode payload = {0};
-        payload.kind = TYPED_SUM_PAYLOAD;
-        payload.type_index = narrowing->type_index;
-        payload.pos = pos;
-        payload.name_index = TYPED_NO_NODE;
-        payload.integer_value = (int)narrowing->tag;
-        payload.left_child = source;
-        payload.right_child = TYPED_NO_NODE;
-        if (!typed_program_push(ctx->program, &payload, out)) goto oom;
-        return true;
+    if (source_node == NULL || target == NULL) {
+        return false;
     }
+    pos = source_node->pos;
     count = target->child_count;
-    if (!builtin_type(ctx, NIPPY_TYPE_BOOL, &bool_type)) return false;
-    for (i = count; i > 0; i--) {
-        const TypedType *original = typed_program_type(ctx->program,
-                                                       narrowing->original_type);
-        size_t alternative, tag, payload_index, injected;
-        TypedNode payload = {0};
+    if (target->kind != NYX_TYPE_UNION) {
+        TypedNode payload =
+            payload_node(pos, narrowing->type_index, narrowing->tag, source);
 
-        target = typed_program_type(ctx->program, narrowing->type_index);
-        alternative = *(const size_t *)list_get(&ctx->program->type_children,
-                                                target->first_child + i - 1);
-        if (original == NULL ||
-            !union_has_alternative(ctx->program, original, alternative, &tag)) {
-            error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
+        return checker_push_node(ctx, &payload, out,
+                                 MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
+    }
+    if (!builtin_type(ctx, NYX_TYPE_BOOL, &bool_type)) {
+        return false;
+    }
+    for (i = count; i > 0; i--) {
+        size_t injected;
+        size_t alternative;
+
+        if (!narrowed_alternative(ctx, source, pos, narrowing, i - 1, &injected,
+                                  &alternative)) {
             return false;
         }
-        payload.kind = TYPED_SUM_PAYLOAD;
-        payload.type_index = alternative;
-        payload.pos = pos;
-        payload.name_index = TYPED_NO_NODE;
-        payload.integer_value = (int)tag;
-        payload.left_child = source;
-        payload.right_child = TYPED_NO_NODE;
-        if (!typed_program_push(ctx->program, &payload, &payload_index)) goto oom;
-        if (!push_injection(ctx, payload_index, narrowing->type_index, i - 1,
-                            &injected)) return false;
         if (chain == TYPED_NO_NODE) {
             chain = injected;
-        } else {
-            TypedNode test = {0}, select = {0};
-            size_t condition, children_start;
-            test.kind = TYPED_IS;
-            test.type_index = bool_type;
-            test.auxiliary_type = alternative;
-            test.name_index = TYPED_NO_NODE;
-            test.pos = pos;
-            test.left_child = source;
-            test.right_child = TYPED_NO_NODE;
-            if (!typed_program_push(ctx->program, &test, &condition)) goto oom;
-            children_start = ctx->program->children.length;
-            if (!typed_program_push_child(ctx->program, chain)) goto oom;
-            select.kind = TYPED_IF_EXPRESSION;
-            select.type_index = narrowing->type_index;
-            select.name_index = TYPED_NO_NODE;
-            select.pos = pos;
-            select.left_child = condition;
-            select.right_child = injected;
-            select.children_start = children_start;
-            select.children_count = 1;
-            if (!typed_program_push(ctx->program, &select, &chain)) goto oom;
+        } else if (!narrowed_select(ctx, source, pos, narrowing, bool_type,
+                                    alternative, injected, &chain)) {
+            return false;
         }
     }
     *out = chain;
     return true;
-oom:
-    error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_PROGRAM);
-    return false;
 }
 
 bool apply_access_narrowing(CheckContext *ctx, size_t ast_index)
@@ -550,299 +768,375 @@ bool apply_access_narrowing(CheckContext *ctx, size_t ast_index)
     return true;
 }
 
-static bool push_condition_narrowing(CheckContext *ctx, size_t condition_ast, bool negated, bool allow_paths);
+static bool push_condition_narrowing(CheckContext *ctx, size_t condition_ast,
+                                     bool negated, bool allow_paths);
 
-static bool push_condition_narrowing_left_paths(const AstNode *condition, bool negated, bool allow_paths, CheckContext *ctx, const AstNode **receiver, bool *outcome)
+/* Two facts narrow the same thing: the same variable, or the same path
+   through it. */
+static bool same_fact_target(const CheckContext *ctx, const Narrowing *a,
+                             const Narrowing *b)
 {
-    if (condition != NULL && condition->kind == AST_BINARY &&
-        ((condition->op == NIPPY_OPERATOR_AND && !negated) ||
-         (condition->op == NIPPY_OPERATOR_OR && negated))) {
-        bool left_paths = allow_paths &&
-                          condition_is_pure(ctx->ast, condition->right_child);
-        do { *outcome = (push_condition_narrowing(ctx, condition->left_child, negated,
-                                        left_paths) &&
-               push_condition_narrowing(ctx, condition->right_child, negated,
-                                        allow_paths)); return true; } while (0);
+    bool a_path = a->path_ast != AST_NO_NODE;
+    bool b_path = b->path_ast != AST_NO_NODE;
+
+    return strcmp(a->name, b->name) == 0 && a_path == b_path &&
+           (!a_path || same_access(ctx->ast, a->path_ast, b->path_ast));
+}
+
+/* The last fact of `facts` that narrows what `left` narrows from the same
+   starting type. */
+static const Narrowing *matching_fact(const CheckContext *ctx, const List *facts,
+                                      const Narrowing *left)
+{
+    size_t j;
+
+    for (j = facts->length; j > 0; j--) {
+        const Narrowing *candidate = list_get(facts, j - 1);
+
+        if (left->original_type == candidate->original_type &&
+            same_fact_target(ctx, left, candidate)) {
+            return candidate;
+        }
     }
-    if (condition == NULL || condition->kind != AST_IS) {
-        do { *outcome = (true); return true; } while (0);
-    }
-    (*receiver) = ast_get_node(ctx->ast, condition->left_child);
-    if ((*receiver) == NULL ||
-        ((*receiver)->kind != AST_IDENTIFIER &&
-         (!allow_paths || !stable_access(ctx, condition->left_child)))) {
-        do { *outcome = (true); return true; } while (0);
+    return NULL;
+}
+
+static bool has_later_fact(const CheckContext *ctx, const List *facts,
+                           size_t from, const Narrowing *left)
+{
+    size_t j;
+
+    for (j = from; j < facts->length; j++) {
+        if (same_fact_target(ctx, left, list_get(facts, j))) {
+            return true;
+        }
     }
     return false;
 }
 
-static bool push_condition_narrowing_access_root(const char **name, CheckContext *ctx, const AstNode *condition, const VariableEntry **variable, const AstNode *receiver, size_t *original_type, const TypedType **declared, size_t *tested)
+/* What is known after either branch of an `or`: the union of what each
+   branch knew, unless that is no narrower than the declared type. */
+static bool join_facts(CheckContext *ctx, Narrowing left, const Narrowing *right)
 {
-    (*name) = access_root(ctx->ast, condition->left_child);
-    if ((*name) == NULL) {
+    const TypedType *combined_type;
+    const TypedType *original;
+    List alternatives;
+    size_t combined;
+    bool ok;
+
+    list_init(&alternatives, sizeof(size_t));
+    checker_ok(ctx->errors, list_push(&alternatives, &left.type_index),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    checker_ok(ctx->errors, list_push(&alternatives, &right->type_index),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    ok = !ctx->errors->fatal && intern_union(ctx, &alternatives, &combined);
+    list_free(&alternatives);
+    if (!ok) {
         return false;
     }
-    (*variable) = find_variable(ctx->locals, (*name));
-    if ((*variable) == NULL && !ctx->in_function) {
-        (*variable) = find_variable(ctx->globals, (*name));
+    if (same_type(ctx->program, combined, left.original_type)) {
+        return true;
     }
-    if ((*variable) == NULL) {
+    left.type_index = combined;
+    combined_type = typed_program_type(ctx->program, combined);
+    original = typed_program_type(ctx->program, left.original_type);
+    if (combined_type->kind != NYX_TYPE_UNION &&
+        !union_has_alternative(ctx->program, original, combined, &left.tag)) {
+        return true;
+    }
+    return checker_ok(ctx->errors, list_push(ctx->narrowings, &left),
+                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+static bool join_one(CheckContext *ctx, const List *left_facts,
+                     const List *right_facts, size_t index)
+{
+    Narrowing left = *(const Narrowing *)list_get(left_facts, index);
+    const Narrowing *right;
+
+    if (has_later_fact(ctx, left_facts, index + 1, &left)) {
+        return true;
+    }
+    right = matching_fact(ctx, right_facts, &left);
+    return right == NULL || join_facts(ctx, left, right);
+}
+
+/* The facts one side of a join pushed, moved out of the narrowing list. */
+static bool collect_facts(CheckContext *ctx, size_t condition_ast, bool negated,
+                          bool paths, size_t start, List *facts)
+{
+    bool ok = push_condition_narrowing(ctx, condition_ast, negated, paths);
+    size_t i;
+
+    for (i = start; ok && i < ctx->narrowings->length; i++) {
+        ok = checker_ok(ctx->errors, list_push(facts, list_get(ctx->narrowings, i)),
+                        MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    }
+    ctx->narrowings->length = start;
+    return ok;
+}
+
+/* `a or b` (or the negation of `a and b`) learns only what both sides agree
+   on. */
+static bool push_join(CheckContext *ctx, const AstNode *condition,
+                      size_t condition_ast, bool negated, bool allow_paths)
+{
+    size_t start = ctx->narrowings->length;
+    bool paths = allow_paths && condition_is_pure(ctx->ast, condition_ast);
+    List left_facts;
+    List right_facts;
+    size_t i;
+    bool ok;
+
+    list_init(&left_facts, sizeof(Narrowing));
+    list_init(&right_facts, sizeof(Narrowing));
+    ok = collect_facts(ctx, condition->left_child, negated, paths, start,
+                       &left_facts) &&
+         collect_facts(ctx, condition->right_child, negated, paths, start,
+                       &right_facts);
+    for (i = left_facts.length; ok && i > 0; i--) {
+        ok = join_one(ctx, &left_facts, &right_facts, i - 1);
+    }
+    list_free(&left_facts);
+    list_free(&right_facts);
+    if (!ok) {
+        ctx->narrowings->length = start;
+    }
+    return ok;
+}
+
+/* A variable's type here: the declared one, or what an enclosing test already
+   narrowed it to. */
+const Narrowing *prior_narrowing(const CheckContext *ctx, const char *name,
+                                bool path, size_t access)
+{
+    size_t i;
+
+    for (i = ctx->narrowings->length; i > 0; i--) {
+        const Narrowing *prior = list_get(ctx->narrowings, i - 1);
+        bool same_path = path ? prior->path_ast != AST_NO_NODE &&
+                                    same_access(ctx->ast, prior->path_ast, access)
+                              : prior->path_ast == AST_NO_NODE;
+
+        if (prior->active && strcmp(prior->name, name) == 0 && same_path) {
+            return prior;
+        }
+    }
+    return NULL;
+}
+
+/* What an `is` test narrows: the variable at the root of the tested access,
+   its type before the test, and the type it had before any narrowing. */
+typedef struct {
+    const char *name;
+    size_t original_type;
+    size_t tested; /* the type at the test, narrowed so far */
+    const TypedType *declared;
+} NarrowTarget;
+
+static bool narrow_target(CheckContext *ctx, const AstNode *condition,
+                          const AstNode *receiver, NarrowTarget *target)
+{
+    bool path = receiver->kind != AST_IDENTIFIER;
+    const char *name = access_root(ctx->ast, condition->left_child);
+    const VariableEntry *variable =
+        name == NULL ? NULL : lookup_variable(ctx, name);
+    const TypedNode *value = NULL;
+    const Narrowing *prior;
+    size_t type_index;
+
+    if (variable == NULL) {
         return false;
     }
-    {
-        size_t type_index = (*variable)->type_index;
-        if (receiver->kind != AST_IDENTIFIER) {
-            const TypedNode *value = typed_program_node(
-                ctx->program, *mapping_slot(ctx->mapping, condition->left_child));
-            if (value == NULL) return false;
-            type_index = value->type_index;
+    type_index = variable->type_index;
+    if (path) {
+        value = typed_program_node(
+            ctx->program, *mapping_slot(ctx->mapping, condition->left_child));
+        if (value == NULL) {
+            return false;
         }
-        (*original_type) = type_index;
-        for (size_t i = ctx->narrowings->length; i > 0; i--) {
-            const Narrowing *prior = list_get(ctx->narrowings, i - 1);
-            if (prior->active && strcmp(prior->name, (*name)) == 0 &&
-                ((receiver->kind == AST_IDENTIFIER &&
-                  prior->path_ast == AST_NO_NODE) ||
-                 (receiver->kind != AST_IDENTIFIER &&
-                  prior->path_ast != AST_NO_NODE &&
-                  same_access(ctx->ast, prior->path_ast, condition->left_child)))) {
-                type_index = prior->type_index;
-                (*original_type) = prior->original_type;
-                break;
-            }
-        }
-        (*declared) = typed_program_type(ctx->program, type_index);
-        (*tested) = type_index;
+        type_index = value->type_index;
     }
+    target->original_type = type_index;
+    prior = prior_narrowing(ctx, name, path, condition->left_child);
+    if (prior != NULL) {
+        type_index = prior->type_index;
+        target->original_type = prior->original_type;
+    }
+    target->name = name;
+    target->declared = typed_program_type(ctx->program, type_index);
+    target->tested = type_index;
     return true;
 }
 
-static void push_condition_narrowing_candidate(size_t *j, List *right_facts, Narrowing *left, CheckContext *ctx, Narrowing *right, bool *found)
+/* After a failed `is`, the value holds any alternative but the tested one. */
+static bool complement_union(CheckContext *ctx, const TypedType *declared,
+                             size_t tag, size_t *tested)
 {
-    for ((*j) = (*right_facts).length; (*j) > 0; (*j)--) {
-        const Narrowing *candidate = list_get(right_facts, (*j) - 1);
-        if (strcmp((*left).name, candidate->name) == 0 &&
-            (*left).original_type == candidate->original_type &&
-            (((*left).path_ast == AST_NO_NODE && candidate->path_ast == AST_NO_NODE) ||
-             ((*left).path_ast != AST_NO_NODE && candidate->path_ast != AST_NO_NODE &&
-              same_access(ctx->ast, (*left).path_ast, candidate->path_ast)))) {
-            (*right) = *candidate;
-            (*found) = true;
-            break;
+    size_t first = declared->first_child;
+    size_t count = declared->child_count;
+    List alternatives;
+    size_t i;
+    bool ok;
+
+    list_init(&alternatives, sizeof(size_t));
+    for (i = 0; i < count; i++) {
+        size_t item = *(const size_t *)list_get(&ctx->program->type_children,
+                                                first + i);
+
+        if (i != tag) {
+            checker_ok(ctx->errors, list_push(&alternatives, &item),
+                       MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
         }
     }
+    ok = !ctx->errors->fatal && intern_union(ctx, &alternatives, tested);
+    list_free(&alternatives);
+    return ok;
 }
 
-static bool push_condition_narrowing_union_has_alternative(const TypedType *declared, CheckContext *ctx, size_t *tested, size_t *tag, bool negated, bool *outcome2)
+static bool push_narrowing_fact(CheckContext *ctx, const NarrowTarget *target,
+                                const AstNode *receiver,
+                                const AstNode *condition, size_t tag)
 {
-    if (declared == NULL ||
-        !union_has_alternative(ctx->program, declared, (*tested), tag)) {
-        do { *outcome2 = (true); return true; } while (0);
-    }
-    if (negated) {
-        List alternatives;
-        size_t i, first = declared->first_child, count = declared->child_count;
-        list_init(&alternatives, sizeof(size_t));
-        for (i = 0; i < count; i++) {
-            size_t item = *(const size_t *)list_get(&ctx->program->type_children,
-                                                    first + i);
-            if (i != (*tag) && !list_push(&alternatives, &item)) {
-                list_free(&alternatives);
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                do { *outcome2 = (false); return true; } while (0);
-            }
-        }
-        if (!intern_union(ctx, &alternatives, tested)) {
-            list_free(&alternatives);
-            do { *outcome2 = (false); return true; } while (0);
-        }
-        list_free(&alternatives);
-    }
-    return false;
+    bool path = receiver->kind != AST_IDENTIFIER;
+    Narrowing narrowing = {0};
+
+    narrowing.name = target->name;
+    narrowing.path_ast = path ? condition->left_child : AST_NO_NODE;
+    narrowing.type_index = target->tested;
+    narrowing.original_type = target->original_type;
+    narrowing.tag = tag;
+    narrowing.active = true;
+    narrowing.alias_sensitive = path && access_has_list(ctx, condition->left_child);
+    return checker_ok(ctx->errors, list_push(ctx->narrowings, &narrowing),
+                      MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
 }
 
-static void push_condition_narrowing_later(size_t *j, size_t i, List *left_facts, Narrowing *left, CheckContext *ctx, bool *duplicate)
+/* `x is T`: x has type T where the test held (or any other alternative where
+   it failed). Only a union can be narrowed. */
+/* Whether the tested type narrows the variable's original union: it is one
+   of its alternatives, or a narrower union. Sets `tag` for an alternative. */
+static bool narrowing_applies(CheckContext *ctx, const NarrowTarget *target,
+                              size_t *tag)
 {
-    for ((*j) = i; (*j) < (*left_facts).length; (*j)++) {
-        const Narrowing *later = list_get(left_facts, (*j));
-        if (strcmp((*left).name, later->name) == 0 &&
-            (((*left).path_ast == AST_NO_NODE && later->path_ast == AST_NO_NODE) ||
-             ((*left).path_ast != AST_NO_NODE && later->path_ast != AST_NO_NODE &&
-              same_access(ctx->ast, (*left).path_ast, later->path_ast)))) {
-            (*duplicate) = true;
-            break;
-        }
-    }
+    const TypedType *original =
+        typed_program_type(ctx->program, target->original_type);
+
+    return typed_program_type(ctx->program, target->tested)->kind ==
+               NYX_TYPE_UNION ||
+           (original != NULL &&
+            union_has_alternative(ctx->program, original, target->tested, tag));
 }
 
-static bool push_condition_narrowing_typed_program(CheckContext *ctx, size_t tested, const TypedType *declared, size_t *tag, const char *name, const AstNode *receiver, const AstNode *condition, size_t original_type, bool *outcome3)
+/* The target of an `is` test, when it is a union: its declared type and the
+   tested type. Returns false when there is nothing to narrow. */
+static bool union_target(CheckContext *ctx, const AstNode *condition,
+                         const AstNode *receiver, NarrowTarget *target)
 {
-    if (typed_program_type(ctx->program, tested)->kind != NIPPY_TYPE_UNION &&
-        (declared == NULL || !union_has_alternative(ctx->program, declared,
-                                                    tested, tag))) do { *outcome3 = (true); return true; } while (0);
-    {
-        Narrowing narrowing = {0};
-
-        narrowing.name = name;
-        narrowing.path_ast = receiver->kind == AST_IDENTIFIER
-                                 ? AST_NO_NODE : condition->left_child;
-        narrowing.type_index = tested;
-        narrowing.original_type = original_type;
-        narrowing.tag = (*tag);
-        narrowing.active = true;
-        narrowing.alias_sensitive = receiver->kind != AST_IDENTIFIER &&
-                                    access_has_list(ctx, condition->left_child);
-        if (!list_push(ctx->narrowings, &narrowing)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            do { *outcome3 = (false); return true; } while (0);
-        }
-    }
-    return false;
+    return narrow_target(ctx, condition, receiver, target) &&
+           target->declared != NULL && target->declared->kind == NYX_TYPE_UNION;
 }
 
-static bool push_condition_narrowing_push_condition_narrowing_access_root(const char **name, CheckContext *ctx, const AstNode *condition, const VariableEntry **variable, const AstNode *receiver, size_t *original_type, const TypedType **declared, size_t *tested, bool *outcome4)
+/* `x is T`: x has type T where the test held (or any other alternative where
+   it failed). Only a union can be narrowed. */
+static bool push_is_fact(CheckContext *ctx, const AstNode *condition,
+                         const AstNode *receiver, bool negated)
 {
-    if (!push_condition_narrowing_access_root(name, ctx, condition, variable, receiver, original_type, declared, tested)) {
-        do { *outcome4 = (true); return true; } while (0);
+    NarrowTarget target;
+    size_t declared_index;
+    size_t tag;
+
+    if (!union_target(ctx, condition, receiver, &target)) {
+        return true;
     }
-    if ((*declared) == NULL || (*declared)->kind != NIPPY_TYPE_UNION) {
-        do { *outcome4 = (true); return true; } while (0);
+    declared_index = target.tested;
+    if (!resolve_type_in_env(ctx, condition->right_child, ctx->env, "is",
+                             &target.tested)) {
+        return false;
     }
-    {
-        size_t declared_index = (*tested);
-        if (!resolve_type_in_env(ctx, condition->right_child, ctx->env, "is",
-                                 tested)) {
-            do { *outcome4 = (false); return true; } while (0);
-        }
-        (*declared) = typed_program_type(ctx->program, declared_index);
+    target.declared = typed_program_type(ctx->program, declared_index);
+    if (target.declared == NULL ||
+        !union_has_alternative(ctx->program, target.declared, target.tested,
+                               &tag)) {
+        return true;
     }
-    return false;
+    if (negated && !complement_union(ctx, target.declared, tag, &target.tested)) {
+        return false;
+    }
+    return !narrowing_applies(ctx, &target, &tag) ||
+           push_narrowing_fact(ctx, &target, receiver, condition, tag);
 }
 
-static void push_condition_narrowing_condition(CheckContext *ctx, size_t condition_ast, bool *negated, const AstNode **condition)
+/* `a and b` (or the negation of `a or b`) learns what both sides learn. The
+   left side may name a path only if the right side cannot change it. */
+static bool push_conjunction(CheckContext *ctx, const AstNode *condition,
+                             bool negated, bool allow_paths)
 {
-    (*condition) = ast_get_node(ctx->ast, condition_ast);
-    
-    
-    
-    
-    
-    
-    
-    while ((*condition) != NULL && (*condition)->kind == AST_UNARY &&
-           (*condition)->op == NIPPY_OPERATOR_NOT) {
-        (*negated) = !(*negated);
-        (*condition) = ast_get_node(ctx->ast, (*condition)->left_child);
+    bool left_paths =
+        allow_paths && condition_is_pure(ctx->ast, condition->right_child);
+
+    return push_condition_narrowing(ctx, condition->left_child, negated,
+                                    left_paths) &&
+           push_condition_narrowing(ctx, condition->right_child, negated,
+                                    allow_paths);
+}
+
+/* Whether the condition is `op` once a negation is pushed inward: not (a and
+   b) is (not a) or (not b). */
+static bool effective_op_is(const AstNode *condition, NyxOperator op,
+                            bool negated)
+{
+    NyxOperator dual = op == NYX_OPERATOR_AND ? NYX_OPERATOR_OR
+                                              : NYX_OPERATOR_AND;
+
+    return condition != NULL && condition->kind == AST_BINARY &&
+           condition->op == (negated ? dual : op);
+}
+
+/* `not` flips a condition's sense without changing what it tests. */
+static const AstNode *strip_negations(const CheckContext *ctx, size_t *ast,
+                                      bool *negated)
+{
+    const AstNode *condition = ast_get_node(ctx->ast, *ast);
+
+    while (condition != NULL && condition->kind == AST_UNARY &&
+           condition->op == NYX_OPERATOR_NOT) {
+        *negated = !*negated;
+        *ast = condition->left_child;
+        condition = ast_get_node(ctx->ast, *ast);
     }
+    return condition;
+}
+
+/* The receiver of an `is` is a name, or a stable path when paths are allowed. */
+static const AstNode *usable_receiver(CheckContext *ctx, const AstNode *condition,
+                                      bool allow_paths)
+{
+    const AstNode *receiver = ast_get_node(ctx->ast, condition->left_child);
+    bool path_ok = allow_paths && stable_access(ctx, condition->left_child);
+
+    return receiver != NULL && (receiver->kind == AST_IDENTIFIER || path_ok)
+               ? receiver
+               : NULL;
 }
 
 static bool push_condition_narrowing(CheckContext *ctx, size_t condition_ast,
                                      bool negated, bool allow_paths)
 {
-    const AstNode *condition = {0};
-    const AstNode *receiver = {0};
-    const char *name = {0};
-    const VariableEntry *variable = {0};
-    size_t original_type = {0};
-    const TypedType *declared = {0};
-    size_t tested = {0};
-    size_t tag = {0};
-    push_condition_narrowing_condition(ctx, condition_ast, &negated, &condition);
-    if (condition != NULL && condition->kind == AST_BINARY &&
-        ((condition->op == NIPPY_OPERATOR_OR && !negated) ||
-         (condition->op == NIPPY_OPERATOR_AND && negated))) {
-        size_t start = ctx->narrowings->length;
-        size_t i, j;
-        List left_facts, right_facts;
-        bool paths = allow_paths && condition_is_pure(ctx->ast, condition_ast);
+    const AstNode *condition = strip_negations(ctx, &condition_ast, &negated);
+    const AstNode *receiver;
 
-        list_init(&left_facts, sizeof(Narrowing));
-        list_init(&right_facts, sizeof(Narrowing));
-        if (!push_condition_narrowing(ctx, condition->left_child, negated, paths))
-            goto join_error;
-        for (i = start; i < ctx->narrowings->length; i++) {
-            const Narrowing *fact = list_get(ctx->narrowings, i);
-            if (!list_push(&left_facts, fact)) goto join_oom;
-        }
-        ctx->narrowings->length = start;
-        if (!push_condition_narrowing(ctx, condition->right_child, negated, paths))
-            goto join_error;
-        for (i = start; i < ctx->narrowings->length; i++) {
-            const Narrowing *fact = list_get(ctx->narrowings, i);
-            if (!list_push(&right_facts, fact)) goto join_oom;
-        }
-        ctx->narrowings->length = start;
-        for (i = left_facts.length; i > 0; i--) {
-            Narrowing left = *(const Narrowing *)list_get(&left_facts, i - 1);
-            Narrowing right;
-            List alternatives;
-            size_t combined;
-            bool duplicate = false, found = false;
-
-            push_condition_narrowing_later(&j, i, &left_facts, &left, ctx, &duplicate);
-            if (duplicate) continue;
-            push_condition_narrowing_candidate(&j, &right_facts, &left, ctx, &right, &found);
-            if (!found) continue;
-            list_init(&alternatives, sizeof(size_t));
-            if (!list_push(&alternatives, &left.type_index) ||
-                !list_push(&alternatives, &right.type_index)) {
-                list_free(&alternatives);
-                goto join_oom;
-            }
-            if (!intern_union(ctx, &alternatives, &combined)) {
-                list_free(&alternatives);
-                goto join_error;
-            }
-            list_free(&alternatives);
-            if (same_type(ctx->program, combined, left.original_type)) continue;
-            left.type_index = combined;
-            if (typed_program_type(ctx->program, combined)->kind != NIPPY_TYPE_UNION &&
-                !union_has_alternative(ctx->program,
-                     typed_program_type(ctx->program, left.original_type),
-                     combined, &left.tag)) continue;
-            if (!list_push(ctx->narrowings, &left)) goto join_oom;
-        }
-        list_free(&left_facts);
-        list_free(&right_facts);
+    if (effective_op_is(condition, NYX_OPERATOR_OR, negated)) {
+        return push_join(ctx, condition, condition_ast, negated, allow_paths);
+    }
+    if (effective_op_is(condition, NYX_OPERATOR_AND, negated)) {
+        return push_conjunction(ctx, condition, negated, allow_paths);
+    }
+    if (condition == NULL || condition->kind != AST_IS) {
         return true;
-join_oom:
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-join_error:
-        ctx->narrowings->length = start;
-        list_free(&left_facts);
-        list_free(&right_facts);
-        return false;
     }
-    {
-        bool outcome;
-
-        if (push_condition_narrowing_left_paths(condition, negated, allow_paths, ctx, &receiver, &outcome)) {
-            return outcome;
-        }
-    }
-    {
-        bool outcome4;
-
-        if (push_condition_narrowing_push_condition_narrowing_access_root(&name, ctx, condition, &variable, receiver, &original_type, &declared, &tested, &outcome4)) {
-            return outcome4;
-        }
-    }
-    {
-        bool outcome2;
-
-        if (push_condition_narrowing_union_has_alternative(declared, ctx, &tested, &tag, negated, &outcome2)) {
-            return outcome2;
-        }
-    }
-    declared = typed_program_type(ctx->program, original_type);
-    {
-        bool outcome3;
-
-        if (push_condition_narrowing_typed_program(ctx, tested, declared, &tag, name, receiver, condition, original_type, &outcome3)) {
-            return outcome3;
-        }
-    }
-    return true;
+    receiver = usable_receiver(ctx, condition, allow_paths);
+    return receiver == NULL || push_is_fact(ctx, condition, receiver, negated);
 }
 
 bool push_if_narrowing(CheckContext *ctx, size_t condition_ast)
@@ -878,66 +1172,29 @@ void invalidate_narrowing(CheckContext *ctx, const char *name)
 }
 
 
-bool check_if_expression(CheckContext *ctx, const AstNode *node,
-                                size_t ast_index)
+/* One arm of an if expression, checked under its narrowing. */
+static bool check_if_arm(CheckContext *ctx, const AstNode *node, size_t arm,
+                         size_t expected, size_t narrowing_start,
+                         size_t *result)
 {
-    size_t condition;
-    size_t then_expression;
-    size_t else_expression;
-    const TypedNode *then_node;
-    const TypedNode *else_node;
-    size_t narrowing_start;
-    Checkpoint checkpoint;
-    bool then_ok;
-    size_t expected = ctx->expected_ast == ast_index
-                          ? ctx->expected_type : TYPED_NO_NODE;
+    bool ok = check_expression_coerced(ctx, arm, expected, result);
+
+    ctx->narrowings->length = narrowing_start;
+    if (!ok && !ctx->errors->reported) {
+        error_report_at(ctx->errors, node->pos,
+                        MESSAGE_CHECKER_IF_EXPR_MISMATCH);
+    }
+    return ok;
+}
+
+static bool emit_if_expression(CheckContext *ctx, const AstNode *node,
+                               size_t ast_index, size_t condition,
+                               size_t then_expression, size_t else_expression)
+{
+    const TypedNode *then_node = typed_program_node(ctx->program, then_expression);
+    const TypedNode *else_node = typed_program_node(ctx->program, else_expression);
     TypedNode typed = {0};
 
-    if (!check_condition(ctx, node->left_child, &condition)) {
-        return false;
-    }
-    narrowing_start = ctx->narrowings->length;
-    checkpoint = checker_checkpoint(ctx);
-    if (!push_if_narrowing(ctx, node->left_child)) {
-        ctx->narrowings->length = narrowing_start;
-        return false;
-    }
-    {
-        then_ok = check_expression_coerced(ctx, node->right_child, expected,
-                                           &then_expression);
-
-        ctx->narrowings->length = narrowing_start;
-        if (!then_ok) {
-            if (!ctx->errors->reported) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-            }
-            if (ctx->errors->fatal ||
-                ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) return false;
-            checker_restore(ctx, checkpoint);
-            ctx->errors->reported = false;
-        }
-    }
-    if (!push_else_narrowing(ctx, node->left_child)) return false;
-    {
-        bool ok = check_expression_coerced(
-            ctx, *(const size_t *)list_get(&ctx->ast->children, node->children_start),
-            expected, &else_expression);
-        ctx->narrowings->length = narrowing_start;
-        if (!ok) {
-            if (!ctx->errors->reported) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-            }
-            return false;
-        }
-    }
-    if (!then_ok) {
-        ctx->errors->reported = true;
-        return false;
-    }
-    then_node = typed_program_node(ctx->program, then_expression);
-    else_node = typed_program_node(ctx->program, else_expression);
     if (then_node == NULL || else_node == NULL ||
         !same_type(ctx->program, then_node->type_index,
                    else_node->type_index)) {
@@ -955,767 +1212,143 @@ bool check_if_expression(CheckContext *ctx, const AstNode *node,
     typed.store_id = TYPED_NO_NODE;
     typed.children_start = ctx->program->children.length;
     typed.children_count = 1;
-    if (!typed_program_push_child(ctx->program, else_expression)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
-    }
+    checker_ok(ctx->errors,
+               typed_program_push_child(ctx->program, else_expression),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     return emit_node(ctx, &typed, ast_index, &(size_t){0});
 }
 
-
-static bool push_match_narrowing_value(const AstNode *head, const TypedType **declared, CheckContext *ctx, const VariableEntry *variable, size_t head_ast, Narrowing *narrowing, const char *name, size_t tested)
+/* The then arm. A bad one is recorded and the else arm is still checked, so one
+   pass reports both; returns false when the check cannot go on. */
+static bool check_then_arm(CheckContext *ctx, const AstNode *node,
+                           size_t expected, size_t narrowing_start,
+                           Checkpoint checkpoint, size_t *expression,
+                           bool *then_ok)
 {
-    if (head->kind == AST_IDENTIFIER) {
-        (*declared) = typed_program_type(ctx->program, variable->type_index);
-    } else {
-        const TypedNode *value = typed_program_node(
-            ctx->program, *mapping_slot(ctx->mapping, head_ast));
-        (*declared) = value == NULL ? NULL :
-            typed_program_type(ctx->program, value->type_index);
+    *then_ok = check_if_arm(ctx, node, node->right_child, expected,
+                            narrowing_start, expression);
+    if (*then_ok) {
+        return true;
     }
-    if ((*declared) == NULL || (*declared)->kind != NIPPY_TYPE_UNION) {
+    if (checker_cannot_recover(ctx->errors)) {
         return false;
     }
-    (*narrowing).name = name;
-    (*narrowing).path_ast = head->kind == AST_IDENTIFIER ? AST_NO_NODE : head_ast;
-    (*narrowing).type_index = tested;
-    (*narrowing).original_type = head->kind == AST_IDENTIFIER
-                                  ? variable->type_index
-                                  : typed_program_node(ctx->program,
-                                        *mapping_slot(ctx->mapping, head_ast))->type_index;
-    for (size_t i = ctx->narrowings->length; i > 0; i--) {
-        const Narrowing *prior = list_get(ctx->narrowings, i - 1);
-        if (prior->active && strcmp(prior->name, name) == 0 &&
-            ((head->kind == AST_IDENTIFIER && prior->path_ast == AST_NO_NODE) ||
-             (head->kind != AST_IDENTIFIER && prior->path_ast != AST_NO_NODE &&
-              same_access(ctx->ast, prior->path_ast, head_ast)))) {
-            (*narrowing).original_type = prior->original_type;
-            break;
-        }
-    }
+    checker_restore(ctx, checkpoint);
+    ctx->errors->reported = false;
     return true;
 }
 
-bool push_match_narrowing(CheckContext *ctx, size_t head_ast,
-                                  size_t tested, size_t tag)
+/* Both arms are checked even if the first is wrong, so one pass reports both. */
+bool check_if_expression(CheckContext *ctx, const AstNode *node,
+                         size_t ast_index)
+{
+    size_t expected = ctx->expected_ast == ast_index ? ctx->expected_type
+                                                     : TYPED_NO_NODE;
+    size_t else_ast = *(const size_t *)list_get(&ctx->ast->children,
+                                                node->children_start);
+    size_t condition;
+    size_t then_expression;
+    size_t else_expression;
+    size_t narrowing_start;
+    Checkpoint checkpoint;
+    bool then_ok;
+
+    if (!check_condition(ctx, node->left_child, &condition)) {
+        return false;
+    }
+    narrowing_start = ctx->narrowings->length;
+    checkpoint = checker_checkpoint(ctx);
+    if (!push_if_narrowing(ctx, node->left_child)) {
+        ctx->narrowings->length = narrowing_start;
+        return false;
+    }
+    if (!check_then_arm(ctx, node, expected, narrowing_start, checkpoint,
+                        &then_expression, &then_ok) ||
+        !push_else_narrowing(ctx, node->left_child) ||
+        !check_if_arm(ctx, node, else_ast, expected, narrowing_start,
+                      &else_expression)) {
+        return false;
+    }
+    ctx->errors->reported = ctx->errors->reported || !then_ok;
+    return then_ok && emit_if_expression(ctx, node, ast_index, condition,
+                                         then_expression, else_expression);
+}
+
+
+/* The type a match head has: a variable's declared type, or the type of the
+   already checked path. TYPED_NO_NODE when there is none. */
+static size_t match_head_type(const CheckContext *ctx, const AstNode *head,
+                              size_t head_ast, const VariableEntry *variable)
+{
+    const TypedNode *value;
+
+    if (head->kind == AST_IDENTIFIER) {
+        return variable->type_index;
+    }
+    value = typed_program_node(ctx->program,
+                               *mapping_slot(ctx->mapping, head_ast));
+    return value == NULL ? TYPED_NO_NODE : value->type_index;
+}
+
+/* Inside a match arm the head has the arm's type, when the head is a union
+   held in a variable or a stable path through one. */
+/* The variable a match head reads, when the head is a name or a stable path
+   through one. */
+static const VariableEntry *head_variable(CheckContext *ctx, size_t head_ast,
+                                          const char **name)
 {
     const AstNode *head = ast_get_node(ctx->ast, head_ast);
-    const char *name;
-    const VariableEntry *variable;
-    const TypedType *declared;
+    bool usable = head != NULL && (head->kind == AST_IDENTIFIER ||
+                                   stable_access(ctx, head_ast));
+
+    *name = usable ? access_root(ctx->ast, head_ast) : NULL;
+    return *name == NULL ? NULL : lookup_variable(ctx, *name);
+}
+
+static void push_match_fact(CheckContext *ctx, const char *name, bool path,
+                            size_t head_ast, size_t original_type, size_t tested,
+                            size_t tag)
+{
     Narrowing narrowing = {0};
 
-    if (head == NULL ||
-        (head->kind != AST_IDENTIFIER && !stable_access(ctx, head_ast))) {
-        return true;
-    }
-    name = access_root(ctx->ast, head_ast);
-    if (name == NULL) {
-        return true;
-    }
-    variable = find_variable(ctx->locals, name);
-    if (variable == NULL && !ctx->in_function) {
-        variable = find_variable(ctx->globals, name);
-    }
+    narrowing.name = name;
+    narrowing.path_ast = path ? head_ast : AST_NO_NODE;
+    narrowing.type_index = tested;
+    narrowing.original_type = original_type;
+    narrowing.tag = tag;
+    narrowing.active = true;
+    narrowing.alias_sensitive = path && access_has_list(ctx, head_ast);
+    checker_ok(ctx->errors, list_push(ctx->narrowings, &narrowing),
+               MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+}
+
+/* Inside a match arm the head has the arm's type, when the head is a union
+   held in a variable or a stable path through one. */
+bool push_match_narrowing(CheckContext *ctx, size_t head_ast, size_t tested,
+                          size_t tag)
+{
+    const char *name;
+    const VariableEntry *variable = head_variable(ctx, head_ast, &name);
+    const AstNode *head = ast_get_node(ctx->ast, head_ast);
+    bool path = head != NULL && head->kind != AST_IDENTIFIER;
+    const TypedType *declared;
+    const Narrowing *prior;
+    size_t original;
+
     if (variable == NULL) {
         return true;
     }
-    if (!push_match_narrowing_value(head, &declared, ctx, variable, head_ast, &narrowing, name, tested)) {
+    original = match_head_type(ctx, head, head_ast, variable);
+    declared = typed_program_type(ctx->program, original);
+    if (declared == NULL || declared->kind != NYX_TYPE_UNION) {
         return true;
     }
-    declared = typed_program_type(ctx->program, narrowing.original_type);
-    if (declared == NULL ||
-        !union_has_alternative(ctx->program, declared, tested, &tag)) return true;
-    narrowing.tag = tag;
-    narrowing.active = true;
-    narrowing.alias_sensitive = head->kind != AST_IDENTIFIER &&
-                                access_has_list(ctx, head_ast);
-    if (!list_push(ctx->narrowings, &narrowing)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return false;
+    prior = prior_narrowing(ctx, name, path, head_ast);
+    original = prior == NULL ? original : prior->original_type;
+    declared = typed_program_type(ctx->program, original);
+    if (declared != NULL &&
+        union_has_alternative(ctx->program, declared, tested, &tag)) {
+        push_match_fact(ctx, name, path, head_ast, original, tested, tag);
     }
-    return true;
-}
-
-
-static bool check_match_else(bool has_else, bool expression_form, CheckContext *ctx, const AstNode *node, size_t ast_index, size_t *else_typed, List *conditions, List *bodies, List *body_types, size_t *else_type, bool had_arm_errors, size_t return_type, bool exhaustive)
-{
-    if (has_else) {
-        if (expression_form) {
-            const TypedNode *else_node;
-
-            if (!check_expression_coerced(
-                    ctx, node->right_child,
-                    ctx->expected_ast == ast_index ? ctx->expected_type
-                                                   : TYPED_NO_NODE,
-                    else_typed)) {
-                if (!ctx->errors->reported) {
-                    error_report_at(ctx->errors, node->pos,
-                                    MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-                }
-                list_free(conditions);
-                list_free(bodies);
-                list_free(body_types);
-                return false;
-            }
-            else_node = typed_program_node(ctx->program, (*else_typed));
-            (*else_type) = else_node == NULL ? TYPED_NO_NODE
-                                          : else_node->type_index;
-            if (had_arm_errors) {
-                ctx->errors->reported = true;
-                list_free(conditions); list_free(bodies); list_free(body_types);
-                return false;
-            }
-            if ((*else_type) == TYPED_NO_NODE ||
-                ((*body_types).length > 0 &&
-                 !same_type(ctx->program,
-                            *(const size_t *)list_get(body_types, 0),
-                            (*else_type)))) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-                list_free(conditions);
-                list_free(bodies);
-                list_free(body_types);
-                return false;
-            }
-        } else if (!check_block(ctx, node->right_child, return_type,
-                                else_typed)) {
-            list_free(conditions);
-            list_free(bodies);
-            list_free(body_types);
-            return false;
-        }
-    }
-    if (had_arm_errors) {
-        ctx->errors->reported = true;
-        list_free(conditions); list_free(bodies); list_free(body_types);
-        return false;
-    }
-    if (!exhaustive) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE);
-        list_free(conditions);
-        list_free(bodies);
-        list_free(body_types);
-        return false;
-    }
-    return true;
-}
-
-static bool check_match_nippy_type_is_numeric(bool *comparable, const TypedType *pattern_type, const TypedType *head_type, CheckContext *ctx, size_t head_type_index, const TypedNode *pattern_node, const AstNode *node, TypedNode *test, size_t bool_type, size_t head, size_t pattern, size_t *condition)
-{
-    (*comparable) = pattern_type != NULL && head_type != NULL &&
-        ((nippy_type_is_numeric(head_type->kind) &&
-          nippy_type_is_numeric(pattern_type->kind)) ||
-         ((head_type->kind == NIPPY_TYPE_STRING ||
-           head_type->kind == NIPPY_TYPE_DYNAMIC_STRING) &&
-          (pattern_type->kind == NIPPY_TYPE_STRING ||
-           pattern_type->kind == NIPPY_TYPE_DYNAMIC_STRING)) ||
-         (same_type(ctx->program, head_type_index, pattern_node->type_index) &&
-          (head_type->kind == NIPPY_TYPE_NIL ||
-           equality_type_supported(ctx->program, head_type_index, 64))));
-    if (!(*comparable)) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MATCH_PATTERN);
-        return true;
-    }
-    (*test).kind = TYPED_BINARY;
-    (*test).op = NIPPY_OPERATOR_EQ;
-    (*test).type_index = bool_type;
-    (*test).left_child = head;
-    (*test).right_child = pattern;
-    (*test).pos = node->pos;
-    if (!typed_program_push(ctx->program, test, condition)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return true;
-    }
-    return false;
-}
-
-static int check_match_body(bool expression_form, CheckContext *ctx, size_t body_ast, size_t ast_index, size_t *body, const AstNode *node, size_t *body_type, List *body_types, size_t return_type, size_t narrowing_start, List *conditions, size_t *condition, List *bodies)
-{
-    if (expression_form) {
-        const TypedNode *body_node;
-
-        if (!check_expression_coerced(
-                ctx, body_ast,
-                ctx->expected_ast == ast_index ? ctx->expected_type
-                                               : TYPED_NO_NODE,
-                body)) {
-            if (!ctx->errors->reported) {
-                error_report_at(ctx->errors, node->pos,
-                                MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-            }
-            return 1;
-        }
-        body_node = typed_program_node(ctx->program, (*body));
-        (*body_type) = body_node == NULL ? TYPED_NO_NODE
-                                      : body_node->type_index;
-        if ((*body_type) == TYPED_NO_NODE ||
-            ((*body_types).length > 0 &&
-             !same_type(ctx->program,
-                        *(const size_t *)list_get(body_types, 0),
-                        (*body_type)))) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_IF_EXPR_MISMATCH);
-            return 1;
-        }
-    } else if (!check_block(ctx, body_ast, return_type, body)) {
-        return 1;
-    } else {
-        (*body_type) = TYPED_NO_NODE;
-    }
-    ctx->narrowings->length = narrowing_start;
-    if (!list_push(conditions, condition) ||
-        !list_push(bodies, body) ||
-        !list_push(body_types, body_type)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        list_free(conditions);
-        list_free(bodies);
-        list_free(body_types);
-        return 2;
-    }
-    return 0;
-}
-
-static bool check_match_head_is_union(CheckContext *ctx, size_t pattern_ast, size_t *tested, const TypedType **head_type, size_t head_type_index, size_t *tag, const AstNode *node, size_t *j, List *conditions, TypedNode *test, size_t bool_type, size_t head, size_t *condition)
-{
-    bool head_is_union;
-
-    if (!resolve_type_in_env(ctx, pattern_ast, ctx->env, "match",
-                             tested)) {
-        return true;
-    }
-    /* Resolving the pattern can add a type and move the type array. */
-    (*head_type) = typed_program_type(ctx->program, head_type_index);
-    head_is_union = (*head_type) != NULL &&
-                    (*head_type)->kind == NIPPY_TYPE_UNION;
-    if (head_is_union) {
-        if (!union_has_alternative(ctx->program, (*head_type), (*tested),
-                                   tag)) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MATCH_PATTERN);
-            return true;
-        }
-    } else if (!same_type(ctx->program, head_type_index, (*tested))) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MATCH_PATTERN);
-        return true;
-    }
-    for ((*j) = 0; (*j) < (*conditions).length; (*j)++) {
-        size_t previous = *(const size_t *)list_get(conditions, (*j));
-        const TypedNode *previous_test = typed_program_node(ctx->program,
-                                                            previous);
-        if (previous_test != NULL &&
-            same_type(ctx->program, previous_test->auxiliary_type, (*tested))) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_MATCH_DUPLICATE);
-            return true;
-        }
-    }
-    (*test).kind = TYPED_IS;
-    (*test).type_index = bool_type;
-    (*test).auxiliary_type = (*tested);
-    (*test).left_child = head;
-    (*test).integer_value = head_is_union ? (int)(*tag) : 1;
-    (*test).pos = node->pos;
-    if (!typed_program_push(ctx->program, test, condition)) {
-        error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        return true;
-    }
-    if (!push_match_narrowing(ctx, node->left_child, (*tested), (*tag))) {
-        return true;
-    }
-    return false;
-}
-
-static bool check_match_builtin(const TypedType *head_type, const TypedNode **pattern_node, CheckContext *ctx, size_t *target, size_t *pattern, size_t *coerced, const TypedType **pattern_type)
-{
-    if (head_type == NULL ||
-        (head_type->kind != NIPPY_TYPE_STRING &&
-         head_type->kind != NIPPY_TYPE_DYNAMIC_STRING) ||
-        (head_type->kind == NIPPY_TYPE_STRING &&
-         (*pattern_node)->string_length > head_type->fixed_length)) {
-        if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, target)) {
-            return true;
-        }
-    }
-    if (!inject_into(ctx, (*pattern), (*target), coerced)) {
-        return true;
-    }
-    (*pattern) = (*coerced);
-    (*pattern_node) = typed_program_node(ctx->program, (*pattern));
-    (*pattern_type) = (*pattern_node) == NULL ? NULL :
-        typed_program_type(ctx->program, (*pattern_node)->type_index);
-    return false;
-}
-
-static bool check_match_step(size_t *head_type_index, const TypedNode *head_node, const TypedType **head_type, CheckContext *ctx, size_t *bool_type, size_t *nil_type, const AstNode *node, bool type_match)
-{
-    (*head_type_index) = head_node == NULL ? TYPED_NO_NODE : head_node->type_index;
-    if ((*head_type) == NULL ||
-        !builtin_type(ctx, NIPPY_TYPE_BOOL, bool_type) ||
-        !builtin_type(ctx, NIPPY_TYPE_NIL, nil_type)) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-        return false;
-    }
-    (*head_type) = typed_program_type(ctx->program, (*head_type_index));
-    if (!type_match && (*head_type) != NULL && (*head_type)->kind != NIPPY_TYPE_NIL &&
-        !equality_type_supported(ctx->program, (*head_type_index), NIPPY_TYPE_DEPTH)) {
-        error_report_at(ctx->errors, node->pos, MESSAGE_CHECKER_MATCH_PATTERN);
-        return false;
-    }
-    return true;
-}
-
-static void check_match_seen_true(size_t *i, const AstNode *node, CheckContext *ctx, bool *exhaustive)
-{
-    bool seen_true = false;
-    bool seen_false = false;
-
-    for ((*i) = 0; (*i) < node->children_count; (*i) += 2) {
-        size_t pattern_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + (*i));
-        const AstNode *pattern = ast_get_node(ctx->ast, pattern_ast);
-
-        if (pattern != NULL && pattern->kind == AST_BOOL_LITERAL) {
-            if (pattern->integer_value != 0) {
-                seen_true = true;
-            } else {
-                seen_false = true;
-            }
-        }
-    }
-    (*exhaustive) = seen_true && seen_false;
-}
-
-static void check_match_alternative(bool type_match, const TypedType *head_type, bool *exhaustive, size_t *i, CheckContext *ctx, const AstNode *node, size_t head_type_index, size_t bool_type, size_t nil_type, List *body_types)
-{
-    if (type_match && head_type->kind == NIPPY_TYPE_UNION) {
-        (*exhaustive) = true;
-        for ((*i) = 0; (*i) < head_type->child_count; (*i)++) {
-            size_t alternative = *(const size_t *)list_get(
-                &ctx->program->type_children,
-                head_type->first_child + (*i));
-            size_t j;
-            bool found = false;
-
-            for (j = 0; j < node->children_count; j += 2) {
-                size_t pattern_ast = *(const size_t *)list_get(
-                    &ctx->ast->children, node->children_start + j);
-                size_t pattern_type;
-
-                if (resolve_type_in_env(ctx, pattern_ast, ctx->env,
-                                        "match", &pattern_type) &&
-                    same_type(ctx->program, alternative, pattern_type)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                (*exhaustive) = false;
-                break;
-            }
-        }
-    } else if (!type_match &&
-               same_type(ctx->program, head_type_index,
-                         bool_type)) {
-        check_match_seen_true(i, node, ctx, exhaustive);
-    } else if (!type_match &&
-               same_type(ctx->program, head_type_index,
-                         nil_type)) {
-        (*exhaustive) = true;
-    } else if (type_match && head_type->kind != NIPPY_TYPE_UNION) {
-        (*exhaustive) = (*body_types).length > 0;
-    }
-}
-
-static bool check_match_step11(size_t *chain, CheckContext *ctx, const AstNode *node, size_t temporary_index, bool expression_form, size_t original_head)
-{
-    if ((*chain) == TYPED_NO_NODE) {
-        error_report_at(ctx->errors, node->pos,
-                        MESSAGE_CHECKER_MATCH_NOT_EXHAUSTIVE);
-        return false;
-    }
-    if (temporary_index != TYPED_NO_NODE) {
-        TypedNode bind = {0};
-        const TypedNode *result = typed_program_node(ctx->program, (*chain));
-
-        bind.kind = expression_form ? TYPED_MATCH_BIND_EXPRESSION
-                                    : TYPED_MATCH_BIND_STATEMENT;
-        bind.type_index = expression_form ? result->type_index : TYPED_NO_NODE;
-        bind.pos = node->pos;
-        bind.name_index = TYPED_NO_NODE;
-        bind.left_child = original_head;
-        bind.right_child = (*chain);
-        bind.integer_value_u = temporary_index;
-        if (!typed_program_push(ctx->program, &bind, chain)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool check_match_scrutinee(CheckContext *ctx, const AstNode *node, size_t head_type_index, size_t *temporary_index, size_t *original_head, size_t *head)
-{
-    {
-        const AstNode *scrutinee = ast_get_node(ctx->ast, node->left_child);
-        if (scrutinee != NULL) {
-            size_t *scope = (size_t *)list_get(&ctx->program->match_scopes,
-                                                ctx->match_scope);
-            TypedMatchTemporary temporary;
-            TypedNode reference = {0};
-
-            if (scope == NULL) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-            temporary.type_index = head_type_index;
-            temporary.next = *scope;
-            (*temporary_index) = ctx->program->match_temporaries.length;
-            if (!list_push(&ctx->program->match_temporaries, &temporary)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-            *scope = (*temporary_index);
-            (*original_head) = (*head);
-            reference.kind = TYPED_MATCH_TEMPORARY;
-            reference.type_index = head_type_index;
-            reference.pos = scrutinee->pos;
-            reference.name_index = TYPED_NO_NODE;
-            reference.left_child = TYPED_NO_NODE;
-            reference.right_child = TYPED_NO_NODE;
-            reference.integer_value_u = (*temporary_index);
-            if (!typed_program_push(ctx->program, &reference, head)) {
-                error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-static void check_match_step14(size_t *i, List *bodies, bool expression_form, bool has_else, bool exhaustive, size_t *chain)
-{
-    (*i) = (*bodies).length;
-    if (!expression_form && !has_else && exhaustive && (*i) > 0) {
-        (*chain) = *(const size_t *)list_get(bodies, --(*i));
-    }
-}
-
-static bool check_match_step16(size_t *children_start, CheckContext *ctx, size_t body, size_t chain, List *conditions, List *bodies, List *body_types, TypedNode *lowered)
-{
-    (*children_start) = ctx->program->children.length;
-    if (!typed_program_push_child(ctx->program, body) ||
-        (chain != TYPED_NO_NODE &&
-         !typed_program_push_child(ctx->program, chain))) {
-        error_report_fatal(ctx->errors,
-                     MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-        list_free(conditions);
-        list_free(bodies);
-        list_free(body_types);
-        return false;
-    }
-    (*lowered).kind = TYPED_IF;
-    (*lowered).type_index = TYPED_NO_NODE;
-    (*lowered).children_start = (*children_start);
-    (*lowered).children_count =
-        chain == TYPED_NO_NODE ? 1 : 2;
-    return true;
-}
-
-static bool check_match_pattern(CheckContext *ctx, size_t pattern_ast, size_t *pattern, const TypedType **pattern_type, const TypedNode **pattern_node)
-{
-    if (!check_expression(ctx, pattern_ast, pattern) ||
-        !check_default_numeric(ctx, (*pattern))) {
-        return true;
-    }
-    (*pattern_node) = typed_program_node(ctx->program, (*pattern));
-    (*pattern_type) = (*pattern_node) == NULL ? NULL :
-        typed_program_type(ctx->program, (*pattern_node)->type_index);
-    return false;
-}
-
-static bool check_match_error_unknown_if_none(CheckContext *ctx, List *conditions, List *bodies, List *body_types)
-{
-    if (!ctx->errors->reported) error_unknown_if_none(ctx->errors);
-    if (ctx->errors->fatal ||
-        ctx->errors->length >= ERROR_MESSAGE_CAPACITY - 1) {
-        list_free(conditions);
-        list_free(bodies);
-        list_free(body_types);
-        return false;
-    }
-    return true;
-}
-
-static bool check_match_had_arm_errors(CheckContext *ctx, const AstNode *node, size_t *head, const TypedNode **head_node, const TypedType **head_type, size_t *temporary_index, size_t *original_head, bool *had_arm_errors, size_t *chain)
-{
-    (*had_arm_errors) = false;
-    
-    
-    
-    
-    (*chain) = TYPED_NO_NODE;
-    (*original_head) = TYPED_NO_NODE;
-    (*temporary_index) = TYPED_NO_NODE;
-
-    if (!check_expression(ctx, node->left_child, head) ||
-        !check_default_numeric(ctx, (*head))) {
-        return false;
-    }
-    (*head_node) = typed_program_node(ctx->program, (*head));
-    (*head_type) = (*head_node) == NULL
-                    ? NULL
-                    : typed_program_type(ctx->program, (*head_node)->type_index);
-    return true;
-}
-
-static bool check_match_builtin21(CheckContext *ctx, size_t *text_type, size_t *head, size_t *coerced, const TypedNode **head_node, const TypedType **head_type)
-{
-    if (!builtin_type(ctx, NIPPY_TYPE_DYNAMIC_STRING, text_type) ||
-        !inject_into(ctx, (*head), (*text_type), coerced)) return false;
-    (*head) = (*coerced);
-    (*head_node) = typed_program_node(ctx->program, (*head));
-    (*head_type) = (*head_node) == NULL ? NULL :
-        typed_program_type(ctx->program, (*head_node)->type_index);
-    return true;
-}
-
-bool check_match(CheckContext *ctx, const AstNode *node,
-                        size_t ast_index, bool expression_form,
-                        size_t return_type, size_t *out_typed)
-{
-    bool type_match = node->integer_value != 0;
-    size_t head;
-    const TypedNode *head_node;
-    const TypedType *head_type;
-    /* The scrutinee's type never changes while the arms are checked, but the
-       pointers to it do move as nodes and types are added, so arms read this
-       index and fetch the pointers again where they need them. */
-    size_t head_type_index;
-    size_t bool_type;
-    size_t nil_type;
-    size_t else_typed = TYPED_NO_NODE;
-    size_t else_type = TYPED_NO_NODE;
-    bool has_else = node->right_child != AST_NO_NODE;
-    bool exhaustive = has_else;
-    size_t temporary_index = {0};
-    size_t original_head = {0};
-    List conditions = {0};
-    List bodies = {0};
-    List body_types = {0};
-    size_t i = {0};
-    bool had_arm_errors = {0};
-    size_t chain = {0};
-    if (!check_match_had_arm_errors(ctx, node, &head, &head_node, &head_type, &temporary_index, &original_head, &had_arm_errors, &chain)) {
-        return false;
-    }
-    if (head_type != NULL && head_type->kind == NIPPY_TYPE_STRING_LITERAL) {
-        size_t text_type;
-        size_t coerced;
-        if (!check_match_builtin21(ctx, &text_type, &head, &coerced, &head_node, &head_type)) {
-        return false;
-    }
-    }
-    if (!check_match_step(&head_type_index, head_node, &head_type, ctx, &bool_type, &nil_type, node, type_match)) {
-        return false;
-    }
-    if (!check_match_scrutinee(ctx, node, head_type_index, &temporary_index, &original_head, &head)) {
-        return false;
-    }
-    list_init(&conditions, sizeof(size_t));
-    list_init(&bodies, sizeof(size_t));
-    list_init(&body_types, sizeof(size_t));
-    for (i = 0; i < node->children_count; i += 2) {
-        size_t pattern_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + i);
-        size_t body_ast = *(const size_t *)list_get(
-            &ctx->ast->children, node->children_start + i + 1);
-        size_t condition;
-        head_node = typed_program_node(ctx->program, head);
-        head_type = head_node == NULL
-                        ? NULL
-                        : typed_program_type(ctx->program,
-                                             head_node->type_index);
-        if (head_type == NULL) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-            list_free(&conditions);
-            list_free(&bodies);
-            list_free(&body_types);
-            return false;
-        }
-        size_t body;
-        size_t body_type;
-        size_t narrowing_start = ctx->narrowings->length;
-        Checkpoint checkpoint;
-        TypedNode test = {0};
-
-        test.name_index = TYPED_NO_NODE;
-        checkpoint = checker_checkpoint(ctx);
-
-        if (type_match) {
-            size_t tested;
-            size_t tag = 0;
-            size_t j;
-            if (check_match_head_is_union(ctx, pattern_ast, &tested, &head_type, head_type_index, &tag, node, &j, &conditions, &test, bool_type, head, &condition)) {
-        goto arm_error;
-    }
-        } else {
-            size_t pattern;
-            const TypedType *pattern_type = {0};
-            const TypedNode *pattern_node = {0};
-            bool comparable = {0};
-            if (check_match_pattern(ctx, pattern_ast, &pattern, &pattern_type, &pattern_node)) {
-        goto arm_error;
-    }
-            head_type = typed_program_type(ctx->program, head_type_index);
-            if (pattern_type != NULL &&
-                pattern_type->kind == NIPPY_TYPE_STRING_LITERAL) {
-                size_t target = head_type_index;
-                size_t coerced;
-                if (check_match_builtin(head_type, &pattern_node, ctx, &target, &pattern, &coerced, &pattern_type)) {
-        goto arm_error;
-    }
-                head_type = typed_program_type(ctx->program, head_type_index);
-            }
-            if (check_match_nippy_type_is_numeric(&comparable, pattern_type, head_type, ctx, head_type_index, pattern_node, node, &test, bool_type, head, pattern, &condition)) {
-        goto arm_error;
-    }
-        }
-        {
-        int status = check_match_body(expression_form, ctx, body_ast, ast_index, &body, node, &body_type, &body_types, return_type, narrowing_start, &conditions, &condition, &bodies);
-
-        if (status == 1) {
-            goto arm_error;
-        }
-        if (status == 2) {
-            return false;
-        }
-    }
-        continue;
-
-arm_error:
-        ctx->narrowings->length = narrowing_start;
-        if (!check_match_error_unknown_if_none(ctx, &conditions, &bodies, &body_types)) {
-        return false;
-    }
-        checker_restore(ctx, checkpoint);
-        had_arm_errors = true;
-        ctx->errors->reported = false;
-    }
-    if (had_arm_errors && !has_else) {
-        ctx->errors->reported = true;
-        list_free(&conditions);
-        list_free(&bodies);
-        list_free(&body_types);
-        return false;
-    }
-    if (!has_else) {
-        head_node = typed_program_node(ctx->program, head);
-        head_type = head_node == NULL
-                        ? NULL
-                        : typed_program_type(ctx->program,
-                                             head_node->type_index);
-        if (head_type == NULL) {
-            error_report_at(ctx->errors, node->pos,
-                            MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
-            list_free(&conditions);
-            list_free(&bodies);
-            list_free(&body_types);
-            return false;
-        }
-        check_match_alternative(type_match, head_type, &exhaustive, &i, ctx, node, head_type_index, bool_type, nil_type, &body_types);
-    }
-    if (!check_match_else(has_else, expression_form, ctx, node, ast_index, &else_typed, &conditions, &bodies, &body_types, &else_type, had_arm_errors, return_type, exhaustive)) {
-        return false;
-    }
-    chain = else_typed;
-    check_match_step14(&i, &bodies, expression_form, has_else, exhaustive, &chain);
-    for (; i > 0; i--) {
-        size_t condition = *(const size_t *)list_get(&conditions, i - 1);
-        size_t body = *(const size_t *)list_get(&bodies, i - 1);
-        TypedNode lowered = {0};
-
-        lowered.name_index = TYPED_NO_NODE;
-        lowered.pos = node->pos;
-        lowered.left_child = condition;
-        if (expression_form) {
-            size_t children_start = ctx->program->children.length;
-
-            if (chain == TYPED_NO_NODE ||
-                !typed_program_push_child(ctx->program, chain)) {
-                error_report_fatal(ctx->errors,
-                             MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                list_free(&conditions);
-                list_free(&bodies);
-                list_free(&body_types);
-                return false;
-            }
-            lowered.kind = TYPED_IF_EXPRESSION;
-            lowered.type_index = *(const size_t *)list_get(&body_types, i - 1);
-            lowered.right_child = body;
-            lowered.children_start = children_start;
-            lowered.children_count = 1;
-        } else {
-            size_t children_start;
-
-            if (chain != TYPED_NO_NODE) {
-                const TypedNode *chain_node =
-                    typed_program_node(ctx->program, chain);
-
-                if (chain_node != NULL && chain_node->kind != TYPED_BLOCK) {
-                    TypedNode wrapper = {0};
-                    size_t wrapper_start = ctx->program->children.length;
-                    size_t wrapped;
-
-                    if (!typed_program_push_child(ctx->program, chain)) {
-                        error_report_fatal(ctx->errors,
-                                     MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                        list_free(&conditions);
-                        list_free(&bodies);
-                        list_free(&body_types);
-                        return false;
-                    }
-                    wrapper.kind = TYPED_BLOCK;
-                    wrapper.name_index = TYPED_NO_NODE;
-                    wrapper.type_index = TYPED_NO_NODE;
-                    wrapper.pos = node->pos;
-                    wrapper.children_start = wrapper_start;
-                    wrapper.children_count = 1;
-                    if (!typed_program_push(ctx->program, &wrapper, &wrapped)) {
-                        error_report_fatal(ctx->errors,
-                                     MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-                        list_free(&conditions);
-                        list_free(&bodies);
-                        list_free(&body_types);
-                        return false;
-                    }
-                    chain = wrapped;
-                }
-            }
-            if (!check_match_step16(&children_start, ctx, body, chain, &conditions, &bodies, &body_types, &lowered)) {
-        return false;
-    }
-        }
-        if (!typed_program_push(ctx->program, &lowered, &chain)) {
-            error_report_fatal(ctx->errors, MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
-            list_free(&conditions);
-            list_free(&bodies);
-            list_free(&body_types);
-            return false;
-        }
-    }
-    list_free(&conditions);
-    list_free(&bodies);
-    list_free(&body_types);
-    if (!check_match_step11(&chain, ctx, node, temporary_index, expression_form, original_head)) {
-        return false;
-    }
-    *mapping_slot(ctx->mapping, ast_index) = chain;
-    *out_typed = chain;
     return true;
 }

@@ -49,7 +49,7 @@ TEST("stale table equality")
         "end\nprint(a == b)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale table equality");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:8:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:8:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -62,7 +62,7 @@ TEST("string equality validates stale strings even when lengths differ")
         "print(text == \"x\")\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale text equality");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 

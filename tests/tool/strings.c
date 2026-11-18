@@ -118,7 +118,7 @@ TEST("stale dynamic string")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale dynamic string");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -133,7 +133,7 @@ TEST("dynamic string bounds")
     TestResult result = run_generated_failure(source, MESSAGE_RUNTIME_STRING_BOUNDS + 7,
                                               "dynamic string bounds");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:2:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:2:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -158,7 +158,7 @@ TEST("copying a stale string reports the copy location")
         "var copy: Text = b.copy(s)\n",
         MESSAGE_RUNTIME_STALE_HANDLE + 7, "stale string copy location");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:4:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:4:")
                ? TEST_PASS : TEST_FAIL;
 }
 
@@ -205,7 +205,7 @@ TEST("stale TextBuilder")
     TestResult result = run_escaped_failure(source, MESSAGE_RUNTIME_STALE_HANDLE + 7,
                                             "stale TextBuilder");
     if (result != TEST_PASS) return result;
-    return file_contains(test_path("runtime.log"), "nippy: test.nip:7:")
+    return file_contains(test_path("runtime.log"), "nyx: test.nip:7:")
                ? TEST_PASS : TEST_FAIL;
 }
 

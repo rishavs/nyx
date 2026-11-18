@@ -1,6 +1,6 @@
-# Nippy compiler prototype
+# Nyx compiler prototype
 
-Nippy is a small, statically typed language in the Lua/Luau syntactic family:
+Nyx is a small, statically typed language in the Lua/Luau syntactic family:
 keyword-delimited blocks ending in `end`, no braces for blocks, no semicolons,
 and type annotations written with `:`. It is a typed relative of Lua, not a
 C-shaped language with Lua spelling. Braces appear only in record literals.
@@ -49,7 +49,7 @@ var p3 = Point(6, 7)
 
 `const` declares an immutable binding:
 
-```nippy
+```nyx
 const Max: Int32 = 10
 const local = "nyx"
 
@@ -59,7 +59,7 @@ Max = 20   // rejected
 A const binding cannot be reassigned. Values inside a mutable value can still
 change:
 
-```nippy
+```nyx
 const xs: List<Int32> = arena.list<Int32>(2)
 xs.push(1)   // allowed: the binding is unchanged
 ```
@@ -71,7 +71,7 @@ Struct values are built with `Name(...)`: arguments may be positional or named,
 but not mixed. Named arguments may appear in any order. Fields can declare
 literal defaults, which a constructor uses when those fields are omitted:
 
-```nippy
+```nyx
 type Rectangle width: Int64 height: Int64 = 10 end
 var rectangle = Rectangle(width = 5)
 ```
@@ -103,7 +103,7 @@ var sum : Int32 = adder(1, 2)
 
 Structs can define instance methods and static functions after the type:
 
-```nippy
+```nyx
 method Point.move(dx: Int32, dy: Int32): self
   self.x = self.x + dx
   self.y = self.y + dy
@@ -127,7 +127,7 @@ which are inferred from their arguments. Their owner must be a previously
 declared struct type. For a generic owner, repeat its type parameters in the
 declaration and specify the owner type at a static call:
 
-```nippy
+```nyx
 type Box<T> value: T end
 
 method Box<T>.replace(value: T): self
@@ -174,7 +174,7 @@ Without a type context they default to `Int64`. Floating-point literals default 
 Equality is an exception to the same-type operand rule: it compares numeric
 values exactly across types, without rounding integers to floating point.
 
-```nippy
+```nyx
 print(Uint16(3) == Int64(3)) -- true
 print(Int32(-1) == Uint64(1)) -- false
 print(Int32(3) === Int64(3))  -- false: different types
@@ -193,7 +193,7 @@ string literal at compile time into a static `Text` of the decoded bytes.
 
 Explicit conversions use type-call syntax:
 
-```nippy
+```nyx
 var n: Int8 = Int8(a)         // traps at run time if a does not fit
 var f: Float64 = Float64(3)   // 3.0
 var i: Int32 = Int32(2.9)     // 2
@@ -205,11 +205,13 @@ integer conversion that could lose a value is range-checked at run time and
 traps deterministically, as does a float-to-integer conversion whose truncated
 value is out of range or NaN/infinite. Widening conversions cannot fail.
 
-Compile-time constant expressions are evaluated for `Int32`: literal arithmetic
-that overflows `Int32`, a constant shift count outside the operand width, and
-division or modulo by a constant zero are compile errors. `const` integer
-bindings are usable there, and the same evaluator checks `Store(bytes)` and
-constructor capacities.
+Compile-time constant expressions are evaluated in the type of the expression.
+In `Int32`, literal arithmetic that overflows is a compile error. In any integer
+type, a constant shift count outside the operand width and division or modulo by
+a constant zero are compile errors; a sum that is out of range for `Int32` is an
+ordinary `Int64` when the expression is `Int64`. `const` bindings are `Int32`
+and usable there, and the same evaluator checks `Store(bytes)` and constructor
+capacities.
 `Bool` is the built-in boolean type; `true` and `false` are its literals. `Nil`
 is available only as a union alternative. A union variable cannot be initialized
 with a literal `nil`, but can be assigned `nil` later. An initializer expression
@@ -220,7 +222,7 @@ may evaluate to `nil`, as with `var x: Int32 | Nil = xs.pop()`.
 Function bodies and every block (`if`/`elseif`/`else`, `while`, `for`, and
 `match` arms) can declare locals:
 
-```nippy
+```nyx
 fun score(): Int32
   var p: Point = Point(1, 2)
   p.x = 3
@@ -235,7 +237,7 @@ local/function/type/store/builtin name. `Store` declarations stay program-level.
 
 Struct fields are accessed directly:
 
-```nippy
+```nyx
 var p: Point = Point(1, 2)
 var x: Int32 = p.x
 p.x = 3
@@ -250,7 +252,7 @@ list elements are not supported yet.
 `for` iterates Arrays, dynamic arena lists, slices, ranges, fixed strings, and
 dynamic strings:
 
-```nippy
+```nyx
 fun sum(): Int32
   var xs: Array<Int32, 3> = [1, 2, 3]
   var total: Int32 = 0
@@ -266,15 +268,123 @@ end
 `range` creates a lazy, reusable integer range with an exclusive end. The
 optional third argument is a signed step:
 
-```nippy
+```nyx
 var indices: Range<Int64> = range(0, 5)
 for i in indices do print(i) end       -- 0 through 4
 for i in range(5, 0, -2) do print(i) end  -- 5, 3, 1
 ```
 
+`defer do ... end` runs a block when control leaves the block that contains it,
+whether by reaching the end, `return`, `break`, or `continue`. Deferred blocks
+run innermost first and, within a block, in reverse order. A `return` value is
+computed before they run:
+
+```nyx
+fun f(): Int32
+  defer do print("closing") end
+  print("working")
+  return 1          -- prints "working", then "closing", then returns 1
+end
+```
+
+`parallel` runs function calls at the same time and waits for all of them. The
+arguments are copied into each call, and results come back when the block ends:
+
+```nyx
+var a: Int32 = 0
+var b: Int32 = 0
+parallel do
+  with a = square(6)
+  with b = square(7)
+end
+print(a, b)   -- 36 49
+```
+
+A block can own a pool Store that every arm allocates in, and a `then` section
+that reads what they built once they have all returned:
+
+```nyx
+parallel pool = Store(1 << 20) do
+  with var xs = squares(pool, 1000)
+  with var ys = squares(pool, 2000)
+then
+  print(xs.len(), ys.len())
+end
+```
+
+`with f(lane) for lane in range(0, cores())` repeats an arm once per core. A
+global `Atomic` cell is the one thing arms may share while they run:
+
+```nyx
+global served: Atomic<Int64> = Atomic(0)
+served.add(1)            -- returns the previous value
+print(served.load())
+```
+
+A global `Channel` lets arms that run for the life of the program pass values
+to each other. Closing a channel shuts a pipeline down, and the block ends when
+every arm has returned:
+
+```nyx
+global commands: Channel<Command> = Channel(64)
+global tick: Channel<Int64> = Every(16)      -- a timer: one tick every 16 ms
+
+fun physics()
+  while true do
+    when
+      with t = tick.recv() then
+        step()
+      with c = commands.recv() then
+        if typeof c is Command then apply(c) else break end
+    end
+  end
+end
+
+parallel do
+  with ui()          -- the first arm stays on the calling thread
+  with logic()
+  with physics()
+end
+```
+
+`send` and `recv` wait, `try_send` and `try_recv` do not, and `recv` gives
+`nil` once a channel is closed and empty. `when` runs the first ready arm, in
+source order. A program whose threads are all waiting on channels traps with a
+deadlock message instead of hanging. Capacity `0` makes a rendezvous channel,
+where `send` returns once a receiver has taken the value.
+
+A block can make its own channels in its pool, so each run gets fresh ones and a
+program can have one per lane. Declarations before the first `with` run before
+any arm starts:
+
+```nyx
+parallel pool = Store(4096) do
+  var jobs = pool.channel<Job>(8)
+  var results = pool.channel<Result>(8)
+  with produce(jobs)
+  with work(jobs, results) for lane in range(0, cores())
+  with collect(results)
+end
+```
+
+An arm that repeats over lanes can also hand back a result per lane:
+`with squares = square(lane) for lane in range(0, 8)` fills an existing
+`Array<Int32, 8>` in lane order. Arms run on worker threads that are reused from
+one block to the next.
+
+`now()` returns a monotonic clock reading in milliseconds as an `Int64`, and
+`sleep(ms)` waits for at least that many milliseconds. Subtract two readings to
+measure elapsed time:
+
+```nyx
+var start: Int64 = now()
+sleep(250)
+print(now() - start >= 250)   -- true
+```
+
 An optional index binding comes first:
 
-```nippy
+```nyx
 for i, x in xs do
   ...
 end
@@ -294,7 +404,7 @@ end
 
 Text iteration is by byte:
 
-```nippy
+```nyx
 fun count(): Int32
   var s: String<8> = "hello"
   var n: Int32 = 0
@@ -309,7 +419,7 @@ end
 
 Arena lists and arena texts iterate through their store checks:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 fun name_bytes(): Int32
@@ -333,7 +443,7 @@ end
 
 `print` is a builtin statement that takes zero or more comma-separated values:
 
-```nippy
+```nyx
 print("hello")
 print("n =", n)
 print("point =", p)
@@ -386,7 +496,7 @@ The pretty-print depth limit defaults to 16 and is configurable through
 A type is a type expression. `type Name = Type` is a transparent alias; a union
 is written with `|`; and generic declarations take type parameters:
 
-```nippy
+```nyx
 type MaybeInt = Int32 | Nil
 type Option<T> = T | Nil
 
@@ -413,7 +523,7 @@ argument. There is no other implicit conversion.
 
 `typeof x is T` tests the active alternative of a union and returns `Bool`:
 
-```nippy
+```nyx
 fun to_int(x: Int32 | Bool | Nil): Int32
   if typeof x is Int32 then
     return x
@@ -434,7 +544,7 @@ the `if` keep the original union type. The old method form is gone.
 
 `match` is a multi-arm form of the same tests:
 
-```nippy
+```nyx
 match typeof x with Int32 then
   ...
 with Bool then
@@ -446,7 +556,7 @@ end
 
 Value checks use normal equality:
 
-```nippy
+```nyx
 if x == true then ... end
 
 match x with true then
@@ -459,7 +569,7 @@ end
 `if` and `match` also have expression forms. Every expression form currently
 needs an `else`:
 
-```nippy
+```nyx
 var z: Int32 = if typeof x is Int32 then 1 else 0 end
 var w: Int32 = match x with true then 1 else 0 end
 ```
@@ -475,7 +585,7 @@ Dynamic memory is managed by arenas called **Stores**. A Store declared with
 `global` lasts for the program. A Store introduced by `scope` lasts through its
 body and is released on every way out of it:
 
-```nippy
+```nyx
 global points: Store = Store(4096)
 
 var p: Handle<Point> = points.alloc<Point>(Point(1, 2))
@@ -517,7 +627,7 @@ end
 
 For example, a function can allocate in the Store chosen by its caller:
 
-```nippy
+```nyx
 fun label(output: Store, input: Text): Text
   return output.concat("label: ", input)
 end
@@ -549,7 +659,10 @@ the lifetime of the Store they came from. Copy bytes into the longer-lived Store
 looks at each function body and a summary of the functions it calls, never at
 runtime data, so it can reject a correct program but not accept an escaping one.
 A function used as a value must not retain its arguments in a global Store.
-Runtime generation and bounds checks remain as a second line of defence.
+Runtime generation and bounds checks remain as a second line of defence. A
+program with no `scope` and no parallel pool has no Store whose generation can
+change, so the generated code omits the generation comparison there; the
+store-reference and bounds checks stay.
 
 - Stores also create builders, dynamic lists, and dynamic tables: `s.builder(bytes)`,
   `s.list<T>(capacity)`, and `s.table<K,V>(capacity)`.
@@ -559,7 +672,7 @@ Runtime generation and bounds checks remain as a second line of defence.
 Call expressions can be used as statements at program level and inside function
 bodies; the value is discarded:
 
-```nippy
+```nyx
 fun touch()
   points.alloc<Int32>(1)
 end
@@ -570,7 +683,7 @@ end
 
 Variables and parameters are mutable:
 
-```nippy
+```nyx
 var x: Int32 = 1
 x = 2
 
@@ -585,7 +698,7 @@ right-hand side is evaluated first, then copied into the target. The value must
 match the target's declared type, with the usual literal and union-injection
 rules:
 
-```nippy
+```nyx
 var b: Byte = 1
 b = 200
 
@@ -614,7 +727,7 @@ binding to one still allows mutation of the shared store-backed value.
 
 Arrays have an inline capacity and a runtime length up to that capacity:
 
-```nippy
+```nyx
 var xs: Array<Int32, 3> = [1, 2]
 
 var n: Int32 = xs.len()       // 2
@@ -642,7 +755,7 @@ var last: Int32 | Nil = xs.pop()
 
 Dynamic lists are store-backed and growable:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var xs: List<Int32> = arena.list<Int32>(2)
@@ -668,7 +781,7 @@ List literals are always `Array<T,N>`; create a dynamic list with
 `arena.list<T>()`. A non-empty literal infers its type when every element has one
 common type:
 
-```nippy
+```nyx
 var c = [1, 2, 3]       // Array<Int32,3>
 var d: Array<Int32, 5> = [1, 2]  // capacity 5, length 2
 ```
@@ -689,7 +802,7 @@ apply independently.
 
 Structs may refer to themselves or later-declared structs through handles:
 
-```nippy
+```nyx
 type Node value: Int64 next: Handle<Node> | Nil = nil end
 global arena: Store = Store(1024)
 var tail = arena.alloc<Node>(Node(2))
@@ -699,9 +812,10 @@ var head = arena.alloc<Node>(Node(1, tail))
 Cycles of fields stored by value are rejected; recursive cycles must pass
 through a handle. Stored handles retain their generation and bounds checks.
 
-By-value types have a compile-time size cap of 64 KiB. A struct, Array, Record,
-String, or union larger than that is rejected; move the data into a Store
-instead. `List`, `Table`, `Text`, `TextBuilder`, `Slice`, and `Handle` are
+By-value types have a compile-time size cap of 64 KiB by default
+(`CompilerConfig.max_value_bytes` changes it, up to 16 MiB). A struct, Array,
+Record, String, or union larger than that is rejected; move the data into a
+Store instead, or raise the cap. `List`, `Table`, `Text`, `TextBuilder`, `Slice`, and `Handle` are
 descriptors and do not count their payload against the cap.
 
 Collection elements remain single items, so `List<Text>` and
@@ -714,7 +828,7 @@ it is an element; that does not make the wrapper allocatable.
 
 A fixed record is an inline hash map with a maximum entry count:
 
-```nippy
+```nyx
 var x: Record<String<8>, Bool, 4> = {
   "a": true,
   "b": false
@@ -738,7 +852,7 @@ var n: Int32 = x.len()
 
 A dynamic table is arena-backed:
 
-```nippy
+```nyx
 global arena: Store = Store(1024)
 
 var t: Table<String<8>, Int32> =
@@ -757,7 +871,7 @@ var n: Int32 = t.len()
 
 Both print as `{key: value, ...}`. Iteration yields key/value pairs:
 
-```nippy
+```nyx
 for key, value in x do
   ...
 end
@@ -765,7 +879,7 @@ end
 
 A single binding iterates keys:
 
-```nippy
+```nyx
 for key in x do
   ...
 end
@@ -778,7 +892,7 @@ iteration is not supported.
 
 A slice is a read-only, non-owning view over part of a dynamic list:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var xs: List<Int32> = arena.list<Int32>(3)
@@ -811,7 +925,7 @@ var first: Int32 = s[0]  // 20
 A `Text` has a dynamic byte length. It is backed by a Store or by static
 literal data:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var greeting: Text = "hello"          // static, no allocation
@@ -837,7 +951,7 @@ var same: Bool = joined == "hello world"
 
 A builder grows a string across many appends:
 
-```nippy
+```nyx
 global arena: Store = Store(256)
 
 var b: TextBuilder = arena.builder(16)
@@ -862,7 +976,7 @@ var len: Int32 = out.byte_len()   // 12
 
 A fixed string has a compile-time byte capacity and stores its bytes inline:
 
-```nippy
+```nyx
 var name: String<16> = "nyx"
 var n: Int32 = name.byte_len()
 var first: Byte = name.byte_at(0)
@@ -890,7 +1004,7 @@ var same: Bool = name == "nyx"
 - A fixed string is a sized value, so it can be stored in a Store like any
   other value:
 
-```nippy
+```nyx
 global arena: Store = Store(64)
 var h: Handle<String<16>> = arena.alloc<String<16>>("nyx")
 var stored: String<16> = h.read()
@@ -898,7 +1012,7 @@ var stored: String<16> = h.read()
 
 `Error` is a built-in value with a fixed layout:
 
-```nippy
+```nyx
 var e: Error = Error("E_PARSE", "unexpected token", "main.nip", 3, 7, 42)
 
 var line: Int32 = e.line
@@ -908,7 +1022,7 @@ var description: String<128> = e.description
 
 The compiler can fill the source position:
 
-```nippy
+```nyx
 var e: Error = Error::throw("E_PARSE", "unexpected token")
 ```
 
@@ -934,7 +1048,7 @@ implemented. C string projection and UTF-8 codepoint APIs are not.
 
 Function bodies contain statements:
 
-```nippy
+```nyx
 fun classify(x:Int32):Int32
   if x > 0 then
     return 1
@@ -961,7 +1075,7 @@ apply to the innermost loop (`while` or `for`). Functions with an explicit
 return type must return on every path. A function without a return annotation
 may fall through:
 
-```nippy
+```nyx
 fun show(value: Int32)
   print(value)
 end
@@ -979,7 +1093,7 @@ list indexing.
 
 A function whose every return expression calls itself is rejected. Remaining
 direct recursion is protected by a generated depth guard; exceeding it traps
-with `nippy: recursion depth exceeded` instead of overflowing the C stack.
+with `nyx: recursion depth exceeded` instead of overflowing the C stack.
 
 The parser returns a flattened AST: nodes are stored inline in a list, and
 child links are node indices. Variable-arity children are indices in a separate
@@ -1001,29 +1115,29 @@ means and what is rejected), `GRAMMAR.ebnf` (the accepted grammar), and
 `BUILD.md` (build, tests, and tooling).
 
 Build the compiler with `make` and run both suites with `make test`. The core
-compiler suite (`bin/compiler-tester`) compiles inline Nippy source through
+compiler suite (`bin/compiler-tester`) compiles inline Nyx source through
 `compiler_compile` and compares the generated C and header against text the test
 owns. The tool suite (`bin/tool-tester`) covers the driver, file I/O, and the
 `cc` invocation. `make test-compiler` and `make test-tool` run one suite each.
 
-To compile a program by hand, pass the Nippy source path and output binary path:
+To compile a program by hand, pass the Nyx source path and output binary path:
 
 ```sh
-./bin/nippy path/to/source.nip bin/program
+./bin/nyx path/to/source.nip bin/program
 ```
 
 The default source limit is 1 MiB (1,048,576 bytes). Change it with
 `--max-source-bytes`, for example:
 
 ```sh
-./bin/nippy --max-source-bytes 4194304 path/to/source.nip bin/program
+./bin/nyx --max-source-bytes 4194304 path/to/source.nip bin/program
 ```
 
 The compiler builds in a temporary directory, then publishes the executable and
 the generated C source and header beside it as `bin/program.c` and
 `bin/program.h`. The generated C is
 internal IR, not a product: it is not required to be human-readable or
-formatted. It carries a `#line` directive pointing back at the Nippy
+formatted. It carries a `#line` directive pointing back at the Nyx
 declaration, so the C compiler reports the original source location. If
 compilation fails without a diagnostic having been reported, the fallback
 message is `Unknown Error`.

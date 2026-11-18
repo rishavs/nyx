@@ -1,4 +1,4 @@
-(* Nippy grammar, as implemented.
+(* Nyx grammar, as implemented.
 
    This is the accepted source language, not a wish list. When the parser
    changes, this file changes with it. Semantics are in SEMANTICS.md.
@@ -93,6 +93,9 @@ statement          = return-statement
                    | if-statement
                    | while-statement
                    | scope-statement
+                   | defer-statement
+                   | parallel-statement
+                   | when-statement
                    | match-statement
                    | for-statement
                    | break-statement
@@ -124,6 +127,53 @@ while-statement    = "while", expression, "do", block, "end" ;
    name is visible. The Store lives through the block. *)
 scope-statement    = "scope", identifier, "=", "Store", "(", expression, ")",
                      "do", block, "end" ;
+
+(* The block runs when control leaves the block that holds the defer: by
+   reaching its end, or by return, break, or continue. A defer is a statement
+   of a block, never of the program, and its body cannot return, break, or
+   continue out of itself. "defer" is a reserved word. *)
+defer-statement    = "defer", "do", block, "end" ;
+
+(* Each arm calls a named function and runs on its own thread; the block ends
+   when all have returned. "with name = call" assigns an existing variable;
+   "with var name = call" declares a variable for the then section, which runs
+   after the arms on one thread. A repeated arm runs once per lane of an Int32
+   range; "with target = call for ..." fills an existing Array with one result
+   per lane, and "with var" cannot be repeated. The declarations before the first
+   arm run once, after the pool exists and before any arm starts. The store, when
+   present, is a fixed-capacity pool every arm may allocate in, including
+   channels (pool.channel<T>(n), a method call on a Store). "parallel" is a
+   reserved word. *)
+parallel-statement = "parallel", [ identifier, "=", "Store", "(", expression, ")" ],
+                     "do", { local-declaration },
+                     parallel-arm, { parallel-arm },
+                     [ "then", block ], "end" ;
+
+parallel-arm       = "with", [ [ "var" ], identifier, "=" ], call-expression,
+                     [ "for", identifier, "in", expression ] ;
+
+(* A global atomic cell. T is Bool or an integer type, and the argument of
+   Atomic is a literal of that type. *)
+atomic-declaration = "global", identifier, ":", "Atomic", "<", type, ">", "=",
+                     "Atomic", "(", literal, ")" ;
+
+(* Waits until one of the channel operations can proceed and runs the first
+   arm, in source order, that can. A receive arm binds a T | Nil and a send arm
+   binds a Bool. With an else block it never waits. "when" is a reserved word. *)
+when-statement     = "when", when-arm, { when-arm }, [ "else", block ], "end" ;
+
+(* channel-name is a global channel or a variable of type Channel<T>. *)
+when-arm           = "with", [ identifier, "=" ], channel-name, ".",
+                     ( "recv", "(", ")" | "send", "(", expression, ")" ),
+                     "then", block ;
+
+(* A global channel, or a timer that receives a tick every so many
+   milliseconds. The capacity (0 makes a rendezvous channel) and the interval
+   are literals. Channel<T> as a type is also valid for a local variable, a
+   parameter, and an argument, where it names a channel made in a pool. *)
+channel-declaration = "global", identifier, ":", "Channel", "<", type, ">", "=",
+                      ( "Channel", "(", literal, ")"
+                      | "Every", "(", literal, ")" ) ;
 
 match-statement    = "match", [ "typeof" ], expression,
                      "with", pattern, "then", block,
@@ -240,9 +290,10 @@ static-call        = type-name, [ "<", type-arguments, ">" ], "::", identifier,
                      "(", [ argument-list ], ")" ;
                      (* Includes the built-in Error::throw call. *)
 
-(* "print" and "base64" are builtins resolved by the checker and cannot be
-   redeclared. base64 takes exactly one string literal and yields a static
-   Text of the decoded bytes. *)
+(* "print", "base64", "range", "now", "sleep", and "cores" are builtins resolved
+   by the checker and cannot be redeclared. base64 takes exactly one string literal and
+   yields a static Text of the decoded bytes. now() takes no arguments and
+   yields an Int64; sleep takes one Int64 and yields Nil. *)
 
 typeof-test        = "typeof", expression, "is", type ;
 
@@ -534,7 +585,7 @@ end                = "end" ;
    Every return path of a function cannot call itself:
        fun f(x:Int32):Int32 return f(x + 1) end
                                (* checker: every return path of 'f' calls itself *)
-   A by-value type cannot exceed 64 KiB:
+   A by-value type cannot exceed 64 KiB (the default; CompilerConfig.max_value_bytes):
        type Big a: Array<Int32, 4096> ... end
                                (* checker: by-value type is too large *)
    Every function with an explicit return type must return on every path:

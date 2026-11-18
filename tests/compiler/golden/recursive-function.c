@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define NIPPY_RECURSION_LIMIT 10000
+#define NYX_RECURSION_LIMIT 10000
 
 #line 1 "test.nip"
 static size_t nyx_depth_nyx_u_countdown = 0;
@@ -13,8 +13,8 @@ int32_t nyx_inner_nyx_u_countdown(int32_t nyx_u_n);
 
 int32_t nyx_u_countdown(int32_t nyx_u_n)
 {
-    if (++nyx_depth_nyx_u_countdown > NIPPY_RECURSION_LIMIT) {
-        fflush(stdout); fprintf(stderr, "nippy: %s:%zu:%zu (byte %zu): %s\n", __FILE__, (size_t)1, (size_t)1, (size_t)0, "nippy: recursion depth exceeded" + sizeof("nippy: ") - 1); exit(1);
+    if (++nyx_depth_nyx_u_countdown > NYX_RECURSION_LIMIT) {
+        fflush(stdout); fprintf(stderr, "nyx: %s:%zu:%zu (byte %zu): %s\n", __FILE__, (size_t)1, (size_t)1, (size_t)0, "nyx: recursion depth exceeded" + sizeof("nyx: ") - 1); exit(1);
     }
     int32_t nyx_recursion_result = nyx_inner_nyx_u_countdown(nyx_u_n);
     nyx_depth_nyx_u_countdown--;

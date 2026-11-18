@@ -8,7 +8,7 @@
 
 #define LIST_MIN_CAPACITY 4
 
-#ifdef NIPPY_POISON_LISTS
+#ifdef NYX_POISON_LISTS
 /* Debug build (`make test-poison`). A pointer into a list is only valid until
    the next push, because the array may move. Normally it moves rarely, so a
    pointer held across a push usually keeps working and the bug hides. Here
@@ -17,7 +17,7 @@
    once instead of working by luck. */
 static bool list_relocate(List *list, size_t new_capacity)
 {
-    void *moved = nippy_malloc(new_capacity * list->item_size);
+    void *moved = nyx_malloc(new_capacity * list->item_size);
 
     if (moved == NULL) {
         return false;
@@ -49,7 +49,7 @@ bool list_push(List *list, const void *item)
         return false;
     }
 
-#ifdef NIPPY_POISON_LISTS
+#ifdef NYX_POISON_LISTS
     if (!list_relocate(list, list->length + 1)) {
         return false;
     }
@@ -72,7 +72,7 @@ bool list_push(List *list, const void *item)
             return false;
         }
 
-        new_items = nippy_realloc(list->items, new_capacity * list->item_size);
+        new_items = nyx_realloc(list->items, new_capacity * list->item_size);
         if (new_items == NULL) {
             return false;
         }
@@ -108,7 +108,7 @@ bool list_pop(List *list, void *out_item)
         return true;
     }
 
-#ifdef NIPPY_POISON_LISTS
+#ifdef NYX_POISON_LISTS
     /* Shrinking is best effort, as in the normal build. */
     (void)list_relocate(list, list->length);
     (void)new_capacity;
@@ -123,7 +123,7 @@ bool list_pop(List *list, void *out_item)
             new_capacity = list->length;
         }
         {
-            void *new_items = nippy_realloc(list->items,
+            void *new_items = nyx_realloc(list->items,
                                             new_capacity * list->item_size);
             if (new_items != NULL) {
                 list->items = new_items;

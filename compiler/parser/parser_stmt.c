@@ -388,6 +388,9 @@ bool parse_block(
                      token->type == TOKEN_KEYWORD_MATCH ||
                      token->type == TOKEN_KEYWORD_WHILE ||
                      token->type == TOKEN_KEYWORD_FOR ||
+                     token->type == TOKEN_KEYWORD_DEFER ||
+                     token->type == TOKEN_KEYWORD_PARALLEL ||
+                     token->type == TOKEN_KEYWORD_WHEN ||
                      token->type == TOKEN_KEYWORD_BREAK ||
                      token->type == TOKEN_KEYWORD_CONTINUE ||
                      token->type == TOKEN_KEYWORD_END ||
@@ -729,6 +732,340 @@ bool parse_while(
 }
 
 
+bool parse_defer(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    const Token *token = token_at(tokens, *cursor);
+    SourcePos pos = token->pos;
+    size_t body;
+    AstNode node = {0};
+
+    (*cursor)++; /* past 'defer' */
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_DO) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_DEFER_DO);
+        return false;
+    }
+    (*cursor)++;
+    if (!parse_block(tokens, string_bytes, ast, cursor, &body, errors)) {
+        return false;
+    }
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_END) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
+        return false;
+    }
+    (*cursor)++;
+
+    node.kind = AST_DEFER;
+    node.pos = pos;
+    node.left_child = body;
+    node.right_child = AST_NO_NODE;
+    node.name_index = AST_NO_NODE;
+    node.children_start = 0;
+    node.children_count = 0;
+    return push_node(ast, &node, out_index);
+}
+
+
+/* with [var] [name =] call(args) [for lane in range(first, last)] */
+static bool parse_parallel_arm(const TokenList *tokens, const List *string_bytes,
+                               Ast *ast, size_t *cursor, size_t *out_index,
+                               ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+    SourcePos pos = token->pos;
+    size_t name = AST_NO_NODE, lane = AST_NO_NODE, call, repeat = AST_NO_NODE;
+    int mode = 0; /* 1 assigns an existing variable, 2 declares one */
+    AstNode node = {0};
+
+    (*cursor)++; /* past 'with' */
+    token = token_at(tokens, *cursor);
+    if (token != NULL && token->type == TOKEN_KEYWORD_VAR) {
+        mode = 2;
+        (*cursor)++;
+        token = token_at(tokens, *cursor);
+        if (token == NULL || token->type != TOKEN_IDENTIFIER ||
+            token_at(tokens, *cursor + 1) == NULL ||
+            token_at(tokens, *cursor + 1)->type != TOKEN_EQUALS) {
+            error_report_at(errors, position_at(tokens, *cursor),
+                            MESSAGE_PARSER_PARALLEL_BINDING);
+            return false;
+        }
+    } else if (token != NULL && token->type == TOKEN_IDENTIFIER &&
+               token_at(tokens, *cursor + 1) != NULL &&
+               token_at(tokens, *cursor + 1)->type == TOKEN_EQUALS) {
+        mode = 1;
+    }
+    if (mode != 0) {
+        if (!intern_token(ast, token, &name, errors)) {
+            return false;
+        }
+        *cursor += 2; /* past the name and '=' */
+    }
+    if (!parse_expression(tokens, string_bytes, ast, cursor, &call, errors)) {
+        return false;
+    }
+    token = token_at(tokens, *cursor);
+    if (token != NULL && token->type == TOKEN_KEYWORD_FOR) {
+        (*cursor)++;
+        token = token_at(tokens, *cursor);
+        if (token == NULL || token->type != TOKEN_IDENTIFIER ||
+            !intern_token(ast, token, &lane, errors)) {
+            if (!errors->reported) {
+                error_report_at(errors, position_at(tokens, *cursor),
+                                MESSAGE_PARSER_PARALLEL_LANE);
+            }
+            return false;
+        }
+        (*cursor)++;
+        token = token_at(tokens, *cursor);
+        if (token == NULL || token->type != TOKEN_KEYWORD_IN) {
+            error_report_at(errors, position_at(tokens, *cursor),
+                            MESSAGE_PARSER_PARALLEL_LANE);
+            return false;
+        }
+        (*cursor)++;
+        if (!parse_expression(tokens, string_bytes, ast, cursor, &repeat,
+                              errors)) {
+            return false;
+        }
+    }
+    node.kind = AST_PARALLEL_ARM;
+    node.pos = pos;
+    node.name_index = name;
+    node.second_name_index = lane;
+    node.integer_value = mode;
+    node.left_child = call;
+    node.right_child = repeat;
+    return push_node(ast, &node, out_index);
+}
+
+/* parallel [name = Store(capacity)] do arms [then block] end */
+bool parse_parallel(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    const Token *token = token_at(tokens, *cursor);
+    const Token *next = token_at(tokens, *cursor + 1);
+    SourcePos pos = token->pos;
+    size_t name = AST_NO_NODE, capacity = AST_NO_NODE, then_block = AST_NO_NODE;
+    size_t start, i, setup_count = 0;
+    List arms;
+    AstNode node = {0};
+    bool ok = false;
+
+    if (next != NULL && next->type == TOKEN_IDENTIFIER) {
+        AstNode header = {0};
+
+        if (!parse_scope_node(cursor, &token, tokens, errors, ast, &name,
+                              string_bytes, &capacity, &header)) {
+            return false;
+        }
+    } else {
+        (*cursor)++; /* past 'parallel' */
+        token = token_at(tokens, *cursor);
+    }
+    if (token == NULL || token->type != TOKEN_KEYWORD_DO) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_PARALLEL_DO);
+        return false;
+    }
+    (*cursor)++;
+    list_init(&arms, sizeof(size_t));
+    /* var and const declarations run after the pool exists and before any arm
+       starts, so an arm can be given what they make. */
+    while ((token = token_at(tokens, *cursor)) != NULL &&
+           (token->type == TOKEN_KEYWORD_VAR ||
+            token->type == TOKEN_KEYWORD_CONST)) {
+        size_t declaration;
+        bool is_const = token->type == TOKEN_KEYWORD_CONST;
+        SourcePos declaration_pos = token->pos;
+
+        (*cursor)++;
+        if (!parse_var_declaration(tokens, string_bytes, ast, cursor,
+                                   declaration_pos, false, is_const, true,
+                                   &declaration, errors) ||
+            !list_push(&arms, &declaration)) {
+            if (!errors->reported) {
+                error_report_fatal(errors,
+                                   MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            }
+            goto done;
+        }
+        setup_count++;
+    }
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_WITH) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_PARALLEL_ARM);
+        goto done;
+    }
+    while ((token = token_at(tokens, *cursor)) != NULL &&
+           token->type == TOKEN_KEYWORD_WITH) {
+        size_t arm;
+
+        if (!parse_parallel_arm(tokens, string_bytes, ast, cursor, &arm,
+                                errors)) {
+            goto done;
+        }
+        if (!list_push(&arms, &arm)) {
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            goto done;
+        }
+    }
+    if (token != NULL && token->type == TOKEN_KEYWORD_THEN) {
+        (*cursor)++;
+        if (!parse_block(tokens, string_bytes, ast, cursor, &then_block,
+                         errors)) {
+            goto done;
+        }
+        token = token_at(tokens, *cursor);
+    }
+    if (token == NULL || token->type != TOKEN_KEYWORD_END) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
+        goto done;
+    }
+    (*cursor)++;
+    start = ast->children.length;
+    for (i = 0; i < arms.length; i++) {
+        if (!ast_push_child(ast, *(const size_t *)list_get(&arms, i))) {
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            goto done;
+        }
+    }
+    node.kind = AST_PARALLEL;
+    node.pos = pos;
+    node.name_index = name;
+    node.left_child = capacity;
+    node.right_child = then_block;
+    node.children_start = start;
+    node.children_count = arms.length;
+    node.integer_value = (int)setup_count; /* leading declarations */
+    ok = push_node(ast, &node, out_index);
+
+done:
+    list_free(&arms);
+    return ok;
+}
+
+
+/* with [name =] channel.recv() then block, or with [name =] channel.send(v) then block */
+static bool parse_when_arm(const TokenList *tokens, const List *string_bytes,
+                           Ast *ast, size_t *cursor, size_t *out_index,
+                           ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+    SourcePos pos = token->pos;
+    size_t name = AST_NO_NODE, operation, body;
+    AstNode node = {0};
+
+    (*cursor)++; /* past 'with' */
+    token = token_at(tokens, *cursor);
+    if (token != NULL && token->type == TOKEN_IDENTIFIER &&
+        token_at(tokens, *cursor + 1) != NULL &&
+        token_at(tokens, *cursor + 1)->type == TOKEN_EQUALS) {
+        if (!intern_token(ast, token, &name, errors)) {
+            return false;
+        }
+        *cursor += 2;
+    }
+    if (!parse_expression(tokens, string_bytes, ast, cursor, &operation,
+                          errors)) {
+        return false;
+    }
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_THEN) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_WHEN_THEN);
+        return false;
+    }
+    (*cursor)++;
+    if (!parse_block(tokens, string_bytes, ast, cursor, &body, errors)) {
+        return false;
+    }
+    node.kind = AST_WHEN_ARM;
+    node.pos = pos;
+    node.name_index = name;
+    node.left_child = operation;
+    node.right_child = body;
+    return push_node(ast, &node, out_index);
+}
+
+/* when with arm then block ... [else block] end */
+bool parse_when(
+    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
+    size_t *out_index, ErrorState *errors
+)
+{
+    const Token *token = token_at(tokens, *cursor);
+    SourcePos pos = token->pos;
+    size_t else_block = AST_NO_NODE, start, i;
+    List arms;
+    AstNode node = {0};
+    bool ok = false;
+
+    (*cursor)++; /* past 'when' */
+    list_init(&arms, sizeof(size_t));
+    token = token_at(tokens, *cursor);
+    if (token == NULL || token->type != TOKEN_KEYWORD_WITH) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_WHEN_ARM);
+        goto done;
+    }
+    while ((token = token_at(tokens, *cursor)) != NULL &&
+           token->type == TOKEN_KEYWORD_WITH) {
+        size_t arm;
+
+        if (!parse_when_arm(tokens, string_bytes, ast, cursor, &arm, errors)) {
+            goto done;
+        }
+        if (!list_push(&arms, &arm)) {
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            goto done;
+        }
+    }
+    if (token != NULL && token->type == TOKEN_KEYWORD_ELSE) {
+        (*cursor)++;
+        if (!parse_block(tokens, string_bytes, ast, cursor, &else_block,
+                         errors)) {
+            goto done;
+        }
+        token = token_at(tokens, *cursor);
+    }
+    if (token == NULL || token->type != TOKEN_KEYWORD_END) {
+        error_report_at(errors, position_at(tokens, *cursor),
+                        MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
+        goto done;
+    }
+    (*cursor)++;
+    start = ast->children.length;
+    for (i = 0; i < arms.length; i++) {
+        if (!ast_push_child(ast, *(const size_t *)list_get(&arms, i))) {
+            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            goto done;
+        }
+    }
+    node.kind = AST_WHEN;
+    node.pos = pos;
+    node.name_index = AST_NO_NODE;
+    node.right_child = else_block;
+    node.children_start = start;
+    node.children_count = arms.length;
+    ok = push_node(ast, &node, out_index);
+
+done:
+    list_free(&arms);
+    return ok;
+}
+
+
 bool parse_for(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
@@ -1012,147 +1349,6 @@ bool parse_expression_statement(
     return push_node(ast, &node, out_index);
 }
 
-
-static bool parse_statement_if_match(const Token *token, bool *outcome, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor, size_t *out_index, ErrorState *errors, AstNode *node)
-{
-    if (token->type == TOKEN_KEYWORD_MATCH) {
-        do { *outcome = (parse_match(tokens, string_bytes, ast, cursor, false,
-                           out_index, errors)); return false; } while (0);
-    }
-    if (token->type == TOKEN_KEYWORD_SCOPE) {
-        do { *outcome = (parse_scope(tokens, string_bytes, ast, cursor, out_index, errors)); return false; } while (0);
-    }
-    if (token->type == TOKEN_KEYWORD_WHILE) {
-        do { *outcome = (parse_while(tokens, string_bytes, ast, cursor, out_index, errors)); return false; } while (0);
-    }
-    if (token->type == TOKEN_KEYWORD_FOR) {
-        do { *outcome = (parse_for(tokens, string_bytes, ast, cursor, out_index, errors)); return false; } while (0);
-    }
-    if (token->type == TOKEN_KEYWORD_BREAK ||
-        token->type == TOKEN_KEYWORD_CONTINUE) {
-        (*cursor)++;
-        (*node).kind = token->type == TOKEN_KEYWORD_BREAK ? AST_BREAK
-                                                       : AST_CONTINUE;
-        (*node).pos = token->pos;
-        (*node).left_child = AST_NO_NODE;
-        (*node).right_child = AST_NO_NODE;
-        (*node).name_index = AST_NO_NODE;
-        (*node).children_start = 0;
-        (*node).children_count = 0;
-        do { *outcome = (push_node(ast, node, out_index)); return false; } while (0);
-    }
-    return true;
-}
-
-static bool parse_statement_if(const Token *token, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor, size_t *out_index, ErrorState *errors, AstNode *node, bool *outcome)
-{
-    if (token->type == TOKEN_KEYWORD_IF) {
-        do { *outcome = (parse_if(tokens, string_bytes, ast, cursor, out_index, errors)); return true; } while (0);
-    }
-    if (!parse_statement_if_match(token, outcome, tokens, string_bytes, ast, cursor, out_index, errors, node)) {
-        return true;
-    }
-    if (assignment_ahead(tokens, *cursor)) {
-        do { *outcome = (parse_assignment(tokens, string_bytes, ast, cursor, out_index,
-                                errors)); return true; } while (0);
-    }
-    if (index_assignment_ahead(tokens, *cursor)) {
-        do { *outcome = (parse_index_assignment(tokens, string_bytes, ast, cursor,
-                                      out_index, errors)); return true; } while (0);
-    }
-    if (field_assignment_ahead(tokens, *cursor)) {
-        do { *outcome = (parse_field_assignment(tokens, string_bytes, ast, cursor,
-                                      out_index, errors)); return true; } while (0);
-    }
-    if (argument_looks_like_expression(token)) {
-        do { *outcome = (parse_expression_statement(tokens, string_bytes, ast, cursor,
-                                          out_index, errors)); return true; } while (0);
-    }
-    return false;
-}
-
-static bool parse_statement_token(const TokenList *tokens, size_t *cursor, ErrorState *errors, const List *string_bytes, Ast *ast, size_t *out_index, const Token **token, AstNode *node, bool *outcome2)
-{
-    (*token) = token_at(tokens, *cursor);
-    (*node) = (AstNode){0};
-
-    if ((*token) == NULL) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
-        do { *outcome2 = (false); return true; } while (0);
-    }
-
-    if ((*token)->type == TOKEN_KEYWORD_VAR ||
-        (*token)->type == TOKEN_KEYWORD_CONST) {
-        bool is_const = (*token)->type == TOKEN_KEYWORD_CONST;
-
-        (*cursor)++;
-        do { *outcome2 = (parse_var_declaration(tokens, string_bytes, ast, cursor,
-                                     (*token)->pos, false, is_const, true,
-                                     out_index, errors)); return true; } while (0);
-    }
-    return false;
-}
-
-bool parse_statement(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
-)
-{
-    const Token *token = {0};
-    AstNode node = {0};
-    {
-        bool outcome2;
-
-        if (parse_statement_token(tokens, cursor, errors, string_bytes, ast, out_index, &token, &node, &outcome2)) {
-            return outcome2;
-        }
-    }
-
-    if (token->type == TOKEN_KEYWORD_RETURN) {
-        size_t expression = AST_NO_NODE;
-        SourcePos return_pos = token->pos;
-
-        (*cursor)++;
-        token = token_at(tokens, *cursor);
-        if (token != NULL &&
-            token->type != TOKEN_KEYWORD_END &&
-            token->type != TOKEN_KEYWORD_ELSE &&
-            token->type != TOKEN_KEYWORD_ELSEIF &&
-            token->type != TOKEN_KEYWORD_WITH &&
-            token->type != TOKEN_KEYWORD_BREAK &&
-            token->type != TOKEN_KEYWORD_CONTINUE &&
-            token->type != TOKEN_KEYWORD_VAR &&
-            token->type != TOKEN_KEYWORD_CONST &&
-            token->type != TOKEN_KEYWORD_WHILE &&
-            token->type != TOKEN_KEYWORD_FOR &&
-            token->type != TOKEN_KEYWORD_SCOPE &&
-            token->type != TOKEN_KEYWORD_RETURN &&
-            token->type != TOKEN_EOF &&
-            !parse_expression(tokens, string_bytes, ast, cursor, &expression, errors)) {
-            return false;
-        }
-        node.kind = AST_RETURN;
-        node.pos = return_pos;
-        node.left_child = expression;
-        node.right_child = AST_NO_NODE;
-        node.name_index = AST_NO_NODE;
-        node.children_start = 0;
-        node.children_count = 0;
-        return push_node(ast, &node, out_index);
-    }
-    {
-        bool outcome;
-
-        if (parse_statement_if(token, tokens, string_bytes, ast, cursor, out_index, errors, &node, &outcome)) {
-            return outcome;
-        }
-    }
-
-    error_report_at(errors, token->pos,
-                    MESSAGE_PARSER_EXPECTED_STATEMENT_OR_END);
-    return false;
-}
 
 bool parse_var_declaration(
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,

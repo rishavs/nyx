@@ -43,7 +43,7 @@ size_t ast_intern_symbol(Ast *ast, const char *text, size_t length)
 {
     size_t i;
 
-    if (text == NULL || length >= NIPPY_IDENTIFIER_MAX) {
+    if (text == NULL || length >= NYX_IDENTIFIER_MAX) {
         return AST_NO_NODE;
     }
 

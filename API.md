@@ -1,4 +1,4 @@
-# Nippy C API
+# Nyx C API
 
 The public headers in `include/` and what a caller may rely on. The command-line
 driver in `compiler/main.c` is just one client of this API.
@@ -15,8 +15,8 @@ Everything here is C11 and depends only on libc.
 | `alloc.h` | Checked allocation wrappers and the test failure hook |
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
 | `source_pos.h` | `SourcePos`: byte offset plus 1-based line and column |
-| `identifier.h` | `NIPPY_IDENTIFIER_MAX`, the shared name limit, and `NIPPY_GENERATED_PREFIX`, the reserved emitted-name prefix |
-| `operator.h` | `NippyOperator`, shared by syntax and typed nodes |
+| `identifier.h` | `NYX_IDENTIFIER_MAX`, the shared name limit, and `NYX_GENERATED_PREFIX`, the reserved emitted-name prefix |
+| `operator.h` | `NyxOperator`, shared by syntax and typed nodes |
 | `list.h` | `List`, the owning dynamic array |
 
 Internal headers under `compiler/<stage>/` are implementation details and are
@@ -32,8 +32,8 @@ artifacts those stages exchange. Application code should prefer `compiler.h`.
 
 ```c
 typedef struct {
-    const char *header_name;  /* generated header filename; NULL -> "nippy.h" */
-    const char *source_name;  /* shown in diagnostics and #line; NULL -> "nippy.nip" */
+    const char *header_name;  /* generated header filename; NULL -> "nyx.h" */
+    const char *source_name;  /* shown in diagnostics and #line; NULL -> "nyx.nip" */
     int error_header_capacity;      /* 0 -> default 32 */
     int error_description_capacity; /* 0 -> default 128 */
     int error_filename_capacity;    /* 0 -> default 128 */
@@ -60,12 +60,14 @@ duration of the call and are never freed by the compiler. Configuration values
 are copied. Error capacities default to 32, 128, and 128 and are clamped to
 `max_string_capacity`; an explicit Error capacity outside `1..max_string_capacity`
 fails the compilation. `max_string_capacity` defaults to 4096 and may not exceed
-the hard limit `NIPPY_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` bounds
+the hard limit `NYX_MAX_STRING_CAPACITY` (1 MiB). `max_list_capacity` bounds
 fixed `Array<T,N>` and `Record<K,V,N>` capacities; it defaults to 4096 and may
-not exceed `NIPPY_MAX_LIST_CAPACITY` (1 MiB). All by-value types are capped at
-`NIPPY_MAX_VALUE_BYTES` (64 KiB); larger structs, Arrays, Records, Strings,
-Errors, and unions are rejected.
-`max_print_depth` defaults to 16 and may not exceed `NIPPY_MAX_PRINT_DEPTH`
+not exceed `NYX_MAX_LIST_CAPACITY` (1 MiB). All by-value types are capped at
+`max_value_bytes`, which defaults to `NYX_MAX_VALUE_BYTES` (64 KiB) and may not
+exceed `NYX_MAX_VALUE_BYTES_HARD` (16 MiB); larger structs, Arrays, Records,
+Strings, Errors, and unions are rejected, and so are channel messages and
+`parallel` arm arguments and results that exceed it.
+`max_print_depth` defaults to 16 and may not exceed `NYX_MAX_PRINT_DEPTH`
 (1024); explicit values must be positive.
 `max_source_bytes` defaults to 1 MiB (1048576). `compiler_compile` rejects longer source
 strings, and the command-line driver uses the same limit when reading a file.
@@ -145,31 +147,31 @@ offsets.
 ## `alloc.h`
 
 ```c
-#define NIPPY_ALLOC_NEVER ((size_t)-1)
+#define NYX_ALLOC_NEVER ((size_t)-1)
 
-void *nippy_malloc(size_t size);
-void *nippy_realloc(void *pointer, size_t size);
-char *nippy_strdup(const char *text);
-void nippy_alloc_fail_after(size_t successful_allocations);
-void nippy_alloc_reset(void);
-void nippy_alloc_begin_counting(void);
-size_t nippy_alloc_attempts(void);
+void *nyx_malloc(size_t size);
+void *nyx_realloc(void *pointer, size_t size);
+char *nyx_strdup(const char *text);
+void nyx_alloc_fail_after(size_t successful_allocations);
+void nyx_alloc_reset(void);
+void nyx_alloc_begin_counting(void);
+size_t nyx_alloc_attempts(void);
 ```
 
 The compiler allocates through these wrappers so that every out-of-memory path
 stays reachable from a test. In normal operation they are `malloc`/`realloc`
 with one counter comparison.
 
-- `nippy_alloc_fail_after(n)` lets the next `n` allocations succeed and makes the
+- `nyx_alloc_fail_after(n)` lets the next `n` allocations succeed and makes the
   one after that fail, then disables itself. Failing exactly one allocation at a
   time is what lets a test observe the diagnostic that failure produces.
-- `nippy_alloc_reset()` or `nippy_alloc_fail_after(NIPPY_ALLOC_NEVER)` disables
+- `nyx_alloc_reset()` or `nyx_alloc_fail_after(NYX_ALLOC_NEVER)` disables
   the hook.
-- `nippy_alloc_begin_counting()` enables test-only allocation counting;
-  `nippy_alloc_attempts()` reads the count. Resetting or arming a failure
+- `nyx_alloc_begin_counting()` enables test-only allocation counting;
+  `nyx_alloc_attempts()` reads the count. Resetting or arming a failure
   disables counting.
 - The driver arms the hook from the environment variable
-  `NIPPY_FAIL_ALLOC_AFTER`, which is a test-only interface. Unset it in normal
+  `NYX_FAIL_ALLOC_AFTER`, which is a test-only interface. Unset it in normal
   use.
 
 Callers outside the test suite should not use the wrappers — they exist so that
@@ -215,7 +217,7 @@ Contract:
 
 - Values are stored inline, so an element must not hold a pointer into other
   elements. The compiler works around this by storing fixed-size
-  `char[NIPPY_IDENTIFIER_MAX]` names and referring to them by index.
+  `char[NYX_IDENTIFIER_MAX]` names and referring to them by index.
 - `list_push` and `list_pop` return false on allocation failure or misuse
   (NULL list, zero `item_size`, empty pop). Every caller must check.
 - `list_get` returns NULL when `index` is out of range, so out-of-range reads
@@ -275,7 +277,7 @@ owning `children` list. `AstNode` additionally carries
 `type_parameters_start`/`type_parameters_count`, indexing `Ast.type_parameters`
 (used by generic struct, alias, and function declarations; 0/0 when absent).
 The lexer represents `===` with `TOKEN_EQEQEQ`; binary AST and typed nodes
-retain it as `NIPPY_OPERATOR_STRICT_EQ`.
+retain it as `NYX_OPERATOR_STRICT_EQ`.
 For `AST_FUNCTION_DECLARATION` and `AST_TYPE_FUNCTION`, `right_child` is
 `AST_NO_NODE` when the source omits a return type. For `AST_RETURN`, `left_child`
 is `AST_NO_NODE` for a bare return. The typed representation uses internal
@@ -286,9 +288,13 @@ literal default, or `AST_NO_NODE` when absent.
 binding, by associated function declarations for the owner type, and by static
 calls for the owner type. `TypedNode.second_name_index` is used by
 `TYPED_FOR` for its optional second binding.
-`NIPPY_TYPE_RANGE` has one integer type child. `TYPED_RANGE_CREATE` has
+`NYX_TYPE_RANGE` has one integer type child. `TYPED_RANGE_CREATE` has
 two or three expression children for its bounds and optional `Int64` step;
 the checker sequences those expressions using scoped temporaries.
+`TYPED_CLOCK_NOW` has type `Int64` and no operands. `TYPED_SLEEP` has type `Nil`
+and one `Int64` operand in `left_child`. The analyser rejects either node with
+another shape. The C generated for a program that uses either one needs POSIX
+`clock_gettime` and `nanosleep`; the source defines `_POSIX_C_SOURCE` itself.
 `AST_MEMBER_CALL` stores its receiver in `left_child`, its optional type
 argument in `right_child`, its method name in `name_index`, and its positional
 arguments in the children run. `AST_EXPRESSION_STATEMENT` stores its call
@@ -334,45 +340,45 @@ Resolved types are records in `TypedProgram.types`:
 
 ```c
 typedef enum {
-    NIPPY_TYPE_UNKNOWN,
-    NIPPY_TYPE_INT32,
-    NIPPY_TYPE_BOOL,
-    NIPPY_TYPE_BYTE,
-    NIPPY_TYPE_NIL,
-    NIPPY_TYPE_STRUCT,
-    NIPPY_TYPE_FUNCTION,
-    NIPPY_TYPE_UNION,
-    NIPPY_TYPE_STORE,
-    NIPPY_TYPE_HANDLE,
-    NIPPY_TYPE_STRING,
-    NIPPY_TYPE_DYNAMIC_STRING,
-    NIPPY_TYPE_TEXT_BUILDER,
-    NIPPY_TYPE_LIST,
-    NIPPY_TYPE_FIXED_LIST,
-    NIPPY_TYPE_SLICE,
-    NIPPY_TYPE_RECORD,
-    NIPPY_TYPE_TABLE,
-    NIPPY_TYPE_STRING_LITERAL,
-    NIPPY_TYPE_ERROR,
-    NIPPY_TYPE_INT8,
-    NIPPY_TYPE_INT16,
-    NIPPY_TYPE_INT64,
-    NIPPY_TYPE_UINT16,
-    NIPPY_TYPE_UINT32,
-    NIPPY_TYPE_UINT64,
-    NIPPY_TYPE_FLOAT32,
-    NIPPY_TYPE_FLOAT64
-} NippyType;
+    NYX_TYPE_UNKNOWN,
+    NYX_TYPE_INT32,
+    NYX_TYPE_BOOL,
+    NYX_TYPE_BYTE,
+    NYX_TYPE_NIL,
+    NYX_TYPE_STRUCT,
+    NYX_TYPE_FUNCTION,
+    NYX_TYPE_UNION,
+    NYX_TYPE_STORE,
+    NYX_TYPE_HANDLE,
+    NYX_TYPE_STRING,
+    NYX_TYPE_DYNAMIC_STRING,
+    NYX_TYPE_TEXT_BUILDER,
+    NYX_TYPE_LIST,
+    NYX_TYPE_FIXED_LIST,
+    NYX_TYPE_SLICE,
+    NYX_TYPE_RECORD,
+    NYX_TYPE_TABLE,
+    NYX_TYPE_STRING_LITERAL,
+    NYX_TYPE_ERROR,
+    NYX_TYPE_INT8,
+    NYX_TYPE_INT16,
+    NYX_TYPE_INT64,
+    NYX_TYPE_UINT16,
+    NYX_TYPE_UINT32,
+    NYX_TYPE_UINT64,
+    NYX_TYPE_FLOAT32,
+    NYX_TYPE_FLOAT64
+} NyxType;
 
 typedef struct {
-    NippyType kind;
+    NyxType kind;
     size_t name_index;        /* struct C name symbol, or NO_NODE */
     size_t signature_index;   /* function signature, or NO_NODE */
     size_t first_child;       /* union alternatives or struct type arguments */
     size_t child_count;
     size_t declaration_node;  /* concrete struct declaration, or NO_NODE */
     size_t source_name_index; /* source struct name for inference, or NO_NODE */
-    size_t fixed_length;      /* byte capacity for NIPPY_TYPE_STRING */
+    size_t fixed_length;      /* byte capacity for NYX_TYPE_STRING */
 } TypedType;
 
 typedef struct {
@@ -408,6 +414,12 @@ size_t typed_program_copy_symbol(TypedProgram *program, const char *text,
 const char *typed_program_symbol_text(const TypedProgram *program,
                                       size_t index);
 const TypedType *typed_program_type(const TypedProgram *program, size_t index);
+NyxType typed_program_node_kind(const TypedProgram *program, size_t node_index);
+size_t typed_type_part_count(const TypedProgram *program, const TypedType *type);
+bool typed_type_part(const TypedProgram *program, const TypedType *type,
+                     size_t index, size_t *out_type);
+bool typed_types_equivalent(const TypedProgram *program, size_t first,
+                            size_t second, unsigned depth);
 bool typed_program_add_type(TypedProgram *program, const TypedType *type,
                             size_t *out_index);
 const TypedFunctionSignature *typed_program_signature(
@@ -422,9 +434,13 @@ bool typed_program_push_child(TypedProgram *program, size_t index);
 bool typed_program_push_byte(TypedProgram *program, unsigned char byte);
 ```
 
-A `NIPPY_TYPE_UNION` type's `first_child`/`child_count` run in
+`typed_program_node_kind` is the kind of the type of node `node_index`, or
+`NYX_TYPE_KIND_COUNT` when the node or its type does not exist, so a caller can
+compare without checking each link.
+
+A `NYX_TYPE_UNION` type's `first_child`/`child_count` run in
 `program->type_children` holds the canonical alternatives. A
-`NIPPY_TYPE_STRUCT` type's run holds its type arguments (empty for a non-generic
+`NYX_TYPE_STRUCT` type's run holds its type arguments (empty for a non-generic
 struct), and `declaration_node` points at the concrete
 `TYPED_TYPE_DECLARATION` node whose field children describe the layout.
 
@@ -449,7 +465,12 @@ The typed node kinds include `TYPED_NIL_LITERAL`, `TYPED_SUM_INJECT`,
 `TYPED_LIST_LEN`, `TYPED_LIST_GET`, `TYPED_LIST_GET_OPTIONAL`,
 `TYPED_LIST_SET`, `TYPED_LIST_PUSH`,
 `TYPED_LIST_POP`, `TYPED_LIST_CREATE`, `TYPED_SLICE_CREATE`, `TYPED_SLICE_LEN`,
-`TYPED_SLICE_GET`, `TYPED_ERROR_CONSTRUCT`, and `TYPED_ERROR_FIELD`. For injection and
+`TYPED_SLICE_GET`, `TYPED_ERROR_CONSTRUCT`, `TYPED_ERROR_FIELD`,
+`TYPED_CLOCK_NOW`, `TYPED_SLEEP`, `TYPED_DEFER`, `TYPED_ATOMIC_DECLARATION`,
+`TYPED_ATOMIC_LOAD`, `TYPED_ATOMIC_STORE`, `TYPED_ATOMIC_ADD`, `TYPED_PARALLEL`,
+`TYPED_PARALLEL_ARM`, `TYPED_PARALLEL_RESULT`, `TYPED_CORES`,
+`TYPED_CHANNEL_DECLARATION`, `TYPED_CHANNEL_OP`, `TYPED_CHANNEL_CREATE`,
+`TYPED_WHEN`, `TYPED_WHEN_ARM`, and `TYPED_WHEN_RESULT`. For injection and
 payload projection, `integer_value` is the alternative's canonical tag.
 `TYPED_IS` stores the tested type in `auxiliary_type` and a tag in
 `integer_value`; a statically decided test is emitted as a boolean literal, not
@@ -479,13 +500,66 @@ The analyser checks that a literal's value fits its type's width, that a float
 literal has a float type, and that a conversion has a numeric child whose type
 is the recorded source type.
 
+`TYPED_ATOMIC_DECLARATION` has the cell's value type, its id in `store_id`, and
+its initial value as a sign in `integer_value` and a magnitude in
+`integer_value_u`. `TYPED_ATOMIC_LOAD` has the cell's type and no operand;
+`TYPED_ATOMIC_ADD` has it and one operand of that type; `TYPED_ATOMIC_STORE` has
+type `Nil` and one operand. The cell is named by `store_id`, and the analyser
+rejects a float cell, an add on a `Bool`, or a missing operand.
+`TYPED_PARALLEL` has `integer_value` 1 when it owns a pool (then `name_index` is
+the pool and `left_child` its capacity), an optional `TYPED_BLOCK` then section in
+`right_child`, and one `TYPED_PARALLEL_ARM` child per arm. An arm holds its call
+(possibly under `TYPED_MATCH_BIND_EXPRESSION` temporaries) in `left_child`, its
+binding mode in `integer_value` (0 none, 1 assigns `name_index`, 2 declares it),
+and, when repeated, its lane name in `second_name_index` and two bounds in its
+children. `TYPED_PARALLEL_RESULT` names a declaring arm in `integer_value_u`.
+`TYPED_CORES` is an `Int32` with no operand. The generated C for a program that
+uses `parallel` needs POSIX threads and `<stdatomic.h>` and is built with
+`-pthread`.
+
+`TYPED_CHANNEL_DECLARATION` has the element type, the `element | Nil` receive
+type in `auxiliary_type`, its id in `store_id`, its capacity in `integer_value`
+and, for a timer, the interval in `integer_value_u`. `TYPED_CHANNEL_OP` names the
+channel in `store_id`, holds a `ChannelOp` in `integer_value` (`CHANNEL_OP_SEND`,
+`_RECV`, `_TRY_SEND`, `_TRY_RECV`, `_CLOSE`, `_CLOSED`), and has the value being
+sent in `left_child` for the two send operations only. When the operation acts on
+a `Channel<T>` value rather than a global channel, `store_id` is
+`TYPED_NO_NODE` and `right_child` is the expression for the channel.
+`TYPED_CHANNEL_CREATE` is `pool.channel<T>(capacity)`: `type_index` is the
+`NYX_TYPE_CHANNEL` type, `auxiliary_type` the element, `integer_value_u` the
+`element | Nil` type, `left_child` the `Int32` capacity, and the Store is named
+as for `TYPED_LIST_CREATE`. A `TYPED_PARALLEL` node's `setup_block` is the block
+of declarations that run before its arms, or `TYPED_NO_NODE`; a repeated arm
+that assigns a result has `integer_value` 1, two children (the bounds), and the
+target Array's capacity in `integer_value_u`. `TYPED_WHEN` has one
+`TYPED_WHEN_ARM` child per arm and its else block in `right_child`; an arm holds
+a `TYPED_CHANNEL_OP` that is a send or a receive in `left_child` and its block in
+`right_child`, and `TYPED_WHEN_RESULT` names the arm whose binding it
+initialises. The analyser rejects an operation on a channel that was not
+declared, a channel element that is `Nil` or a union, a send without a value,
+and a `when` with no arms. The C for a program with channels needs POSIX threads
+and clocks.
+
+`TYPED_DEFER` holds its block in `left_child` and has no type and no other
+operand; the analyser rejects one whose `left_child` is not a `TYPED_BLOCK`.
+The block is a statement of its parent block, which the generator relies on to
+place its exit code.
+
 `TYPED_SCOPE`: `name_index` identifies the capability, `left_child` is an
 Int32 capacity, and `right_child` is its block. The analyser rejects a program
 in which a value from a scoped Store could outlive the scope, with
 `MESSAGE_ANALYSER_ESCAPE_ASSIGN`, `_WRITE`, `_RETURN`, `_CALL`, or
 `_FUNCTION_VALUE`. `analyser_analyse` runs `analyser_validate` (links and Store
-capabilities) and then the escape analysis; `analyser_validate` alone skips the
-escape analysis. `CompilerConfig.skip_escape_analysis` selects the latter and
+capabilities), the parallel audit, and then the escape analysis;
+`analyser_validate` alone skips the last two. `analyser_validate` also rejects a
+node whose kind or operator is out of range, a type whose kind is, a binary
+operation whose operands are missing or untyped, and a struct whose fields are
+not typed fields of the program, all with the diagnostic for the link that is
+wrong (`MESSAGE_ANALYSER_INVALID_NODE_LINK`, `_INVALID_TYPE_INDEX`, `_INVALID_TYPE_CHILD`).
+It also checks
+each Store root (a Store type, a non-negative capacity, an id no other root
+holds) with `MESSAGE_ANALYSER_INVALID_STORE_ID`; `generator_generate` relies on
+it and does not re-check. `CompilerConfig.skip_escape_analysis` selects the latter and
 exists only so tests can exercise the runtime generation checks, which the
 analysis otherwise makes unreachable; never set it for user programs.
 
@@ -558,22 +632,22 @@ index in `right_child`;
 `Error` and six children: header, description, filename, line, col, pos.
 `TYPED_ERROR_FIELD` has the field's type, the Error value in `left_child`, and
 the field index in `integer_value` (0 header, 1 description, 2 filename, 3 line,
-4 col, 5 pos). `NIPPY_TYPE_ERROR` is a built-in sized type with the fixed
+4 col, 5 pos). `NYX_TYPE_ERROR` is a built-in sized type with the fixed
 layout `header: String<32>`, `description: String<128>`,
 `filename: String<128>`, `line/col/pos: Int32` by default. The three string
 types are the Error type's three entries in `program->type_children`, in that
-order. `NIPPY_TYPE_STRING_LITERAL` is the checker's internal
+order. `NYX_TYPE_STRING_LITERAL` is the checker's internal
 uncontextual literal type; a literal is retyped to `Text` or `String<N>` by
 injection, and the generator rejects any literal that remains uncontextual.
-`NIPPY_TYPE_DYNAMIC_STRING` (public type `Text`) and
-`NIPPY_TYPE_TEXT_BUILDER` are sized public
-types with no child types. `NIPPY_TYPE_LIST`, `NIPPY_TYPE_FIXED_LIST`, and `NIPPY_TYPE_SLICE` have one
+`NYX_TYPE_DYNAMIC_STRING` (public type `Text`) and
+`NYX_TYPE_TEXT_BUILDER` are sized public
+types with no child types. `NYX_TYPE_LIST`, `NYX_TYPE_FIXED_LIST`, and `NYX_TYPE_SLICE` have one
 element type in `type_children`; Arrays also use `fixed_length`.
 
 The `add_*` helpers append and return the new index. The caller must check
 `bool` results; a false return means allocation failed. `typed_program_copy_symbol`
 interns text into the typed program's own symbol table, so the artifact does not
-borrow from the syntax tree. `operator.h` defines `NippyOperator`, shared by
+borrow from the syntax tree. `operator.h` defines `NyxOperator`, shared by
 `AstNode` and `TypedNode` for arithmetic, bitwise, comparison, equality, and
 logical operators.
 
@@ -595,11 +669,24 @@ bool checker_check(const Ast *ast, TypedProgram *program, ErrorState *errors);
 void typed_program_init(TypedProgram *program);
 void typed_program_free(TypedProgram *program);
 
-bool analyser_analyse(const TypedProgram *program, ErrorState *errors);
+bool analyser_analyse(const TypedProgram *program, Analysis *analysis,
+                      ErrorState *errors);
+bool analysis_collect(const TypedProgram *program, Analysis *analysis,
+                      ErrorState *errors);
+void analysis_free(Analysis *analysis);
+const size_t *analysis_nodes(const Analysis *analysis, TypedNodeKind kind,
+                             size_t *count);
+const size_t *analysis_nodes_in(const Analysis *analysis, TypedNodeKind kind,
+                                size_t root, size_t *count);
+const size_t *analysis_types(const Analysis *analysis, NyxType kind,
+                             size_t *count);
+size_t analysis_nil_type(const Analysis *analysis);
+bool analysis_collect_types(const TypedProgram *program, Analysis *analysis,
+                            ErrorState *errors);
 
-bool generator_generate(const TypedProgram *program, const char *header_name,
-                        const char *source_name, char **c_source,
-                        char **h_source, ErrorState *errors);
+bool generator_generate(const TypedProgram *program, const Analysis *analysis,
+                        const char *header_name, const char *source_name,
+                        char **c_source, char **h_source, ErrorState *errors);
 ```
 
 Rules that hold for every stage:
@@ -610,6 +697,22 @@ Rules that hold for every stage:
 - The caller owns and initialises/frees output artifacts (`ast_init`/`ast_free`,
   `typed_program_init`/`typed_program_free`, `lexer_result_free`,
   `generator_generate`'s two strings).
+- `Analysis` (`include/analysis.h`) holds a feature bitset (`analysis_has`, with
+  `analysis_generations_vary` and `analysis_needs_posix` derived from it), a
+  Store count, and indexes of the program's nodes and types grouped by kind
+  (`analysis_nodes` gives the nodes of one kind, `analysis_nodes_in` those of one
+  root, given by its position in `TypedProgram.roots`; `analysis_types` gives the
+  types of one kind; all in ascending order). It also holds lists of type
+  indices the generator emits from: `type_emit_order`, `print_types`,
+  `equal_types`, and `equal_pairs` (two entries per pair). The indexes are one allocation, so
+  a built `Analysis` is released with `analysis_free`,
+  which is safe on a zeroed or already freed one. `analyser_analyse` fills it
+  only on success, and `analysis` may be NULL when the caller wants the verdict
+  alone. `analysis_collect` fills it with no validation, tolerating links it
+  cannot read, and returns false with `MESSAGE_ANALYSER_OUT_OF_MEMORY` if it
+  cannot allocate the index; use it for a program built by hand, or after
+  `analyser_validate` when escape analysis is skipped. The `Analysis` passed to
+  `generator_generate` must describe that same program.
 - `generator_generate` sets both output pointers to NULL before doing anything,
   so they are always either both valid or both NULL.
 - `lexer_tokenize` returns either tokens or errors, never both. Text-literal

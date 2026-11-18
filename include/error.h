@@ -1,5 +1,5 @@
-#ifndef NIPPY_ERROR_H
-#define NIPPY_ERROR_H
+#ifndef NYX_ERROR_H
+#define NYX_ERROR_H
 
 #include "source_pos.h"
 

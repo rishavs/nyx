@@ -2,36 +2,36 @@
 
 #include "limits_config.h"
 
-/* How many parse_type calls are open on this thread. Type arguments nest
-   without any token the pre-scan in parser.c can count (`<` is also the
-   comparison operator), so the type parser counts its own recursion. The
-   counter is per thread so concurrent compiles do not disturb each other. */
-static _Thread_local size_t type_nesting;
+/* Type arguments nest without any token the pre-scan in parser.c can count
+   (`<` is also the comparison operator), so the type parser counts its own
+   recursion. The depth is a parameter of every function in the cycle, so it
+   cannot outlive a parse that fails midway. */
 
-static bool parse_type_body(
+static bool parse_type_primary_at(
+    size_t depth, const TokenList *tokens, const List *string_bytes, Ast *ast,
+    size_t *cursor, size_t *out_index, ErrorState *errors
+);
+
+static bool parse_type_body(size_t depth, 
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
 );
 
-bool parse_type(
-    const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
-    size_t *out_index, ErrorState *errors
+static bool parse_type_at(
+    size_t depth, const TokenList *tokens, const List *string_bytes, Ast *ast,
+    size_t *cursor, size_t *out_index, ErrorState *errors
 )
 {
-    bool ok;
-
-    if (type_nesting >= NIPPY_MAX_PARSE_NESTING) {
+    if (depth >= NYX_MAX_PARSE_NESTING) {
         error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_NESTING_LIMIT, NIPPY_MAX_PARSE_NESTING);
+                        MESSAGE_PARSER_NESTING_LIMIT, NYX_MAX_PARSE_NESTING);
         return false;
     }
-    type_nesting++;
-    ok = parse_type_body(tokens, string_bytes, ast, cursor, out_index, errors);
-    type_nesting--;
-    return ok;
+    return parse_type_body(depth + 1, tokens, string_bytes, ast, cursor,
+                           out_index, errors);
 }
 
-static bool parse_type_body(
+static bool parse_type_body(size_t depth, 
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
 )
@@ -43,7 +43,7 @@ static bool parse_type_body(
     List alternatives;
     AstNode node = {0};
 
-    if (!parse_type_primary(tokens, string_bytes, ast, cursor, &first, errors)) {
+    if (!parse_type_primary_at(depth, tokens, string_bytes, ast, cursor, &first, errors)) {
         return false;
     }
 
@@ -70,7 +70,7 @@ static bool parse_type_body(
             list_free(&alternatives);
             return false;
         }
-        if (!parse_type_primary(tokens, string_bytes, ast, cursor,
+        if (!parse_type_primary_at(depth, tokens, string_bytes, ast, cursor,
                                &alternative, errors)) {
             list_free(&alternatives);
             return false;
@@ -109,545 +109,370 @@ static bool parse_type_body(
     return push_node(ast, &node, out_index);
 }
 
-static bool parse_type_primary_separator_capacity_token(const Token **separator, bool is_array, ErrorState *errors, const TokenList *tokens, size_t *cursor, bool *outcome, AstNode *node, SourcePos *pos, size_t *element_type, Ast *ast, size_t *out_index)
+/* Appends the types collected in `types` as one contiguous run of children. It
+   happens only after every nested type has been parsed, so the node's
+   children stay together. */
+static bool push_type_run(Ast *ast, const List *types, size_t *start,
+                          ErrorState *errors)
 {
-    if ((*separator)->type == TOKEN_COMMA) {
-        const Token *capacity_token;
+    size_t i;
 
-        if (!is_array) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_LIST_CAPACITY);
-            do { *outcome = (false); return false; } while (0);
+    *start = ast->children.length;
+    for (i = 0; i < types->length; i++) {
+        if (!ast_push_child(ast, *(const size_t *)list_get(types, i))) {
+            error_report_fatal(errors,
+                               MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            return false;
         }
-        (*cursor)++;
-        capacity_token = token_at(tokens, *cursor);
-        if (capacity_token == NULL ||
-            capacity_token->type != TOKEN_INTEGER) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_ARRAY_CAPACITY);
-            do { *outcome = (false); return false; } while (0);
-        }
-        (*node).kind = AST_TYPE_FIXED_LIST;
-        (*node).pos = (*pos);
-        (*node).integer_value = capacity_token->integer_value_u > (uint64_t)INT_MAX
-                               ? -1
-                               : (int)capacity_token->integer_value_u;
-        (*node).name_index = AST_NO_NODE;
-        (*node).left_child = (*element_type);
-        (*node).right_child = AST_NO_NODE;
-        (*node).children_start = 0;
-        (*node).children_count = 0;
-        (*cursor)++;
-        (*separator) = token_at(tokens, *cursor);
-        if ((*separator) == NULL || (*separator)->type != TOKEN_GT) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_ARRAY_GT);
-            do { *outcome = (false); return false; } while (0);
-        }
-        (*cursor)++;
-        do { *outcome = (push_node(ast, node, out_index)); return false; } while (0);
     }
     return true;
 }
 
-static bool parse_type_primary_separator(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *element_type, ErrorState *errors, bool is_array, AstNode *node, SourcePos *pos, size_t *out_index, bool *outcome)
+static void expected(ErrorState *errors, const TokenList *tokens,
+                     size_t cursor, const char *message)
 {
-    const Token *separator;
+    error_report_at(errors, position_at(tokens, cursor), message);
+}
 
-    *cursor += 2; /* past the collection name and '<' */
-    if (!parse_type(tokens, string_bytes, ast, cursor, element_type,
+static bool token_is(const TokenList *tokens, size_t cursor, TokenType type)
+{
+    const Token *token = token_at(tokens, cursor);
+
+    return token != NULL && token->type == type;
+}
+
+/* An integer literal used as a size, stored in the node; -1 when it is too
+   large for the field, which the checker rejects. */
+static bool parse_type_size(const TokenList *tokens, size_t *cursor,
+                            AstNode *node, const char *message,
+                            ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+
+    if (token == NULL || token->type != TOKEN_INTEGER) {
+        expected(errors, tokens, *cursor, message);
+        return false;
+    }
+    node->integer_value = token->integer_value_u > (uint64_t)INT_MAX
+                              ? -1
+                              : (int)token->integer_value_u;
+    (*cursor)++;
+    return true;
+}
+
+/* The built-in types written Head<...>: zero to two type arguments, then an
+   optional size, then '>'. The row says which parts a form has and what to
+   say when one is missing. */
+typedef struct {
+    const char *name;
+    AstNodeKind kind;
+    unsigned types;               /* type arguments: 0 (String), 1, or 2 */
+    bool sized;                   /* a size follows: String<N>, Array<T, N> */
+    const char *separator_message; /* no ',' between two types */
+    const char *size_message;      /* the size is missing or not an integer */
+    const char *comma_message;     /* a size where none is allowed, or NULL */
+    const char *gt_message;        /* no closing '>' */
+} TypeForm;
+
+static const TypeForm type_forms[] = {
+    {"String", AST_TYPE_FIXED_STRING, 0, true, NULL,
+     MESSAGE_PARSER_EXPECTED_STRING_LENGTH, NULL,
+     MESSAGE_PARSER_EXPECTED_STRING_GT},
+    {"List", AST_TYPE_LIST, 1, false, NULL, NULL,
+     MESSAGE_PARSER_LIST_CAPACITY, MESSAGE_PARSER_EXPECTED_LIST_GT},
+    {"Array", AST_TYPE_FIXED_LIST, 1, true, NULL,
+     MESSAGE_PARSER_EXPECTED_ARRAY_CAPACITY, NULL,
+     MESSAGE_PARSER_EXPECTED_ARRAY_GT},
+    {"Slice", AST_TYPE_SLICE, 1, false, NULL, NULL, NULL,
+     MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT},
+    {"Record", AST_TYPE_RECORD, 2, true, MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY,
+     MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY, NULL,
+     MESSAGE_PARSER_EXPECTED_RECORD_GT},
+    {"Table", AST_TYPE_TABLE, 2, false, MESSAGE_PARSER_EXPECTED_TABLE_GT, NULL,
+     NULL, MESSAGE_PARSER_EXPECTED_TABLE_GT},
+};
+
+/* The form named by `token`, when a '<' follows it. */
+static const TypeForm *find_type_form(const TokenList *tokens, size_t cursor)
+{
+    const Token *token = token_at(tokens, cursor);
+    size_t i;
+
+    if (!token_is(tokens, cursor + 1, TOKEN_LT)) {
+        return NULL;
+    }
+    for (i = 0; i < NYX_COUNT_OF(type_forms); i++) {
+        if (strcmp(token->text, type_forms[i].name) == 0) {
+            return &type_forms[i];
+        }
+    }
+    return NULL;
+}
+
+/* The type arguments of a form: the first, and for two, a comma and the second. */
+static bool parse_form_types(size_t depth, const TypeForm *form, const TokenList *tokens,
+                             const List *string_bytes, Ast *ast,
+                             size_t *cursor, AstNode *node,
+                             ErrorState *errors)
+{
+    if (!parse_type_at(depth, tokens, string_bytes, ast, cursor, &node->left_child,
                     errors)) {
-        do { *outcome = (false); return true; } while (0);
+        return false;
     }
-    separator = token_at(tokens, *cursor);
-    if (separator == NULL) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        is_array ? MESSAGE_PARSER_EXPECTED_ARRAY_GT
-                                 : MESSAGE_PARSER_EXPECTED_LIST_GT);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (!parse_type_primary_separator_capacity_token(&separator, is_array, errors, tokens, cursor, outcome, node, pos, element_type, ast, out_index)) {
+    if (form->types < 2) {
         return true;
     }
-    if (separator->type != TOKEN_GT) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        is_array ? MESSAGE_PARSER_EXPECTED_ARRAY_GT
-                                 : MESSAGE_PARSER_EXPECTED_LIST_GT);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (is_array) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_ARRAY_CAPACITY);
-        do { *outcome = (false); return true; } while (0);
-    }
-    return false;
-}
-
-static bool parse_type_primary_step(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *value_type, ErrorState *errors, const Token **separator, AstNode *node, bool is_record, SourcePos *pos, size_t key_type)
-{
-    (*cursor)++;
-    if (!parse_type(tokens, string_bytes, ast, cursor, value_type,
-                    errors)) {
-        return false;
-    }
-    (*separator) = token_at(tokens, *cursor);
-    (*node).kind = is_record ? AST_TYPE_RECORD : AST_TYPE_TABLE;
-    (*node).pos = (*pos);
-    (*node).name_index = AST_NO_NODE;
-    (*node).left_child = key_type;
-    (*node).right_child = (*value_type);
-    (*node).children_start = 0;
-    (*node).children_count = 0;
-    if (is_record) {
-        const Token *capacity_token;
-
-        if ((*separator) == NULL || (*separator)->type != TOKEN_COMMA) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY);
-            return false;
-        }
-        (*cursor)++;
-        capacity_token = token_at(tokens, *cursor);
-        if (capacity_token == NULL ||
-            capacity_token->type != TOKEN_INTEGER) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY);
-            return false;
-        }
-        (*node).integer_value = capacity_token->integer_value_u > (uint64_t)INT_MAX
-                               ? -1
-                               : (int)capacity_token->integer_value_u;
-        (*cursor)++;
-        (*separator) = token_at(tokens, *cursor);
-        if ((*separator) == NULL || (*separator)->type != TOKEN_GT) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_RECORD_GT);
-            return false;
-        }
-    } else if ((*separator) == NULL || (*separator)->type != TOKEN_GT) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TABLE_GT);
-        return false;
-    }
-    return true;
-}
-
-static bool parse_type_primary_step5(const Token **token, ErrorState *errors, SourcePos *pos, const TokenList *tokens, size_t *cursor, AstNode *node, Ast *ast, size_t *out_index, bool *outcome2)
-{
-    if ((*token)->type != TOKEN_IDENTIFIER) {
-        error_report_at(errors, (*token)->pos, MESSAGE_PARSER_EXPECTED_TYPE);
-        do { *outcome2 = (false); return true; } while (0);
-    }
-    (*pos) = (*token)->pos;
-
-    if ((*token)->length == 6 && memcmp((*token)->text, "String", 6) == 0) {
-        const Token *next = token_at(tokens, *cursor + 1);
-
-        if (next != NULL && next->type == TOKEN_LT) {
-            const Token *length_token;
-
-            *cursor += 2; /* past String and '<' */
-            length_token = token_at(tokens, *cursor);
-            if (length_token == NULL ||
-                length_token->type != TOKEN_INTEGER) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_STRING_LENGTH);
-                do { *outcome2 = (false); return true; } while (0);
-            }
-            (*node).kind = AST_TYPE_FIXED_STRING;
-            (*node).pos = (*pos);
-            (*node).integer_value = length_token->integer_value_u > (uint64_t)INT_MAX
-                                   ? -1
-                                   : (int)length_token->integer_value_u;
-            (*node).name_index = AST_NO_NODE;
-            (*node).left_child = AST_NO_NODE;
-            (*node).right_child = AST_NO_NODE;
-            (*node).children_start = 0;
-            (*node).children_count = 0;
-            (*cursor)++;
-            (*token) = token_at(tokens, *cursor);
-            if ((*token) == NULL || (*token)->type != TOKEN_GT) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_STRING_GT);
-                do { *outcome2 = (false); return true; } while (0);
-            }
-            (*cursor)++;
-            do { *outcome2 = (push_node(ast, node, out_index)); return true; } while (0);
-        }
-    }
-    return false;
-}
-
-static bool parse_type_primary_token_at(const Token **token, const TokenList *tokens, size_t *cursor, ErrorState *errors, List *arguments, const List *string_bytes, Ast *ast, size_t *argument)
-{
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL ||
-        ((*token)->type != TOKEN_IDENTIFIER &&
-         (*token)->type != TOKEN_LPAREN)) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT);
-        list_free(arguments);
-        return false;
-    }
-    if (!parse_type(tokens, string_bytes, ast, cursor, argument, errors)) {
-        list_free(arguments);
-        return false;
-    }
-    if (!list_push(arguments, argument)) {
-        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-        list_free(arguments);
-        return false;
-    }
-
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type == TOKEN_EOF) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT);
-        list_free(arguments);
-        return false;
-    }
-    return true;
-}
-
-static bool parse_type_primary_token_at8(const Token **token, const TokenList *tokens, size_t *cursor, const List *string_bytes, Ast *ast, size_t *return_type, ErrorState *errors, List *parameter_types, size_t *children_start, size_t *i)
-{
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) != NULL && (*token)->type == TOKEN_COLON) {
-        (*cursor)++;
-        if (!parse_type(tokens, string_bytes, ast, cursor, return_type, errors)) {
-            list_free(parameter_types);
-            return false;
-        }
-    }
-
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type != TOKEN_GT) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_GT);
-        list_free(parameter_types);
+    if (!token_is(tokens, *cursor, TOKEN_COMMA)) {
+        expected(errors, tokens, *cursor, form->separator_message);
         return false;
     }
     (*cursor)++;
+    return parse_type_at(depth, tokens, string_bytes, ast, cursor, &node->right_child,
+                      errors);
+}
 
-    /* Append the parameter run only after every nested type has been
-       parsed, so this node's children stay contiguous. */
-    (*children_start) = ast->children.length;
-    for ((*i) = 0; (*i) < (*parameter_types).length; (*i)++) {
-        size_t parameter_type = *(const size_t *)list_get(
-            parameter_types, (*i));
+/* What follows the type arguments: a size when the form has one. */
+static bool parse_form_size(const TypeForm *form, const TokenList *tokens,
+                            size_t *cursor, AstNode *node, ErrorState *errors)
+{
+    if (form->types == 0) {
+        return parse_type_size(tokens, cursor, node, form->size_message,
+                               errors);
+    }
+    if (!form->sized) {
+        if (form->comma_message != NULL &&
+            token_is(tokens, *cursor, TOKEN_COMMA)) {
+            expected(errors, tokens, *cursor, form->comma_message);
+            return false;
+        }
+        return true;
+    }
+    if (!token_is(tokens, *cursor, TOKEN_COMMA)) {
+        expected(errors, tokens, *cursor, form->size_message);
+        return false;
+    }
+    (*cursor)++;
+    return parse_type_size(tokens, cursor, node, form->size_message, errors);
+}
 
-        if (!ast_push_child(ast, parameter_type)) {
+static bool parse_type_form(size_t depth, const TypeForm *form, const TokenList *tokens,
+                            const List *string_bytes, Ast *ast,
+                            size_t *cursor, size_t *out_index,
+                            ErrorState *errors)
+{
+    AstNode node = {0};
+
+    node.kind = form->kind;
+    node.pos = position_at(tokens, *cursor);
+    node.name_index = AST_NO_NODE;
+    node.left_child = AST_NO_NODE;
+    node.right_child = AST_NO_NODE;
+    *cursor += 2; /* past the name and '<' */
+    if (form->types > 0 &&
+        !parse_form_types(depth, form, tokens, string_bytes, ast, cursor, &node,
+                          errors)) {
+        return false;
+    }
+    if (!parse_form_size(form, tokens, cursor, &node, errors)) {
+        return false;
+    }
+    if (!token_is(tokens, *cursor, TOKEN_GT)) {
+        expected(errors, tokens, *cursor, form->gt_message);
+        return false;
+    }
+    (*cursor)++;
+    return push_node(ast, &node, out_index);
+}
+
+/* How a comma-separated run of types is written and ends. */
+typedef struct {
+    TokenType close;
+    const char *start_message;     /* not the start of a type, or NULL */
+    const char *separator_message; /* neither ',' nor the closing token */
+    const char *end_message;       /* the tokens ran out */
+} TypeListSyntax;
+
+static bool parse_type_list(size_t depth, const TypeListSyntax *syntax,
+                            const TokenList *tokens, const List *string_bytes,
+                            Ast *ast, size_t *cursor, List *types,
+                            ErrorState *errors)
+{
+    for (;;) {
+        const Token *token = token_at(tokens, *cursor);
+        size_t type;
+
+        if (syntax->start_message != NULL &&
+            (token == NULL || (token->type != TOKEN_IDENTIFIER &&
+                               token->type != TOKEN_LPAREN))) {
+            expected(errors, tokens, *cursor, syntax->start_message);
+            return false;
+        }
+        if (!parse_type_at(depth, tokens, string_bytes, ast, cursor, &type, errors)) {
+            return false;
+        }
+        if (!list_push(types, &type)) {
             error_report_fatal(errors,
-                         MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-            list_free(parameter_types);
+                               MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+            return false;
+        }
+        token = token_at(tokens, *cursor);
+        if (token == NULL || token->type == TOKEN_EOF) {
+            expected(errors, tokens, *cursor, syntax->end_message);
+            return false;
+        }
+        (*cursor)++;
+        if (token->type == syntax->close) {
+            return true;
+        }
+        if (token->type != TOKEN_COMMA) {
+            error_report_at(errors, token->pos,
+                            syntax->separator_message);
             return false;
         }
     }
-    return true;
 }
 
-static bool parse_type_primary_step10(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *key_type, ErrorState *errors, const Token **separator, bool is_record, size_t *value_type, AstNode *node, SourcePos *pos)
+static const TypeListSyntax argument_syntax = {
+    TOKEN_GT, MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT,
+    MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_SEPARATOR,
+    MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT};
+
+static const TypeListSyntax parameter_syntax = {
+    TOKEN_RPAREN, NULL, MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR,
+    MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR};
+
+/* Fun<(T, U): R>, the return type being optional. */
+static bool parse_function_type(size_t depth, const TokenList *tokens,
+                                const List *string_bytes, Ast *ast,
+                                size_t *cursor, size_t *out_index,
+                                ErrorState *errors)
 {
-    *cursor += 2;
-    if (!parse_type(tokens, string_bytes, ast, cursor, key_type,
-                    errors)) {
+    AstNode node = {0};
+    List parameters;
+    bool ok;
+
+    node.kind = AST_TYPE_FUNCTION;
+    node.pos = position_at(tokens, *cursor);
+    node.name_index = AST_NO_NODE;
+    node.left_child = AST_NO_NODE;
+    node.right_child = AST_NO_NODE;
+    *cursor += 2; /* past 'Fun' and '<' */
+    if (!token_is(tokens, *cursor, TOKEN_LPAREN)) {
+        expected(errors, tokens, *cursor,
+                 MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_LPAREN);
         return false;
     }
-    (*separator) = token_at(tokens, *cursor);
-    if ((*separator) == NULL || (*separator)->type != TOKEN_COMMA) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        is_record ? MESSAGE_PARSER_EXPECTED_RECORD_CAPACITY
-                                  : MESSAGE_PARSER_EXPECTED_TABLE_GT);
-        return false;
+    (*cursor)++;
+    list_init(&parameters, sizeof(size_t));
+    if (token_is(tokens, *cursor, TOKEN_RPAREN)) {
+        (*cursor)++;
+        ok = true;
+    } else {
+        ok = parse_type_list(depth, &parameter_syntax, tokens, string_bytes, ast,
+                             cursor, &parameters, errors);
     }
-    if (!parse_type_primary_step(cursor, tokens, string_bytes, ast, value_type, errors, separator, node, is_record, pos, (*key_type))) {
-return false;
+    if (ok && token_is(tokens, *cursor, TOKEN_COLON)) {
+        (*cursor)++;
+        ok = parse_type_at(depth, tokens, string_bytes, ast, cursor, &node.right_child,
+                        errors);
     }
-    return true;
+    if (ok && !token_is(tokens, *cursor, TOKEN_GT)) {
+        expected(errors, tokens, *cursor,
+                 MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_GT);
+        ok = false;
+    }
+    if (ok) {
+        (*cursor)++;
+        node.children_count = parameters.length;
+        ok = push_type_run(ast, &parameters, &node.children_start, errors) &&
+             push_node(ast, &node, out_index);
+    }
+    list_free(&parameters);
+    return ok;
 }
 
-static bool parse_type_primary_step12(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *inner, ErrorState *errors, const Token **token)
+/* A name, or a name applied to type arguments: Box<Int32, Bool>. */
+static bool parse_type_name(size_t depth, const TokenList *tokens, const List *string_bytes,
+                            Ast *ast, size_t *cursor, size_t *out_index,
+                            ErrorState *errors)
+{
+    const Token *token = token_at(tokens, *cursor);
+    AstNode node = {0};
+    List arguments;
+    bool ok = true;
+
+    node.kind = AST_TYPE_NAME;
+    node.pos = token->pos;
+    node.left_child = AST_NO_NODE;
+    node.right_child = AST_NO_NODE;
+    if (!intern_token(ast, token, &node.name_index, errors)) {
+        return false;
+    }
+    (*cursor)++;
+    if (token_is(tokens, *cursor, TOKEN_LT)) {
+        (*cursor)++;
+        list_init(&arguments, sizeof(size_t));
+        node.kind = AST_TYPE_APPLICATION;
+        ok = parse_type_list(depth, &argument_syntax, tokens, string_bytes, ast,
+                             cursor, &arguments, errors);
+        node.children_count = arguments.length;
+        ok = ok && push_type_run(ast, &arguments, &node.children_start,
+                                 errors);
+        list_free(&arguments);
+    }
+    return ok && push_node(ast, &node, out_index);
+}
+
+/* ( type ) groups a type, which matters inside a union. */
+static bool parse_parenthesised_type(size_t depth, const TokenList *tokens,
+                                     const List *string_bytes, Ast *ast,
+                                     size_t *cursor, size_t *out_index,
+                                     ErrorState *errors)
 {
     (*cursor)++;
-    if (!parse_type(tokens, string_bytes, ast, cursor, inner, errors)) {
+    if (!parse_type_at(depth, tokens, string_bytes, ast, cursor, out_index, errors)) {
         return false;
     }
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type != TOKEN_RPAREN) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_RPAREN);
+    if (!token_is(tokens, *cursor, TOKEN_RPAREN)) {
+        expected(errors, tokens, *cursor, MESSAGE_PARSER_EXPECTED_RPAREN);
         return false;
     }
+    (*cursor)++;
     return true;
 }
 
-static bool parse_type_primary_step14(size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *element_type, ErrorState *errors, const Token **token)
-{
-    *cursor += 2; /* past Slice and '<' */
-    if (!parse_type(tokens, string_bytes, ast, cursor, element_type,
-                    errors)) {
-        return false;
-    }
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type != TOKEN_GT) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_GT);
-        return false;
-    }
-    return true;
-}
-
-static bool parse_type_primary_type(const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor, size_t *parameter_type, ErrorState *errors, List *parameter_types, const Token **token)
-{
-    if (!parse_type(tokens, string_bytes, ast, cursor, parameter_type,
-                    errors)) {
-        list_free(parameter_types);
-        return false;
-    }
-    if (!list_push(parameter_types, parameter_type)) {
-        error_report_fatal(errors,
-                     MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-        list_free(parameter_types);
-        return false;
-    }
-
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL) {
-        error_report_at(
-            errors, position_at(tokens, *cursor),
-            MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR);
-        list_free(parameter_types);
-        return false;
-    }
-    return true;
-}
-
-bool parse_type_primary(
+static bool parse_type_primary_at(size_t depth, 
     const TokenList *tokens, const List *string_bytes, Ast *ast, size_t *cursor,
     size_t *out_index, ErrorState *errors
 )
 {
     const Token *token = token_at(tokens, *cursor);
-    AstNode node = {0};
-    size_t name_index;
-    SourcePos pos;
+    const TypeForm *form;
 
     if (token == NULL) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TYPE);
+        expected(errors, tokens, *cursor, MESSAGE_PARSER_EXPECTED_TYPE);
         return false;
     }
-
     if (token->type == TOKEN_LPAREN) {
-        size_t inner;
-
-        if (!parse_type_primary_step12(cursor, tokens, string_bytes, ast, &inner, errors, &token)) {
+        return parse_parenthesised_type(depth, tokens, string_bytes, ast, cursor,
+                                        out_index, errors);
+    }
+    if (token->type != TOKEN_IDENTIFIER) {
+        error_report_at(errors, token->pos, MESSAGE_PARSER_EXPECTED_TYPE);
         return false;
     }
-        (*cursor)++;
-        *out_index = inner;
-        return true;
+    form = find_type_form(tokens, *cursor);
+    if (form != NULL) {
+        return parse_type_form(depth, form, tokens, string_bytes, ast, cursor,
+                               out_index, errors);
     }
-
-    {
-        bool outcome2;
-
-        if (parse_type_primary_step5(&token, errors, &pos, tokens, cursor, &node, ast, out_index, &outcome2)) {
-            return outcome2;
-        }
+    if (strcmp(token->text, "Fun") == 0 &&
+        token_is(tokens, *cursor + 1, TOKEN_LT)) {
+        return parse_function_type(depth, tokens, string_bytes, ast, cursor,
+                                   out_index, errors);
     }
-
-    if ((token->length == 4 && memcmp(token->text, "List", 4) == 0) ||
-        (token->length == 5 && memcmp(token->text, "Array", 5) == 0)) {
-        bool is_array = token->length == 5;
-        const Token *next = token_at(tokens, *cursor + 1);
-
-        if (next != NULL && next->type == TOKEN_LT) {
-            size_t element_type;
-            {
-        bool outcome;
-
-        if (parse_type_primary_separator(cursor, tokens, string_bytes, ast, &element_type, errors, is_array, &node, &pos, out_index, &outcome)) {
-            return outcome;
-        }
-    }
-            node.kind = AST_TYPE_LIST;
-            node.pos = pos;
-            node.name_index = AST_NO_NODE;
-            node.left_child = element_type;
-            node.right_child = AST_NO_NODE;
-            node.children_start = 0;
-            node.children_count = 0;
-            (*cursor)++;
-            return push_node(ast, &node, out_index);
-        }
-    }
-
-    if ((token->length == 6 && memcmp(token->text, "Record", 6) == 0) ||
-        (token->length == 5 && memcmp(token->text, "Table", 5) == 0)) {
-        bool is_record = token->length == 6;
-        const Token *next = token_at(tokens, *cursor + 1);
-
-        if (next != NULL && next->type == TOKEN_LT) {
-            size_t key_type;
-            size_t value_type;
-            const Token *separator;
-
-            if (!parse_type_primary_step10(cursor, tokens, string_bytes, ast, &key_type, errors, &separator, is_record, &value_type, &node, &pos)) {
-        return false;
-    }
-            (*cursor)++;
-            return push_node(ast, &node, out_index);
-        }
-    }
-
-    if (token->length == 5 && memcmp(token->text, "Slice", 5) == 0) {
-        const Token *next = token_at(tokens, *cursor + 1);
-
-        if (next != NULL && next->type == TOKEN_LT) {
-            size_t element_type;
-
-            if (!parse_type_primary_step14(cursor, tokens, string_bytes, ast, &element_type, errors, &token)) {
-        return false;
-    }
-            (*cursor)++;
-            node.kind = AST_TYPE_SLICE;
-            node.pos = pos;
-            node.name_index = AST_NO_NODE;
-            node.left_child = element_type;
-            node.right_child = AST_NO_NODE;
-            node.children_start = 0;
-            node.children_count = 0;
-            return push_node(ast, &node, out_index);
-        }
-    }
-
-    if (token->length == 3 && token->text[0] == 'F' && token->text[1] == 'u' &&
-        token->text[2] == 'n') {
-        const Token *next = token_at(tokens, *cursor + 1);
-
-        if (next != NULL && next->type == TOKEN_LT) {
-            size_t children_start;
-            size_t return_type = AST_NO_NODE;
-            size_t i;
-            SourcePos pos = token->pos;
-            List parameter_types;
-
-            *cursor += 2; /* past 'Fun' and '<' */
-
-            token = token_at(tokens, *cursor);
-            if (token == NULL || token->type != TOKEN_LPAREN) {
-                error_report_at(errors, position_at(tokens, *cursor),
-                                MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_LPAREN);
-                return false;
-            }
-            (*cursor)++;
-
-            list_init(&parameter_types, sizeof(size_t));
-            token = token_at(tokens, *cursor);
-            if (token != NULL && token->type == TOKEN_RPAREN) {
-                (*cursor)++;
-            } else {
-                for (;;) {
-                    size_t parameter_type;
-
-                    if (!parse_type_primary_type(tokens, string_bytes, ast, cursor, &parameter_type, errors, &parameter_types, &token)) {
-        return false;
-    }
-                    if (token->type == TOKEN_COMMA) {
-                        (*cursor)++;
-                        continue;
-                    }
-                    if (token->type == TOKEN_RPAREN) {
-                        (*cursor)++;
-                        break;
-                    }
-                    error_report_at(
-                        errors, token->pos,
-                        MESSAGE_PARSER_EXPECTED_FUNCTION_TYPE_SEPARATOR);
-                    list_free(&parameter_types);
-                    return false;
-                }
-            }
-
-            if (!parse_type_primary_token_at8(&token, tokens, cursor, string_bytes, ast, &return_type, errors, &parameter_types, &children_start, &i)) {
-        return false;
-    }
-            node.children_count = parameter_types.length;
-            list_free(&parameter_types);
-
-            node.kind = AST_TYPE_FUNCTION;
-            node.pos = pos;
-            node.name_index = AST_NO_NODE;
-            node.left_child = AST_NO_NODE;
-            node.right_child = return_type;
-            node.children_start = children_start;
-            return push_node(ast, &node, out_index);
-        }
-    }
-
-    if (!intern_token(ast, token, &name_index, errors)) {
-        return false;
-    }
-    (*cursor)++;
-
-    token = token_at(tokens, *cursor);
-    if (token != NULL && token->type == TOKEN_LT) {
-        size_t children_start;
-        size_t i;
-        List arguments;
-
-        (*cursor)++;
-        list_init(&arguments, sizeof(size_t));
-        for (;;) {
-            size_t argument;
-
-            if (!parse_type_primary_token_at(&token, tokens, cursor, errors, &arguments, string_bytes, ast, &argument)) {
-        return false;
-    }
-            if (token->type == TOKEN_COMMA) {
-                (*cursor)++;
-                continue;
-            }
-            if (token->type == TOKEN_GT) {
-                (*cursor)++;
-                break;
-            }
-            error_report_at(errors, token->pos,
-                            MESSAGE_PARSER_EXPECTED_TYPE_ARGUMENT_SEPARATOR);
-            list_free(&arguments);
-            return false;
-        }
-
-        children_start = ast->children.length;
-        for (i = 0; i < arguments.length; i++) {
-            size_t argument = *(const size_t *)list_get(&arguments, i);
-
-            if (!ast_push_child(ast, argument)) {
-                error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-                list_free(&arguments);
-                return false;
-            }
-        }
-        node.kind = AST_TYPE_APPLICATION;
-        node.pos = pos;
-        node.name_index = name_index;
-        node.left_child = AST_NO_NODE;
-        node.right_child = AST_NO_NODE;
-        node.children_start = children_start;
-        node.children_count = arguments.length;
-        list_free(&arguments);
-        return push_node(ast, &node, out_index);
-    }
-
-    node.kind = AST_TYPE_NAME;
-    node.pos = pos;
-    node.name_index = name_index;
-    node.left_child = AST_NO_NODE;
-    node.right_child = AST_NO_NODE;
-    node.children_start = 0;
-    node.children_count = 0;
-    return push_node(ast, &node, out_index);
+    return parse_type_name(depth, tokens, string_bytes, ast, cursor, out_index,
+                           errors);
 }
 
 bool parse_type_parameters(
@@ -712,4 +537,21 @@ bool parse_type_parameters(
     *out_start = start;
     *out_count = ast->type_parameters.length - start;
     return true;
+}
+
+/* The entry points the other parser modules use: each starts a type at depth
+   zero. */
+bool parse_type(const TokenList *tokens, const List *string_bytes, Ast *ast,
+                size_t *cursor, size_t *out_index, ErrorState *errors)
+{
+    return parse_type_at(0, tokens, string_bytes, ast, cursor, out_index,
+                         errors);
+}
+
+bool parse_type_primary(const TokenList *tokens, const List *string_bytes,
+                        Ast *ast, size_t *cursor, size_t *out_index,
+                        ErrorState *errors)
+{
+    return parse_type_primary_at(0, tokens, string_bytes, ast, cursor,
+                                 out_index, errors);
 }

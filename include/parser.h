@@ -1,5 +1,5 @@
-#ifndef NIPPY_PARSER_H
-#define NIPPY_PARSER_H
+#ifndef NYX_PARSER_H
+#define NYX_PARSER_H
 
 #include "ast.h"
 #include "error.h"

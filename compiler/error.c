@@ -78,8 +78,9 @@ void error_report_at(ErrorState *state, SourcePos pos, const char *format, ...)
     char prefix[128];
 
     state->reported = true;
-    snprintf(prefix, sizeof(prefix), "%s:%zu:%zu (byte %zu): ",
-             state->source_name == NULL ? "<source>" : state->source_name,
+    snprintf(prefix, sizeof(prefix), MESSAGE_FRAGMENT_POSITION_PREFIX,
+             state->source_name == NULL ? MESSAGE_FRAGMENT_UNNAMED_SOURCE
+                                        : state->source_name,
              pos.line, pos.column, pos.offset);
     append_text(state, prefix);
 
@@ -106,8 +107,9 @@ void error_report_fatal_at(ErrorState *state, SourcePos pos, const char *format,
     char prefix[128];
     state->reported = true;
     state->fatal = true;
-    snprintf(prefix, sizeof(prefix), "%s:%zu:%zu (byte %zu): ",
-             state->source_name == NULL ? "<source>" : state->source_name,
+    snprintf(prefix, sizeof(prefix), MESSAGE_FRAGMENT_POSITION_PREFIX,
+             state->source_name == NULL ? MESSAGE_FRAGMENT_UNNAMED_SOURCE
+                                        : state->source_name,
              pos.line, pos.column, pos.offset);
     append_text(state, prefix);
     va_start(args, format);

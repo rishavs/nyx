@@ -27,7 +27,7 @@ TEST("overflowing child run is rejected")
         !list_push(&program.children, &zero)) return TEST_ERROR;
     expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_NODE_LINK,
                    index);
-    if (analyser_analyse(&program, &errors) || !error_contains(&errors, expected)) {
+    if (analyser_analyse(&program, NULL, &errors) || !error_contains(&errors, expected)) {
         typed_program_free(&program);
         return TEST_FAIL;
     }
@@ -54,7 +54,7 @@ TEST("if expression requires its else child")
     node.right_child = TYPED_NO_NODE;
     if (!typed_program_push(&program, &node, &index)) return TEST_ERROR;
     expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_NODE_LINK, index);
-    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    ok = !analyser_analyse(&program, NULL, &errors) && error_contains(&errors, expected);
     typed_program_free(&program);
     return ok ? TEST_PASS : TEST_FAIL;
 }
@@ -71,7 +71,7 @@ TEST("overflowing type and signature runs are rejected")
 
     typed_program_init(&program);
     error_init(&errors);
-    type.kind = NIPPY_TYPE_UNION;
+    type.kind = NYX_TYPE_UNION;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = TYPED_NO_NODE;
     type.first_child = 1;
@@ -80,13 +80,13 @@ TEST("overflowing type and signature runs are rejected")
         !typed_program_add_type_child(&program, zero) ||
         !typed_program_add_type_child(&program, zero)) return TEST_ERROR;
     expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_TYPE_CHILD, index);
-    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    ok = !analyser_analyse(&program, NULL, &errors) && error_contains(&errors, expected);
     typed_program_free(&program);
     if (!ok) return TEST_FAIL;
 
     typed_program_init(&program);
     error_init(&errors);
-    type.kind = NIPPY_TYPE_INT64;
+    type.kind = NYX_TYPE_INT64;
     type.first_child = 0;
     type.child_count = 0;
     if (!typed_program_add_type(&program, &type, &index) ||
@@ -97,13 +97,13 @@ TEST("overflowing type and signature runs are rejected")
     signature.parameter_count = SIZE_MAX;
     if (!typed_program_add_signature(&program, &signature, &index)) return TEST_ERROR;
     expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_SIGNATURE_LINK, index);
-    ok = !analyser_analyse(&program, &errors) && error_contains(&errors, expected);
+    ok = !analyser_analyse(&program, NULL, &errors) && error_contains(&errors, expected);
     typed_program_free(&program);
     return ok ? TEST_PASS : TEST_FAIL;
 }
 
 static TestResult analyser_numeric_rejects(const TypedNode *node,
-                                           NippyType type_kind,
+                                           NyxType type_kind,
                                            const char *what)
 {
     TypedProgram program;
@@ -134,7 +134,7 @@ static TestResult analyser_numeric_rejects(const TypedNode *node,
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_NUMERIC, node_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  %s did not produce its diagnostic\n", what);
         typed_program_free(&program);
@@ -157,7 +157,7 @@ TEST("root out of range")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_ROOT_OUT_OF_RANGE, bad_root);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  out-of-range root did not produce its diagnostic\n");
         return TEST_FAIL;
@@ -181,7 +181,7 @@ TEST("invalid node link")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_NODE_LINK, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid node link did not produce its diagnostic\n");
         return TEST_FAIL;
@@ -205,7 +205,7 @@ TEST("invalid name index")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_NAME_INDEX, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid name index did not produce its diagnostic\n");
         return TEST_FAIL;
@@ -232,7 +232,7 @@ TEST("invalid type index")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_TYPE_INDEX, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid type index did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -264,7 +264,7 @@ TEST("invalid child index")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_CHILD_INDEX, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid child index did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -283,14 +283,14 @@ TEST("invalid signature index")
 
     typed_program_init(&program);
     error_init(&errors);
-    type.kind = NIPPY_TYPE_FUNCTION;
+    type.kind = NYX_TYPE_FUNCTION;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = 999;
     typed_program_add_type(&program, &type, &(size_t){0});
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_SIGNATURE_INDEX, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid signature index did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -316,7 +316,7 @@ TEST("invalid signature link")
 
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_SIGNATURE_LINK, (size_t)0);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid signature link did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -336,7 +336,7 @@ TEST("invalid type child")
 
     typed_program_init(&program);
     error_init(&errors);
-    type.kind = NIPPY_TYPE_UNION;
+    type.kind = NYX_TYPE_UNION;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = TYPED_NO_NODE;
     type.first_child = 0;
@@ -346,7 +346,7 @@ TEST("invalid type child")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_TYPE_CHILD, type_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid type child did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -366,18 +366,18 @@ TEST("invalid range element type")
 
     typed_program_init(&program);
     error_init(&errors);
-    type.kind = NIPPY_TYPE_BOOL;
+    type.kind = NYX_TYPE_BOOL;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = TYPED_NO_NODE;
     if (!typed_program_add_type(&program, &type, &bool_index) ||
         !typed_program_add_type_child(&program, bool_index)) return TEST_ERROR;
-    type.kind = NIPPY_TYPE_RANGE;
+    type.kind = NYX_TYPE_RANGE;
     type.first_child = 0;
     type.child_count = 1;
     if (!typed_program_add_type(&program, &type, &range_index)) return TEST_ERROR;
     expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_TYPE_CHILD,
                    range_index);
-    if (analyser_analyse(&program, &errors) || !error_contains(&errors, expected)) {
+    if (analyser_analyse(&program, NULL, &errors) || !error_contains(&errors, expected)) {
         typed_program_free(&program);
         return TEST_FAIL;
     }
@@ -397,7 +397,7 @@ TEST("invalid declaration")
     typed_program_init(&program);
     error_init(&errors);
     name = typed_program_copy_symbol(&program, "Point", 5);
-    type.kind = NIPPY_TYPE_STRUCT;
+    type.kind = NYX_TYPE_STRUCT;
     type.name_index = name;
     type.source_name_index = name;
     type.declaration_node = 999;
@@ -406,7 +406,7 @@ TEST("invalid declaration")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_DECLARATION, type_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid declaration link did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -428,7 +428,7 @@ TEST("invalid auxiliary type")
 
     typed_program_init(&program);
     error_init(&errors);
-    bool_type.kind = NIPPY_TYPE_BOOL;
+    bool_type.kind = NYX_TYPE_BOOL;
     bool_type.name_index = TYPED_NO_NODE;
     bool_type.signature_index = TYPED_NO_NODE;
     if (!typed_program_add_type(&program, &bool_type, &bool_index)) {
@@ -445,7 +445,7 @@ TEST("invalid auxiliary type")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_AUXILIARY_TYPE, node_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid auxiliary type did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -468,7 +468,7 @@ TEST("invalid store id")
 
     typed_program_init(&program);
     error_init(&errors);
-    store_type.kind = NIPPY_TYPE_STORE;
+    store_type.kind = NYX_TYPE_STORE;
     store_type.name_index = TYPED_NO_NODE;
     store_type.signature_index = TYPED_NO_NODE;
     if (!typed_program_add_type(&program, &store_type, &type_index)) {
@@ -488,7 +488,7 @@ TEST("invalid store id")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_STORE_ID, node_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid store id did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -508,7 +508,7 @@ TEST("invalid handle type")
 
     typed_program_init(&program);
     error_init(&errors);
-    handle.kind = NIPPY_TYPE_HANDLE;
+    handle.kind = NYX_TYPE_HANDLE;
     handle.name_index = TYPED_NO_NODE;
     handle.signature_index = TYPED_NO_NODE;
     handle.first_child = 0;
@@ -518,7 +518,7 @@ TEST("invalid handle type")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_HANDLE_TYPE, type_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid handle type did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -540,7 +540,7 @@ TEST("invalid string literal")
 
     typed_program_init(&program);
     error_init(&errors);
-    string.kind = NIPPY_TYPE_STRING;
+    string.kind = NYX_TYPE_STRING;
     string.name_index = TYPED_NO_NODE;
     string.signature_index = TYPED_NO_NODE;
     string.fixed_length = 4;
@@ -562,7 +562,7 @@ TEST("invalid string literal")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_STRING_LITERAL);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid string literal did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -584,7 +584,7 @@ TEST("invalid Error shape")
 
     typed_program_init(&program);
     error_init(&errors);
-    error.kind = NIPPY_TYPE_ERROR;
+    error.kind = NYX_TYPE_ERROR;
     error.name_index = TYPED_NO_NODE;
     error.signature_index = TYPED_NO_NODE;
     if (!typed_program_add_type(&program, &error, &type_index)) {
@@ -604,7 +604,7 @@ TEST("invalid Error shape")
     }
     expect_message(expected, sizeof(expected),
                    MESSAGE_ANALYSER_INVALID_ERROR, node_index);
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, expected)) {
         fprintf(stderr, "  invalid Error node did not produce its diagnostic\n");
         typed_program_free(&program);
@@ -623,7 +623,7 @@ TEST("invalid integer literal")
     node.integer_value_u = 300;
     node.left_child = TYPED_NO_NODE;
     node.right_child = TYPED_NO_NODE;
-    return analyser_numeric_rejects(&node, NIPPY_TYPE_BYTE,
+    return analyser_numeric_rejects(&node, NYX_TYPE_BYTE,
                                     "oversized integer literal");
 }
 
@@ -636,7 +636,7 @@ TEST("invalid float literal")
     node.float_value = 1.5;
     node.left_child = TYPED_NO_NODE;
     node.right_child = TYPED_NO_NODE;
-    return analyser_numeric_rejects(&node, NIPPY_TYPE_INT32,
+    return analyser_numeric_rejects(&node, NYX_TYPE_INT32,
                                     "float literal with an integer type");
 }
 
@@ -648,7 +648,7 @@ TEST("invalid numeric conversion")
     node.kind = TYPED_NUMERIC_CONVERSION;
     node.left_child = TYPED_NO_NODE;
     node.right_child = TYPED_NO_NODE;
-    return analyser_numeric_rejects(&node, NIPPY_TYPE_INT32,
+    return analyser_numeric_rejects(&node, NYX_TYPE_INT32,
                                     "conversion without a child");
 }
 
@@ -664,7 +664,7 @@ TEST("fixed-type string literal")
     typed_program_init(&program);
     error_init(&errors);
     /* A literal with a fixed type must be a Text; a fixed String<N> is wrong. */
-    type.kind = NIPPY_TYPE_STRING;
+    type.kind = NYX_TYPE_STRING;
     type.fixed_length = 8;
     type.name_index = TYPED_NO_NODE;
     type.signature_index = TYPED_NO_NODE;
@@ -683,7 +683,7 @@ TEST("fixed-type string literal")
         !list_push(&program.roots, &node_index)) {
         return TEST_ERROR;
     }
-    if (analyser_analyse(&program, &errors) ||
+    if (analyser_analyse(&program, NULL, &errors) ||
         !error_contains(&errors, MESSAGE_ANALYSER_INVALID_STRING_LITERAL)) {
         fprintf(stderr, "  fixed-type String literal was not rejected\n");
         typed_program_free(&program);
@@ -714,10 +714,10 @@ TEST("capability validation reports allocation failure")
         typed_program_free(&program);
         return TEST_ERROR;
     }
-    nippy_alloc_fail_after(0);
-    ok = !analyser_analyse(&program, &errors) &&
+    nyx_alloc_fail_after(0);
+    ok = !analyser_analyse(&program, NULL, &errors) &&
          error_contains(&errors, MESSAGE_ANALYSER_OUT_OF_MEMORY);
-    nippy_alloc_reset();
+    nyx_alloc_reset();
     typed_program_free(&program);
     return ok ? TEST_PASS : TEST_FAIL;
 }
@@ -764,9 +764,151 @@ TEST("named Store capability belongs to its function")
     {
         char expected[256];
         expect_message(expected, sizeof(expected), MESSAGE_ANALYSER_INVALID_STORE_ID, i);
-        ok = changed && !analyser_analyse(&program, &errors) &&
+        ok = changed && !analyser_analyse(&program, NULL, &errors) &&
              error_contains(&errors, expected);
     }
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+/* One Store root: `id` and `capacity` set by the caller, `type` the kind of its
+   type. The analyser must reject it with MESSAGE_ANALYSER_INVALID_STORE_ID. */
+static TestResult store_root_rejected(NyxType type_kind, int capacity,
+                                      bool duplicate, const char *what)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    TypedNode declaration = {0};
+    size_t type_index = 0, node_index = 0, name, second = 0;
+    char expected[256];
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = type_kind;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &type, &type_index)) return TEST_ERROR;
+    name = typed_program_copy_symbol(&program, "s", 1);
+    declaration.kind = TYPED_STORE_DECLARATION;
+    declaration.type_index = type_index;
+    declaration.store_id = 0;
+    declaration.integer_value = capacity;
+    declaration.name_index = name;
+    declaration.left_child = TYPED_NO_NODE;
+    declaration.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &declaration, &node_index) ||
+        !list_push(&program.roots, &node_index)) {
+        return TEST_ERROR;
+    }
+    if (duplicate) {
+        declaration.store_id = 0;
+        if (!typed_program_push(&program, &declaration, &second) ||
+            !list_push(&program.roots, &second)) {
+            return TEST_ERROR;
+        }
+        node_index = second;
+    }
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_STORE_ID, node_index);
+    ok = !analyser_validate(&program, &errors) &&
+         error_contains(&errors, expected);
+    if (!ok) fprintf(stderr, "  %s was not rejected\n", what);
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("a Store root must have a Store type")
+{
+    return store_root_rejected(NYX_TYPE_INT32, 16, false,
+                               "a Store declaration of another type");
+}
+
+TEST("a Store root must have a non-negative capacity")
+{
+    return store_root_rejected(NYX_TYPE_STORE, -1, false,
+                               "a negative Store capacity");
+}
+
+TEST("two Store roots may not share an id")
+{
+    TestResult result = store_root_rejected(
+        NYX_TYPE_STORE, 16, true, "two Stores with one id");
+
+    return result;
+}
+
+/* One hand-built node, validated alone: does the analyser reject it with the
+   message it should? */
+static TestResult node_rejected(TypedNodeKind kind, NyxOperator op,
+                                const char *message, const char *what)
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedNode node = {0};
+    size_t index;
+    char expected[256];
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    node.kind = kind;
+    node.op = op;
+    node.name_index = TYPED_NO_NODE;
+    node.type_index = TYPED_NO_NODE;
+    node.auxiliary_type = TYPED_NO_NODE;
+    node.left_child = TYPED_NO_NODE;
+    node.right_child = TYPED_NO_NODE;
+    if (!typed_program_push(&program, &node, &index)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected), message, index);
+    ok = !analyser_validate(&program, &errors) &&
+         error_contains(&errors, expected);
+    if (!ok) fprintf(stderr, "  %s was not rejected\n", what);
+    typed_program_free(&program);
+    return ok ? TEST_PASS : TEST_FAIL;
+}
+
+TEST("a node kind out of range is rejected")
+{
+    return node_rejected(TYPED_NODE_KIND_COUNT, NYX_OPERATOR_NONE,
+                         MESSAGE_ANALYSER_INVALID_NODE_LINK,
+                         "a node of no kind");
+}
+
+TEST("an operator out of range is rejected")
+{
+    return node_rejected(TYPED_BINARY, NYX_OPERATOR_COUNT,
+                         MESSAGE_ANALYSER_INVALID_NODE_LINK,
+                         "a node with no such operator");
+}
+
+TEST("a binary operation needs typed operands")
+{
+    return node_rejected(TYPED_BINARY, NYX_OPERATOR_EQ,
+                         MESSAGE_ANALYSER_INVALID_NODE_LINK,
+                         "a comparison with no operands");
+}
+
+TEST("a type kind out of range is rejected")
+{
+    TypedProgram program;
+    ErrorState errors;
+    TypedType type = {0};
+    size_t index;
+    char expected[256];
+    bool ok;
+
+    typed_program_init(&program);
+    error_init(&errors);
+    type.kind = NYX_TYPE_KIND_COUNT;
+    type.name_index = TYPED_NO_NODE;
+    type.signature_index = TYPED_NO_NODE;
+    if (!typed_program_add_type(&program, &type, &index)) return TEST_ERROR;
+    expect_message(expected, sizeof(expected),
+                   MESSAGE_ANALYSER_INVALID_TYPE_INDEX, index);
+    ok = !analyser_validate(&program, &errors) &&
+         error_contains(&errors, expected);
     typed_program_free(&program);
     return ok ? TEST_PASS : TEST_FAIL;
 }

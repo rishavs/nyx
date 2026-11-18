@@ -2,11 +2,34 @@
 
 /* How many loops enclose the statement being emitted that open scopes. Scopes
    inside a loop recycle their buffer; see emit_statement. */
-static _Thread_local unsigned scope_loop_depth;
 
 
-static bool emit_loop_scope_mark(const TypedProgram *program, TextBuffer *source,
-                                 ErrorState *errors, size_t depth);
+
+/* A deferred block is emitted where control leaves its block, not where the
+   `defer` is written, so every block being emitted keeps a frame. The frame
+   says which of its statements is current: an exit edge inside statement `n`
+   runs exactly the defers that stand before `n`, in reverse order, because a
+   defer is registered by reaching it and sits directly in its block. Frames
+   also record the `scope` Store and loop body they belong to, so an exit can
+   release Stores and stop at the right loop in the order they were entered. */
+
+
+static bool emit_framed_block(const TypedProgram *program, GeneratorContext *gen, size_t block_index,
+                              size_t depth, const char *effective_source,
+                              TextBuffer *source, ErrorState *errors,
+                              size_t scope_node, bool loop_body);
+
+static bool emit_stmt_defer(const TypedProgram *program, GeneratorContext *gen, size_t node_index,
+                            size_t depth, const char *effective_source,
+                            TextBuffer *source, ErrorState *errors);
+
+bool emit_loop_body(const TypedProgram *program, GeneratorContext *gen, size_t block_index,
+                           size_t depth, const char *effective_source,
+                           TextBuffer *source, ErrorState *errors)
+{
+    return emit_framed_block(program, gen, block_index, depth, effective_source,
+                             source, errors, TYPED_NO_NODE, true);
+}
 
 static bool emit_inline_failure(TextBuffer *source, SourcePos pos,
                                 const char *message)
@@ -19,363 +42,298 @@ static bool emit_inline_failure(TextBuffer *source, SourcePos pos,
 }
 
 
-static bool emit_map_for_iterable(const TypedProgram *program, const TypedNode *node, TextBuffer *source, size_t depth, size_t offset, ErrorState *errors)
+/* Scope frames live for the whole activation, not the C block of their scope,
+   so a header never dangles and a recycled buffer can outlive one iteration.
+   The scopes and pools of one root come from the analyser's index, in node
+   order. */
+bool emit_scope_frames(const TypedProgram *program, GeneratorContext *gen,
+                       size_t root_position, TextBuffer *source)
 {
-    const TypedNode *iterable = typed_program_node(program,
-                                                   node->left_child);
-    size_t table_type = iterable == NULL ? TYPED_NO_NODE
-                                         : iterable->type_index;
+    size_t scope_count, parallel_count, index;
+    const size_t *scopes = analysis_nodes_in(gen->analysis, TYPED_SCOPE,
+                                             root_position, &scope_count);
+    const size_t *parallels = analysis_nodes_in(
+        gen->analysis, TYPED_PARALLEL, root_position, &parallel_count);
+    NodeMerge merge;
 
-    if (table_type == TYPED_NO_NODE ||
-        !append_indent(source, depth) ||
-        !buffer_append(source, "{\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "nyx_table nyx_for_src_%zu = ",
-                        offset) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source,
-                        "for (size_t nyx_for_i_%zu = 0;; "
-                        "nyx_for_i_%zu++) {\n",
-                        offset, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source,
-                        "nyx_table_state_%zu *nyx_for_state_%zu = "
-                        "nyx_table_%zu_state_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu);\n",
-                        table_type, offset, table_type, offset,
-                        node->pos.line, node->pos.column, node->pos.offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source,
-                        "if (nyx_for_i_%zu >= "
-                        "nyx_for_state_%zu->buckets) break;\n",
-                        offset, offset)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
+    node_merge_init(&merge, scopes, scope_count, parallels, parallel_count);
+    while (node_merge_next(&merge, &index)) {
+        const TypedNode *node = typed_program_node(program, index);
+
+        /* Only a parallel block with a pool of its own is a scope. */
+        if (node != NULL && node->kind == TYPED_PARALLEL &&
+            node->integer_value != 1) {
+            continue;
+        }
+        buffer_appendf(source,
+                        "    nyx_scope_frame nyx_scope_frame_%zu = {0}; "
+                        "(void)nyx_scope_frame_%zu;\n", index, index);
     }
     return true;
 }
 
-static bool emit_map_for_append_indent(TextBuffer *source, size_t depth, char (*key_c)[64], size_t offset, const char *key_name, ErrorState *errors, const char *value_name, char (*value_c)[64])
+/* The frames of every root that is not a function: the statements that run in
+   main, or in nyx_program_value. */
+bool emit_program_scope_frames(const TypedProgram *program,
+                               GeneratorContext *gen, TextBuffer *source)
 {
-    if (!append_indent(source, depth + 2) ||
-        !buffer_appendf(source,
-                        "%s *nyx_for_keys_%zu = (%s *)(void *)"
-                        "(nyx_for_store_%zu->data + "
-                        "nyx_for_state_%zu->keys_offset);\n",
-                        (*key_c), offset, (*key_c), offset, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source, "%s %s = nyx_for_keys_%zu["
-                                "nyx_for_i_%zu];\n",
-                        (*key_c), key_name, offset, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source, "(void)%s;\n", key_name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (value_name != NULL) {
-        if (!append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                            "%s *nyx_for_values_%zu = (%s *)(void *)"
-                            "(nyx_for_store_%zu->data + "
-                            "nyx_for_state_%zu->values_offset);\n",
-                            (*value_c), offset, (*value_c), offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "%s %s = nyx_for_values_%zu["
-                                    "nyx_for_i_%zu];\n",
-                            (*value_c), value_name, offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "(void)%s;\n", value_name)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    size_t position;
+
+    for (position = 0; position < program->roots.length; position++) {
+        const TypedNode *root = typed_program_node(
+            program, *(const size_t *)list_get(&program->roots, position));
+
+        if (root != NULL && root->kind != TYPED_FUNCTION_DECLARATION &&
+            !emit_scope_frames(program, gen, position, source)) {
             return false;
         }
     }
     return true;
 }
 
-static bool emit_map_for_child(const TypedNode *node, const TypedProgram *program, ErrorState *errors, TextBuffer *source, size_t offset, size_t depth, size_t buckets, char (*key_c)[64], const char *key_name)
+bool emit_scope_frame_declaration(const TypedProgram *program, GeneratorContext *gen, size_t root_position,
+                                  TextBuffer *source)
 {
-    {
-        size_t child = node->left_child;
-        const TypedNode *iter = typed_program_node(program, child);
-        char record_name[64];
-
-        if (iter == NULL ||
-            !format_c_type(program, iter->type_index, record_name,
-                           sizeof(record_name), errors) ||
-            !buffer_appendf(source, "%s nyx_for_src_%zu = ",
-                            record_name, offset) ||
-            !emit_expression(program, child, source, errors) ||
-            !buffer_append(source, ";\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    }
-    if (!append_indent(source, depth + 1) ||
-        !buffer_appendf(source,
-                        "for (size_t nyx_for_i_%zu = 0; "
-                        "nyx_for_i_%zu < %zu; nyx_for_i_%zu++) {\n",
-                        offset, offset, buckets, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source,
-                        "if (nyx_for_src_%zu.states[nyx_for_i_%zu] "
-                        "!= 1) continue;\n",
-                        offset, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source, "%s %s = nyx_for_src_%zu.keys["
-                                "nyx_for_i_%zu];\n",
-                        (*key_c), key_name, offset, offset) ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source, "(void)%s;\n", key_name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    if (!analysis_has(gen->analysis, ANALYSIS_SCOPE)) return true;
+    buffer_append(source,
+                   "    nyx_scope_frame *nyx_scope_top = NULL; (void)nyx_scope_top;\n"
+                   "    nyx_scope_frame *nyx_cache_top = NULL; (void)nyx_cache_top;\n");
+    return root_position == NO_ROOT_POSITION ||
+           emit_scope_frames(program, gen, root_position, source);
 }
 
-static bool emit_map_for_buckets(const TypedType *iterable_type, TextBuffer *source, size_t depth, ErrorState *errors, const TypedNode *node, const TypedProgram *program, size_t offset, char (*key_c)[64], const char *key_name, const char *value_name, char (*value_c)[64])
+void emit_loop_scope_mark(GeneratorContext *gen, TextBuffer *source, size_t depth)
 {
-    size_t buckets = iterable_type->fixed_length == 0
-                         ? 1
-                         : iterable_type->fixed_length + 1;
+    if (!analysis_has(gen->analysis, ANALYSIS_SCOPE)) return;
+    append_indent(source, depth);
+    buffer_append(source, "nyx_scope_frame *nyx_loop_mark = nyx_scope_top; (void)nyx_loop_mark;\n");
+}
 
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "{\n") ||
-        !append_indent(source, depth + 1)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
+static size_t block_child_at(const TypedProgram *program,
+                             const TypedNode *block, size_t i)
+{
+    return *(const size_t *)list_get(&program->children,
+                                     block->children_start + i);
+}
+
+/* True when a defer stands before the frame's current statement. */
+static bool frame_has_defer(const TypedProgram *program,
+                            const BlockFrame *frame)
+{
+    const TypedNode *block = typed_program_node(program, frame->block);
+    size_t i;
+
+    for (i = 0; block != NULL && i < frame->position &&
+                i < block->children_count; i++) {
+        const TypedNode *child =
+            typed_program_node(program, block_child_at(program, block, i));
+
+        if (child != NULL && child->kind == TYPED_DEFER) {
+            return true;
+        }
     }
-    if (!emit_map_for_child(node, program, errors, source, offset, depth, buckets, key_c, key_name)) {
     return false;
 }
-    if (value_name != NULL) {
-        if (!append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "%s %s = nyx_for_src_%zu.values["
-                                    "nyx_for_i_%zu];\n",
-                            (*value_c), value_name, offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "(void)%s;\n", value_name)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
+
+/* True when leaving the innermost block, up to the enclosing loop body when
+   `to_loop`, passes a defer that has been registered. */
+static bool chain_has_defer(const TypedProgram *program,
+                            const GeneratorContext *gen, bool to_loop)
+{
+    size_t i;
+
+    for (i = gen->frame_count; i > 0; i--) {
+        if (frame_has_defer(program, &gen->frames[i - 1])) {
+            return true;
+        }
+        if (to_loop && gen->frames[i - 1].loop_body) {
+            break;
         }
     }
-    return true;
+    return false;
 }
 
-static bool emit_map_for_key(const TypedProgram *program, const TypedType *iterable_type, const TypedNode *node, const char *key_name, const char *value_name, ErrorState *errors, TextBuffer *source, size_t depth)
+static bool chain_has_loop(const GeneratorContext *gen)
 {
-    size_t key_type = *(const size_t *)list_get(&program->type_children,
-                                                iterable_type->first_child);
-    size_t value_type = *(const size_t *)list_get(
-        &program->type_children, iterable_type->first_child + 1);
-    char key_c[NIPPY_IDENTIFIER_MAX + 32];
-    char value_c[NIPPY_IDENTIFIER_MAX + 32];
-    size_t offset = node->pos.offset;
+    size_t i;
 
-    if (key_name == NULL || !valid_identifier(key_name) ||
-        (value_name != NULL && !valid_identifier(value_name)) ||
-        !format_c_type(program, key_type, key_c, sizeof(key_c), errors) ||
-        !format_c_type(program, value_type, value_c, sizeof(value_c), errors)) {
+    for (i = gen->frame_count; i > 0; i--) {
+        if (gen->frames[i - 1].loop_body) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Emits the frame's registered defers, most recent first. Each body is its
+   own C block, so its locals cannot collide with the surrounding code. */
+static bool emit_frame_defers(const TypedProgram *program, GeneratorContext *gen, BlockFrame frame,
+                              size_t depth, const char *effective_source,
+                              TextBuffer *source, ErrorState *errors)
+{
+    const TypedNode *block = typed_program_node(program, frame.block);
+    size_t i;
+
+    if (block == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
-    if (iterable_type->kind == NIPPY_TYPE_RECORD) {
-        if (!emit_map_for_buckets(iterable_type, source, depth, errors, node, program, offset, &key_c, key_name, value_name, &value_c)) {
-        return false;
+    for (i = frame.position < block->children_count ? frame.position
+                                                    : block->children_count;
+         i > 0; i--) {
+        const TypedNode *child =
+            typed_program_node(program, block_child_at(program, block, i - 1));
+
+        if (child == NULL || child->kind != TYPED_DEFER) {
+            continue;
+        }
+        append_indent(source, depth);
+        buffer_append(source, "{\n");
+        if (!emit_block(program, gen, child->left_child, depth + 1,
+                    effective_source, source, errors)) {
+            return false;
+        }
+        append_indent(source, depth);
+        buffer_append(source, "}\n");
     }
-    } else {
-        if (!emit_map_for_iterable(program, node, source, depth, offset, errors)) {
-        return false;
-    }
-        if (!append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                            "nyx_store *nyx_for_store_%zu = "
-                            "nyx_for_src_%zu.store;\n",
-                            offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                            "uint8_t *nyx_for_states_%zu = (uint8_t *)"
-                            "(void *)(nyx_for_store_%zu->data + "
-                            "nyx_for_state_%zu->states_offset);\n"
-                            "        if (nyx_for_states_%zu[nyx_for_i_%zu]"
-                            " != 1) continue;\n",
-                            offset, offset, offset, offset, offset)) {
+    return true;
+}
+
+/* Runs the exit work of every block being left, innermost first: its defers,
+   then the release of its `scope` Store. Defers stand before a Store's block
+   only when they were written in an outer block, so the order matches the
+   order everything was entered. */
+static bool emit_unwind(const TypedProgram *program, GeneratorContext *gen, bool to_loop, size_t depth,
+                        const char *effective_source, TextBuffer *source,
+                        ErrorState *errors)
+{
+    size_t i;
+
+    for (i = gen->frame_count; i > 0; i--) {
+        BlockFrame frame = gen->frames[i - 1];
+
+        if (!emit_frame_defers(program, gen, frame, depth, effective_source, source,
+                               errors)) {
+            return false;
+        }
+        if (frame.scope_node != TYPED_NO_NODE &&
+            (!append_indent(source, depth) ||
+             !buffer_appendf(source,
+                             "nyx_scope_cleanup(&nyx_scope_top, "
+                             "nyx_scope_frame_%zu.previous);\n",
+                             frame.scope_node))) {
             error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
             return false;
         }
-        if (!emit_map_for_append_indent(source, depth, &key_c, offset, key_name, errors, value_name, &value_c)) {
-        return false;
-    }
-    }
-    return true;
-}
-
-bool emit_map_for(const TypedProgram *program, const TypedNode *node,
-                          const TypedType *iterable_type, size_t depth,
-                          const char *effective_source, TextBuffer *source,
-                          ErrorState *errors)
-{
-    char key_name_text[USER_NAME_CAPACITY];
-    const char *key_name = user_c_name(program, node->name_index,
-                                  key_name_text, sizeof(key_name_text));
-    char value_name_text[USER_NAME_CAPACITY];
-    const char *value_name =
-        node->second_name_index == TYPED_NO_NODE
-            ? NULL
-            : user_c_name(program, node->second_name_index, value_name_text,
-                          sizeof(value_name_text));
-    if (!emit_map_for_key(program, iterable_type, node, key_name, value_name, errors, source, depth)) {
-        return false;
-    }
-    if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
-        !emit_block(program, node->right_child, depth + 2, effective_source,
-                    source, errors) ||
-        !append_indent(source, depth + 1) ||
-        !buffer_append(source, "}\n") ||
-        !append_indent(source, depth) ||
-        !buffer_append(source, "}\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
-}
-
-
-/* Scope frames live for the whole activation, not the C block of their scope,
-   so a header never dangles and a recycled buffer can outlive one iteration. */
-static bool emit_scope_frames_at(const TypedProgram *program, size_t index,
-                                 TextBuffer *source, ErrorState *errors,
-                                 size_t *budget)
-{
-    const TypedNode *node = typed_program_node(program, index);
-    size_t i;
-
-    /* A tree visits each node once, so the node count bounds the walk and a
-       malformed, cyclic program cannot make it run forever. */
-    if (node == NULL || node->kind == TYPED_FUNCTION_DECLARATION ||
-        *budget == 0) {
-        return true;
-    }
-    (*budget)--;
-    if (node->kind == TYPED_SCOPE &&
-        !buffer_appendf(source,
-                        "    nyx_scope_frame nyx_scope_frame_%zu = {0}; "
-                        "(void)nyx_scope_frame_%zu;\n", index, index)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (node->left_child != TYPED_NO_NODE &&
-        !emit_scope_frames_at(program, node->left_child, source, errors,
-                              budget)) {
-        return false;
-    }
-    if (node->right_child != TYPED_NO_NODE &&
-        !emit_scope_frames_at(program, node->right_child, source, errors,
-                              budget)) {
-        return false;
-    }
-    for (i = 0; i < node->children_count; i++) {
-        if (!emit_scope_frames_at(
-                program,
-                *(const size_t *)list_get(&program->children,
-                                          node->children_start + i),
-                source, errors, budget)) {
-            return false;
+        if (to_loop && frame.loop_body) {
+            break;
         }
     }
     return true;
 }
 
-bool emit_scope_frames(const TypedProgram *program, size_t index,
-                       TextBuffer *source, ErrorState *errors)
+static bool block_ends_in_exit(const TypedProgram *program,
+                               const TypedNode *block)
 {
-    size_t budget = program->nodes.length;
+    const TypedNode *last;
 
-    return emit_scope_frames_at(program, index, source, errors, &budget);
-}
-
-bool emit_scope_frame_declaration(const TypedProgram *program, size_t subtree,
-                                  TextBuffer *source, ErrorState *errors)
-{
-    if (!program_uses_scope(program)) return true;
-    if (!buffer_append(source,
-                       "    nyx_scope_frame *nyx_scope_top = NULL; (void)nyx_scope_top;\n"
-                       "    nyx_scope_frame *nyx_cache_top = NULL; (void)nyx_cache_top;\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    if (block->children_count == 0) {
         return false;
     }
-    return subtree == TYPED_NO_NODE ||
-           emit_scope_frames(program, subtree, source, errors);
+    last = typed_program_node(
+        program, block_child_at(program, block, block->children_count - 1));
+    return last != NULL && (last->kind == TYPED_RETURN ||
+                            last->kind == TYPED_BREAK ||
+                            last->kind == TYPED_CONTINUE);
 }
 
-static bool emit_loop_scope_mark(const TypedProgram *program, TextBuffer *source,
-                                 ErrorState *errors, size_t depth)
+static bool emit_framed_block(const TypedProgram *program, GeneratorContext *gen, size_t block_index,
+                              size_t depth, const char *effective_source,
+                              TextBuffer *source, ErrorState *errors,
+                              size_t scope_node, bool loop_body)
 {
-    if (!program_uses_scope(program)) return true;
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "nyx_scope_frame *nyx_loop_mark = nyx_scope_top; (void)nyx_loop_mark;\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    const TypedNode *block = typed_program_node(program, block_index);
+    size_t frame_index;
+    size_t i;
+    bool ok = true;
+
+    if (block == NULL || block->kind != TYPED_BLOCK ||
+        gen->frame_count >= NYX_MAX_AST_DEPTH) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
-    return true;
+    frame_index = gen->frame_count++;
+    gen->frames[frame_index].block = block_index;
+    gen->frames[frame_index].position = 0;
+    gen->frames[frame_index].scope_node = scope_node;
+    gen->frames[frame_index].loop_body = loop_body;
+    for (i = 0; ok && i < block->children_count; i++) {
+        gen->frames[frame_index].position = i;
+        ok = emit_statement(program, gen, block_child_at(program, block, i), depth,
+                            effective_source, source, errors);
+    }
+    if (ok && !block_ends_in_exit(program, block)) {
+        gen->frames[frame_index].position = block->children_count;
+        ok = emit_frame_defers(program, gen, gen->frames[frame_index], depth,
+                               effective_source, source, errors);
+    }
+    gen->frame_count = frame_index;
+    return ok;
 }
 
-bool emit_block(const TypedProgram *program, size_t block_index,
+bool emit_block(const TypedProgram *program, GeneratorContext *gen, size_t block_index,
                        size_t depth, const char *effective_source,
                        TextBuffer *source, ErrorState *errors)
 {
-    const TypedNode *block = typed_program_node(program, block_index);
-    size_t i;
-
-    if (block == NULL || block->kind != TYPED_BLOCK) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
-        return false;
-    }
-    for (i = 0; i < block->children_count; i++) {
-        size_t child = *(const size_t *)list_get(&program->children,
-                                                 block->children_start + i);
-
-        if (!emit_statement(program, child, depth, effective_source, source,
-                            errors)) {
-            return false;
-        }
-    }
-    return true;
+    return emit_framed_block(program, gen, block_index, depth, effective_source,
+                             source, errors, TYPED_NO_NODE, false);
 }
 
+bool emit_block_in_scope(const TypedProgram *program, GeneratorContext *gen, size_t block_index,
+                         size_t depth, const char *effective_source,
+                         TextBuffer *source, ErrorState *errors,
+                         size_t scope_node)
+{
+    return emit_framed_block(program, gen, block_index, depth, effective_source,
+                             source, errors, scope_node, false);
+}
+
+
+static bool opens_scope(const TypedNode *node)
+{
+    return node->kind == TYPED_SCOPE ||
+           (node->kind == TYPED_PARALLEL && node->integer_value == 1);
+}
+
+/* The search covers one function body, at most once per node. */
+static bool search_stops(const TypedNode *node, const size_t *budget)
+{
+    return node == NULL || node->kind == TYPED_FUNCTION_DECLARATION ||
+           *budget == 0;
+}
 
 static bool subtree_has_scope_at(const TypedProgram *program, size_t index,
                                  size_t *budget)
 {
     const TypedNode *node = typed_program_node(program, index);
+    bool found;
     size_t i;
 
-    if (node == NULL || node->kind == TYPED_FUNCTION_DECLARATION ||
-        *budget == 0) {
+    if (search_stops(node, budget)) {
         return false;
     }
     (*budget)--;
-    if (node->kind == TYPED_SCOPE) {
-        return true;
+    found = opens_scope(node) ||
+            subtree_has_scope_at(program, node->left_child, budget) ||
+            subtree_has_scope_at(program, node->right_child, budget);
+    for (i = 0; !found && i < node->children_count; i++) {
+        found = subtree_has_scope_at(
+            program,
+            *(const size_t *)list_get(&program->children,
+                                      node->children_start + i),
+            budget);
     }
-    if (node->left_child != TYPED_NO_NODE &&
-        subtree_has_scope_at(program, node->left_child, budget)) {
-        return true;
-    }
-    if (node->right_child != TYPED_NO_NODE &&
-        subtree_has_scope_at(program, node->right_child, budget)) {
-        return true;
-    }
-    for (i = 0; i < node->children_count; i++) {
-        if (subtree_has_scope_at(
-                program,
-                *(const size_t *)list_get(&program->children,
-                                          node->children_start + i),
-                budget)) {
-            return true;
-        }
-    }
-    return false;
+    return found;
 }
 
 static bool subtree_has_scope(const TypedProgram *program, size_t index)
@@ -385,13 +343,13 @@ static bool subtree_has_scope(const TypedProgram *program, size_t index)
     return subtree_has_scope_at(program, index, &budget);
 }
 
-static bool emit_statement_body(const TypedProgram *program, size_t node_index,
+static bool emit_statement_body(const TypedProgram *program, GeneratorContext *gen, size_t node_index,
                                 size_t depth, const char *effective_source,
                                 TextBuffer *source, ErrorState *errors);
 
 /* A loop whose body opens scopes reuses each scope's buffer across iterations.
    The cached buffers are released when the loop ends, or by a return. */
-bool emit_statement(const TypedProgram *program, size_t node_index,
+bool emit_statement(const TypedProgram *program, GeneratorContext *gen, size_t node_index,
                     size_t depth, const char *effective_source,
                     TextBuffer *source, ErrorState *errors)
 {
@@ -400,134 +358,142 @@ bool emit_statement(const TypedProgram *program, size_t node_index,
 
     if (node == NULL || (node->kind != TYPED_WHILE && node->kind != TYPED_FOR) ||
         !subtree_has_scope(program, node_index)) {
-        return emit_statement_body(program, node_index, depth, effective_source,
+        return emit_statement_body(program, gen, node_index, depth, effective_source,
                                    source, errors);
     }
-    if (!append_indent(source, depth) ||
-        !buffer_appendf(source,
-                        "{ nyx_scope_frame *nyx_cache_mark_%zu = nyx_cache_top;\n",
-                        node_index)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    scope_loop_depth++;
-    ok = emit_statement_body(program, node_index, depth + 1, effective_source,
+    append_indent(source, depth);
+    buffer_appendf(source,
+                    "{ nyx_scope_frame *nyx_cache_mark_%zu = nyx_cache_top;\n",
+                    node_index);
+    gen->scope_loop_depth++;
+    ok = emit_statement_body(program, gen, node_index, depth + 1, effective_source,
                              source, errors);
-    scope_loop_depth--;
+    gen->scope_loop_depth--;
     if (!ok) {
         return false;
     }
-    if (!append_indent(source, depth + 1) ||
-        !buffer_appendf(source,
-                        "nyx_scope_release(&nyx_cache_top, nyx_cache_mark_%zu); }\n",
-                        node_index)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    append_indent(source, depth + 1);
+    buffer_appendf(source,
+                    "nyx_scope_release(&nyx_cache_top, nyx_cache_mark_%zu); }\n",
+                    node_index);
     return true;
 }
 
-typedef bool (*EmitStatementBodyHandler)(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors);
+typedef bool (*EmitStatementBodyHandler)(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors);
 
-static bool emit_stmt_match_bind_statement(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_match_bind_statement(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "{\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "nyx_match_%zu = ",
-                        (size_t)node->integer_value_u) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "(void)nyx_match_%zu;\n",
-                        (size_t)node->integer_value_u) ||
-        !emit_statement(program, node->right_child, depth + 1,
-                        effective_source, source, errors) ||
-        !append_indent(source, depth) || !buffer_append(source, "}\n")) {
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    append_indent(source, depth);
+    buffer_append(source, "{\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "nyx_match_%zu = ",
+                    (size_t)node->integer_value_u);
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, ";\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "(void)nyx_match_%zu;\n",
+                    (size_t)node->integer_value_u);
+    if (!emit_statement(program, gen, node->right_child, depth + 1,
+                    effective_source, source, errors)) {
+        return false;
+    }
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
     return true;
 }
 
-static bool emit_stmt_scope(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_scope(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     char store_name[USER_NAME_CAPACITY];
     const char *name = user_c_name(program, node->name_index, store_name, sizeof(store_name));
-    if (!valid_identifier(name) || !append_indent(source, depth) ||
-        !buffer_append(source, "{\n") || !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "int32_t nyx_scope_capacity_%zu = ", node_index) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source,
-            scope_loop_depth > 0
-                ? "nyx_scope_enter_cached(&nyx_scope_top, &nyx_cache_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n"
-                : "nyx_scope_enter(&nyx_scope_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n",
-            node_index, node_index, node->pos.line, node->pos.column, node->pos.offset) ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "nyx_store *%s = &nyx_scope_frame_%zu.store; (void)%s;\n",
-                        name, node_index, name) ||
-        !emit_block(program, node->right_child, depth + 1, effective_source, source, errors) ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "nyx_scope_cleanup(&nyx_scope_top, nyx_scope_frame_%zu.previous);\n", node_index) ||
-        !append_indent(source, depth) || !buffer_append(source, "}\n")) {
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    if (!valid_identifier(name)) {
         return false;
     }
+    append_indent(source, depth);
+    buffer_append(source, "{\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "int32_t nyx_scope_capacity_%zu = ", node_index);
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ";\n");
+    append_indent(source, depth + 1);
+    append_indent(source, depth + 1);
+    buffer_appendf(source,
+        gen->scope_loop_depth > 0
+            ? "nyx_scope_enter_cached(&nyx_scope_top, &nyx_cache_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n"
+            : "nyx_scope_enter(&nyx_scope_top, &nyx_scope_frame_%zu, nyx_scope_capacity_%zu, __FILE__, %zu, %zu, %zu);\n",
+        node_index, node_index, node->pos.line, node->pos.column, node->pos.offset);
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "nyx_store *%s = &nyx_scope_frame_%zu.store; (void)%s;\n",
+                    name, node_index, name);
+    if (!emit_framed_block(program, gen, node->right_child, depth + 1, effective_source, source, errors, node_index, false)) {
+        return false;
+    }
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "nyx_scope_cleanup(&nyx_scope_top, nyx_scope_frame_%zu.previous);\n", node_index);
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
     return true;
 }
 
-static const struct {
+struct statement_handler_row {
     int key;
     EmitStatementBodyHandler handler;
-} emit_statement_body_handlers1[] = {
+};
+
+static const struct statement_handler_row emit_statement_body_handlers1[] = {
     {TYPED_MATCH_BIND_STATEMENT, emit_stmt_match_bind_statement},
     {TYPED_SCOPE, emit_stmt_scope},
 };
 
-static bool emit_stmt_return(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_return(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "return ") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "return ");
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, ";\n");
     return true;
 }
 
-static bool emit_stmt_break(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_break(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
-    (void)effective_source;
-    if (program_uses_scope(program) &&
+    if (chain_has_defer(program, gen, true) &&
+        (!chain_has_loop(gen) ||
+         !emit_unwind(program, gen, true, depth, effective_source, source,
+                      errors))) {
+        if (!errors->reported) {
+            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+        }
+        return false;
+    }
+    if (analysis_has(gen->analysis, ANALYSIS_SCOPE) &&
         (!append_indent(source, depth) ||
          !buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, nyx_loop_mark);\n"))) {
         error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
         return false;
     }
-    if (!append_indent(source, depth) ||
-        !buffer_append(source,
-                       node->kind == TYPED_BREAK ? "break;\n"
-                                                 : "continue;\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    append_indent(source, depth);
+    buffer_append(source,
+                   node->kind == TYPED_BREAK ? "break;\n"
+                                             : "continue;\n");
     return true;
 }
 
-static bool emit_stmt_if_node(const TypedProgram *program, size_t node_index, ErrorState *errors, TextBuffer *source, size_t depth, const char *effective_source, size_t *else_block)
+static bool emit_stmt_if_node(const TypedProgram *program, GeneratorContext *gen, size_t node_index, ErrorState *errors, TextBuffer *source, size_t depth, const char *effective_source, size_t *else_block)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
@@ -544,473 +510,69 @@ static bool emit_stmt_if_node(const TypedProgram *program, size_t node_index, Er
         (*else_block) = *(const size_t *)list_get(&program->children,
                                                node->children_start + 1);
     }
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "if (") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ") {\n") ||
-        !emit_block(program, then_block, depth + 1, effective_source,
-                    source, errors)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "if (");
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ") {\n");
+    if (!emit_block(program, gen, then_block, depth + 1, effective_source,
+                source, errors)) {
         return false;
     }
     return true;
 }
 
-static bool emit_stmt_if_else_block(const TypedProgram *program, size_t node_index, ErrorState *errors, TextBuffer *source, size_t depth, const char *effective_source)
+static bool emit_stmt_if_else_block(const TypedProgram *program, GeneratorContext *gen, size_t node_index, ErrorState *errors, TextBuffer *source, size_t depth, const char *effective_source)
 {
     size_t else_block = {0};
-    if (!emit_stmt_if_node(program, node_index, errors, source, depth, effective_source, &else_block)) {
+    if (!emit_stmt_if_node(program, gen, node_index, errors, source, depth, effective_source, &else_block)) {
         return false;
     }
     if (else_block != TYPED_NO_NODE) {
-        if (!append_indent(source, depth) ||
-            !buffer_append(source, "} else {\n") ||
-            !emit_block(program, else_block, depth + 1, effective_source,
-                        source, errors)) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
+        append_indent(source, depth);
+        buffer_append(source, "} else {\n");
+        if (!emit_block(program, gen, else_block, depth + 1, effective_source,
+                    source, errors)) {
             return false;
         }
     }
-    if (!append_indent(source, depth) || !buffer_append(source, "}\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
     return true;
 }
 
-static bool emit_stmt_if(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_if(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
-    if (!emit_stmt_if_else_block(program, node_index, errors, source, depth, effective_source)) {
+    if (!emit_stmt_if_else_block(program, gen, node_index, errors, source, depth, effective_source)) {
         return false;
     }
     return true;
 }
 
-static bool emit_stmt_while(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_while(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "while (") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ") {\n") ||
-        !emit_loop_scope_mark(program, source, errors, depth + 1) ||
-        !emit_block(program, node->right_child, depth + 1,
-                    effective_source, source, errors) ||
-        !append_indent(source, depth) ||
-        !buffer_append(source, "}\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "while (");
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
-    return true;
-}
-
-static bool emit_stmt_for_buffer_appendf_buffer_append(TextBuffer *source, size_t depth, size_t offset, ErrorState *errors)
-{
-    if (!buffer_append(source, ");\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source,
-                        "for (size_t nyx_for_i_%zu = 0; "
-                        "nyx_for_i_%zu < nyx_for_len_%zu; "
-                        "nyx_for_i_%zu++) {\n",
-                        offset, offset, offset, offset) ||
-        !append_indent(source, depth + 2)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_buffer_appendf(const TypedType *iterable_type, TextBuffer *source, size_t offset, const TypedNode *node, ErrorState *errors, size_t depth)
-{
-    if (iterable_type->kind == NIPPY_TYPE_LIST) {
-        if (!buffer_appendf(source,
-                            "nyx_list_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
-                            offset, node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST ||
-               iterable_type->kind == NIPPY_TYPE_STRING) {
-        if (!buffer_appendf(source,
-                            "((int32_t)(nyx_for_src_%zu).length)",
-                            offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
-        if (!buffer_appendf(source,
-                            "nyx_slice_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
-                            offset, node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        if (!buffer_appendf(source,
-                            "nyx_string_len_at(nyx_for_src_%zu, __FILE__, %zu, %zu, %zu)",
-                            offset, node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
-        return false;
-    }
-    if (!emit_stmt_for_buffer_appendf_buffer_append(source, depth, offset, errors)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_buffer_appendf4_buffer_append(TextBuffer *source, size_t depth, const char *value_c, ErrorState *errors)
-{
-    if (!buffer_append(source, ";\n") ||
-        !append_indent(source, depth + 2) ||
-        !buffer_appendf(source, "(void)%s;\n", value_c)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_buffer_appendf4(TextBuffer *source, char (*element_name)[64], const char *value_c, ErrorState *errors, const TypedType *iterable_type, const TypedNode *iterable_node, size_t offset, const TypedNode *node, size_t depth)
-{
-    if (!buffer_appendf(source, "%s %s = ", (*element_name), value_c)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (iterable_type->kind == NIPPY_TYPE_FIXED_LIST) {
-        if (!buffer_appendf(source, "nyx_list_%zu_get(nyx_for_src_%zu, "
-                                    "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
-                            iterable_node->type_index, offset, offset,
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_LIST) {
-        if (!buffer_appendf(source,
-                            "(*(%s *)nyx_list_data_at(nyx_for_src_%zu, "
-                            "nyx_for_i_%zu, sizeof(%s), __FILE__, %zu, %zu, %zu))",
-                            (*element_name), offset, offset, (*element_name),
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_SLICE) {
-        if (!buffer_appendf(source,
-                            "(*(%s *)nyx_slice_data_at(nyx_for_src_%zu, "
-                            "nyx_for_i_%zu, sizeof(%s), __FILE__, %zu, %zu, %zu))",
-                            (*element_name), offset, offset, (*element_name),
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_STRING) {
-        if (!buffer_appendf(source, "nyx_string_%zu_at(nyx_for_src_%zu, "
-                                    "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
-                            iterable_type->fixed_length, offset, offset,
-                            node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else if (iterable_type->kind == NIPPY_TYPE_DYNAMIC_STRING) {
-        if (!buffer_appendf(source, "nyx_string_byte_at(nyx_for_src_%zu, "
-                                    "nyx_for_i_%zu, __FILE__, %zu, %zu, %zu)",
-                            offset, offset, node->pos.line, node->pos.column,
-                            node->pos.offset)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    } else {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
-        return false;
-    }
-    if (!emit_stmt_for_buffer_appendf4_buffer_append(source, depth, value_c, errors)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_append_indent(bool check_length, TextBuffer *source, size_t depth, ErrorState *errors, const TypedType *iterable_type, size_t offset, const TypedNode *node)
-{
-    if (check_length) {
-        if (!append_indent(source, depth + 2)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (iterable_type->kind == NIPPY_TYPE_LIST) {
-            if (!buffer_appendf(source,
-                                "if ((size_t)nyx_list_len_at("
-                                "nyx_for_src_%zu, __FILE__, %zu, %zu, %zu) != "
-                                "nyx_for_len_%zu) { ",
-                                offset, node->pos.line, node->pos.column,
-                                node->pos.offset, offset) ||
-                !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
-                !buffer_append(source, " }\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-        } else if (!buffer_appendf(source,
-                                   "if ((size_t)(nyx_for_src_%zu).length "
-                                   "!= nyx_for_len_%zu) { ",
-                                   offset, offset) ||
-                   !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
-                   !buffer_append(source, " }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    }
-    if (!append_indent(source, depth + 1) ||
-        !buffer_append(source, "}\n") ||
-        !append_indent(source, depth) ||
-        !buffer_append(source, "}\n")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_buffer_appendf7(bool is_signed, TextBuffer *source, size_t offset, char (*element_name)[64], const char *index_c, size_t depth, const TypedProgram *program, ErrorState *errors, const TypedNode *node, const char *effective_source)
-{
-    if (is_signed) {
-        if (!buffer_appendf(source,
-            "else nyx_cur_%zu = (%s)((int64_t)nyx_cur_%zu + nyx_range_%zu.step);\n",
-            offset, (*element_name), offset, offset)) return true;
-    } else if (!buffer_appendf(source,
-            "else nyx_cur_%zu = (%s)(nyx_range_%zu.step > 0 ? "
-            "(uint64_t)nyx_cur_%zu + nyx_mag_%zu : "
-            "(uint64_t)nyx_cur_%zu - nyx_mag_%zu);\n",
-            offset, (*element_name), offset, offset, offset, offset, offset))
-        return true;
-    if (index_c != NULL &&
-        (!append_indent(source, depth + 2) ||
-         !buffer_appendf(source, "int32_t %s = (int32_t)nyx_idx_%zu; (void)%s;\n",
-                         index_c, offset, index_c))) return true;
-    if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
-!emit_block(program, node->right_child, depth + 2,
-                    effective_source, source, errors) ||
-        !append_indent(source, depth + 1) || !buffer_append(source, "}\n") ||
-        !append_indent(source, depth) || !buffer_append(source, "}\n"))
-        return true;
-    return false;
-}
-
-static bool emit_stmt_for_step(bool *check_length, const TypedType *iterable_type, TextBuffer *source, size_t depth, char (*iterable_name)[64], size_t offset, const TypedProgram *program, const TypedNode *node, ErrorState *errors)
-{
-    (*check_length) = iterable_type->kind == NIPPY_TYPE_LIST ||
-                   iterable_type->kind == NIPPY_TYPE_FIXED_LIST;
-
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "{\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "%s nyx_for_src_%zu = ",
-                        (*iterable_name), offset) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "size_t nyx_for_len_%zu = (size_t)(",
-                        offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
-    }
-    if (!emit_stmt_for_buffer_appendf(iterable_type, source, offset, node, errors, depth)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_stmt_for_step(bool *check_length, const TypedType *iterable_type, TextBuffer *source, size_t depth, char (*iterable_name)[64], size_t offset, const TypedProgram *program, const TypedNode *node, ErrorState *errors, char (*element_name)[64], const char *value_c, const TypedNode *iterable_node)
-{
-    if (!emit_stmt_for_step(check_length, iterable_type, source, depth, iterable_name, offset, program, node, errors)) {
-        return false;
-    }
-    if ((*check_length)) {
-        if (iterable_type->kind == NIPPY_TYPE_LIST) {
-            if (!buffer_appendf(source,
-                                "if ((size_t)nyx_list_len_at("
-                                "nyx_for_src_%zu, __FILE__, %zu, %zu, %zu) != "
-                                "nyx_for_len_%zu) { ",
-                                offset, node->pos.line, node->pos.column,
-                                node->pos.offset, offset) ||
-                !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
-                !buffer_append(source, " }\n")) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-                return false;
-            }
-        } else if (!buffer_appendf(source,
-                                   "if ((size_t)(nyx_for_src_%zu).length "
-                                   "!= nyx_for_len_%zu) { ",
-                                   offset, offset) ||
-                   !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_FOR_MUTATED) ||
-                   !buffer_append(source, " }\n")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (!append_indent(source, depth + 2)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    }
-    if (!emit_stmt_for_buffer_appendf4(source, element_name, value_c, errors, iterable_type, iterable_node, offset, node, depth)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_for_index_c(const TypedType *iterable_type, const TypedProgram *program, const TypedNode *node, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors, const char *value_name, const char *index_name, const TypedNode *iterable_node, char (*iterable_name)[64], char (*element_name)[64], bool *outcome)
-{
-    if (iterable_type != NULL &&
-        (iterable_type->kind == NIPPY_TYPE_RECORD ||
-         iterable_type->kind == NIPPY_TYPE_TABLE)) {
-        do { *outcome = (emit_map_for(program, node, iterable_type, depth,
-                            effective_source, source, errors)); return true; } while (0);
-    }
-    if (iterable_type == NULL || value_name == NULL ||
-        !valid_identifier(value_name) ||
-        (index_name != NULL && !valid_identifier(index_name)) ||
-        !format_c_type(program, iterable_node->type_index, (*iterable_name),
-                       sizeof((*iterable_name)), errors) ||
-        !format_c_type(program, node->auxiliary_type, (*element_name),
-                       sizeof((*element_name)), errors)) {
-        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
-        do { *outcome = (false); return true; } while (0);
-    }
-    return false;
-}
-
-static bool emit_stmt_for_stmt_for_stmt_for_step(bool *check_length, const TypedType *iterable_type, TextBuffer *source, size_t depth, char (*iterable_name)[64], size_t offset, const TypedProgram *program, const TypedNode *node, ErrorState *errors, char (*element_name)[64], const char *value_c, const TypedNode *iterable_node, const char *index_c, const char *effective_source)
-{
-    if (!emit_stmt_for_stmt_for_step(check_length, iterable_type, source, depth, iterable_name, offset, program, node, errors, element_name, value_c, iterable_node)) {
-        return false;
-    }
-    if (index_c != NULL) {
-        if (!append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "int32_t %s = (int32_t)nyx_for_i_%zu;\n",
-                            index_c, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "(void)%s;\n", index_c)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-    }
-    if (!emit_loop_scope_mark(program, source, errors, depth + 2) ||
-    !emit_block(program, node->right_child, depth + 2,
+    buffer_append(source, ") {\n");
+    emit_loop_scope_mark(gen, source, depth + 1);
+    if (!emit_loop_body(program, gen, node->right_child, depth + 1,
                     effective_source, source, errors)) {
         return false;
     }
-    if (!emit_stmt_for_append_indent((*check_length), source, depth, errors, iterable_type, offset, node)) {
-        return false;
-    }
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
     return true;
 }
 
-static bool emit_stmt_for(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_table_set(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
-    const TypedNode *node = typed_program_node(program, node_index);
-    (void)node_index;
-    const TypedNode *iterable_node = typed_program_node(
-        program, node->left_child);
-    const TypedType *iterable_type =
-        iterable_node == NULL
-            ? NULL
-            : typed_program_type(program, iterable_node->type_index);
-    char value_name_text[USER_NAME_CAPACITY];
-const char *value_name = user_c_name(program, node->name_index,
-                              value_name_text, sizeof(value_name_text));
-    char index_name_text[USER_NAME_CAPACITY];
-    const char *index_name =
-        node->second_name_index == TYPED_NO_NODE
-            ? NULL
-            : user_c_name(program, node->second_name_index,
-                          index_name_text, sizeof(index_name_text));
-    char iterable_name[NIPPY_IDENTIFIER_MAX + 32];
-    char element_name[NIPPY_IDENTIFIER_MAX + 32];
-    size_t offset = node->pos.offset;
-    const char *value_c;
-    const char *index_c = {0};
-    bool check_length = {0};
-    {
-        bool outcome;
-
-        if (emit_stmt_for_index_c(iterable_type, program, node, depth, effective_source, source, errors, value_name, index_name, iterable_node, &iterable_name, &element_name, &outcome)) {
-            return outcome;
-        }
-    }
-    value_c = value_name;
-    index_c = index_name;
-    if (iterable_type->kind == NIPPY_TYPE_RANGE) {
-        const TypedType *element = typed_program_type(program, node->auxiliary_type);
-        bool is_signed = element != NULL && nippy_type_is_signed_integer(element->kind);
-        if (element == NULL || !append_indent(source, depth) ||
-            !buffer_append(source, "{\n") || !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nyx_range_%zu = ", iterable_name, offset) ||
-            !emit_expression(program, node->left_child, source, errors) ||
-            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nyx_cur_%zu = nyx_range_%zu.start;\n",
-                            element_name, offset, offset) ||
-            !append_indent(source, depth + 1) ||
-            !buffer_appendf(source,
-                "uint64_t nyx_idx_%zu = 0;\n", offset) ||
-            !append_indent(source, depth + 1) ||
-            !buffer_appendf(source,
-                "bool nyx_active_%zu = nyx_range_%zu.step > 0 ? "
-                "nyx_cur_%zu < nyx_range_%zu.end : nyx_cur_%zu > nyx_range_%zu.end;\n",
-                offset, offset, offset, offset, offset, offset) ||
-            !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "for (; (void)nyx_idx_%zu, nyx_active_%zu; "
-                                    "nyx_idx_%zu++) {\n",
-                            offset, offset, offset) || !append_indent(source, depth + 2) ||
-            !buffer_appendf(source, "%s %s = nyx_cur_%zu; (void)%s;\n",
-                            element_name, value_c, offset, value_c) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                "uint64_t nyx_dist_%zu = nyx_range_%zu.step > 0 ? "
-                "(uint64_t)nyx_range_%zu.end - (uint64_t)nyx_cur_%zu : "
-                "(uint64_t)nyx_cur_%zu - (uint64_t)nyx_range_%zu.end;\n",
-                offset, offset, offset, offset, offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                "uint64_t nyx_mag_%zu = nyx_range_%zu.step > 0 ? "
-                "(uint64_t)nyx_range_%zu.step : UINT64_C(0) - "
-                "(uint64_t)nyx_range_%zu.step;\n", offset, offset, offset, offset) ||
-            !append_indent(source, depth + 2) ||
-            !buffer_appendf(source,
-                "if (nyx_mag_%zu >= nyx_dist_%zu) nyx_active_%zu = false;\n",
-                offset, offset, offset) || !append_indent(source, depth + 2))
-            goto range_error;
-        if (emit_stmt_for_buffer_appendf7(is_signed, source, offset, &element_name, index_c, depth, program, errors, node, effective_source)) {
-        goto range_error;
-    }
-        return true;
-range_error:
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (!emit_stmt_for_stmt_for_stmt_for_step(&check_length, iterable_type, source, depth, &iterable_name, offset, program, node, errors, &element_name, value_c, iterable_node, index_c, effective_source)) {
-        return false;
-    }
-    return true;
-}
-
-static bool emit_stmt_table_set(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
-{
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
@@ -1021,26 +583,31 @@ static bool emit_stmt_table_set(const TypedProgram *program, size_t node_index, 
     const TypedNode *receiver = typed_program_node(
         program, node->left_child);
 
-    if (receiver == NULL || !append_indent(source, depth) ||
-        !buffer_appendf(source, "nyx_table_%zu_set(&(",
-                        receiver->type_index) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, "), ") ||
-        !emit_expression(program, key, source, errors) ||
-        !buffer_append(source, ", ") ||
-        !emit_expression(program, value, source, errors) ||
-        !buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
-                        node->pos.line, node->pos.column, node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    if (receiver == NULL) {
         return false;
     }
+    append_indent(source, depth);
+    buffer_appendf(source, "nyx_table_%zu_set(&(",
+                    receiver->type_index);
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, "), ");
+    if (!emit_expression(program, key, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ", ");
+    if (!emit_expression(program, value, source, errors)) {
+        return false;
+    }
+    buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
+                    node->pos.line, node->pos.column, node->pos.offset);
     return true;
 }
 
-static bool emit_stmt_record_set(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_record_set(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
@@ -1051,75 +618,80 @@ static bool emit_stmt_record_set(const TypedProgram *program, size_t node_index,
     const TypedNode *receiver = typed_program_node(
         program, node->left_child);
 
-    if (receiver == NULL || !append_indent(source, depth) ||
-        !buffer_append(source, "nyx_record_") ||
-        !buffer_appendf(source, "%zu", receiver->type_index) ||
-        !buffer_append(source, "_set(&(") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, "), ") ||
-        !emit_expression(program, key, source, errors) ||
-        !buffer_append(source, ", ") ||
-        !emit_expression(program, value, source, errors) ||
-        !buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
-                        node->pos.line, node->pos.column, node->pos.offset)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    if (receiver == NULL) {
         return false;
     }
+    append_indent(source, depth);
+    buffer_append(source, "nyx_record_");
+    buffer_appendf(source, "%zu", receiver->type_index);
+    buffer_append(source, "_set(&(");
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, "), ");
+    if (!emit_expression(program, key, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ", ");
+    if (!emit_expression(program, value, source, errors)) {
+        return false;
+    }
+    buffer_appendf(source, ", __FILE__, %zu, %zu, %zu);\n",
+                    node->pos.line, node->pos.column, node->pos.offset);
     return true;
 }
 
-static bool emit_stmt_local_declaration(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_local_declaration(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
-    (void)node_index;
-    (void)effective_source;
     char name_text[USER_NAME_CAPACITY];
-const char *name = user_c_name(program, node->name_index,
-                              name_text, sizeof(name_text));
-    char type_name[NIPPY_IDENTIFIER_MAX + 32];
+    const char *name = user_c_name(program, node->name_index, name_text,
+                                   sizeof(name_text));
+    char type_name[NYX_IDENTIFIER_MAX + 32];
+    TypedNodeKind initialiser;
+    bool ok;
 
-    if (!valid_identifier(name) ||
-        !format_c_type(program, node->type_index, type_name,
-                       sizeof(type_name), errors) ||
-        node->left_child == TYPED_NO_NODE) {
+    (void)gen;
+    (void)effective_source;
+    if (name == NULL || node->left_child == TYPED_NO_NODE ||
+        !format_c_type(program, node->type_index, type_name, sizeof(type_name),
+                       errors)) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
-    if (!append_indent(source, depth) ||
-        !buffer_appendf(source, "%s %s = ", type_name, name) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
-        return false;
+    buffer_line(source, depth, "%s %s = ", type_name, name);
+    ok = emit_expression(program, node->left_child, source, errors);
+    buffer_append(source, ";\n");
+    /* A `with var` result the then section never reads is not an error. */
+    initialiser = typed_program_node(program, node->left_child)->kind;
+    if (initialiser == TYPED_PARALLEL_RESULT || initialiser == TYPED_WHEN_RESULT) {
+        buffer_line(source, depth, "(void)%s;\n", name);
     }
-    return true;
+    return ok;
 }
 
-static bool emit_stmt_member_write(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_member_write(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "(void)(") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, " = ") ||
-        !emit_expression(program, node->right_child, source, errors) ||
-        !buffer_append(source, ");\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "(void)(");
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, " = ");
+    if (!emit_expression(program, node->right_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ");\n");
     return true;
 }
 
-static bool emit_stmt_assignment(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_assignment(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
@@ -1131,72 +703,77 @@ const char *name = user_c_name(program, node->name_index,
         error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
         return false;
     }
-    if (!append_indent(source, depth) ||
-        !buffer_appendf(source, "%s = ", name) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_appendf(source, "%s = ", name);
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, ";\n");
     return true;
 }
 
 static bool emit_stmt_list_set_append_indent(TextBuffer *source, size_t depth, const TypedProgram *program, size_t node_index, ErrorState *errors)
 {
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "(void)(") ||
-        !emit_expression(program, node_index, source, errors) ||
-        !buffer_append(source, ");\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "(void)(");
+    if (!emit_expression(program, node_index, source, errors)) {
         return false;
     }
+    buffer_append(source, ");\n");
     return true;
 }
 
-static bool emit_stmt_list_set(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_list_set(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
+    (void)gen;
     const TypedNode *node = typed_program_node(program, node_index);
     (void)effective_source;
     const TypedNode *receiver = typed_program_node(program, node->left_child);
     const TypedType *receiver_type = receiver == NULL ? NULL :
         typed_program_type(program, receiver->type_index);
-    if (receiver_type != NULL && receiver_type->kind == NIPPY_TYPE_LIST) {
+    if (receiver_type != NULL && receiver_type->kind == NYX_TYPE_LIST) {
         size_t index = *(const size_t *)list_get(&program->children, node->children_start);
         size_t value = *(const size_t *)list_get(&program->children, node->children_start + 1);
-        char element_name[NIPPY_IDENTIFIER_MAX + 32];
+        char element_name[NYX_IDENTIFIER_MAX + 32];
 
         if (!format_c_type(program, node->auxiliary_type, element_name,
-                           sizeof(element_name), errors) ||
-            !append_indent(source, depth) || !buffer_append(source, "{\n") ||
-            !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "nyx_list nyx_set_list_%zu = ", node_index) ||
-            !emit_expression(program, node->left_child, source, errors) ||
-            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "int32_t nyx_set_index_%zu = ", node_index) ||
-            !emit_expression(program, index, source, errors) ||
-            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-            !buffer_appendf(source,
-                "(void)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
-                "sizeof(%s), __FILE__, %zu, %zu, %zu);\n",
-                node_index, node_index, element_name, node->pos.line,
-                node->pos.column, node->pos.offset) ||
-            !append_indent(source, depth + 1) ||
-            !buffer_appendf(source, "%s nyx_set_value_%zu = ", element_name, node_index) ||
-            !emit_expression(program, value, source, errors) ||
-            !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-            !buffer_appendf(source,
-                "*(%s *)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
-                "sizeof(%s), __FILE__, %zu, %zu, %zu) = nyx_set_value_%zu;\n",
-                element_name, node_index, node_index, element_name,
-                node->pos.line, node->pos.column, node->pos.offset, node_index) ||
-            !append_indent(source, depth) || !buffer_append(source, "}\n")) {
-            if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+                       sizeof(element_name), errors)) {
             return false;
         }
+        append_indent(source, depth);
+        buffer_append(source, "{\n");
+        append_indent(source, depth + 1);
+        buffer_appendf(source, "nyx_list nyx_set_list_%zu = ", node_index);
+        if (!emit_expression(program, node->left_child, source, errors)) {
+            return false;
+        }
+        buffer_append(source, ";\n");
+        append_indent(source, depth + 1);
+        buffer_appendf(source, "int32_t nyx_set_index_%zu = ", node_index);
+        if (!emit_expression(program, index, source, errors)) {
+            return false;
+        }
+        buffer_append(source, ";\n");
+        append_indent(source, depth + 1);
+        buffer_appendf(source,
+            "(void)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
+            "sizeof(%s), __FILE__, %zu, %zu, %zu);\n",
+            node_index, node_index, element_name, node->pos.line,
+            node->pos.column, node->pos.offset);
+        append_indent(source, depth + 1);
+        buffer_appendf(source, "%s nyx_set_value_%zu = ", element_name, node_index);
+        if (!emit_expression(program, value, source, errors)) {
+            return false;
+        }
+        buffer_append(source, ";\n");
+        append_indent(source, depth + 1);
+        buffer_appendf(source,
+            "*(%s *)nyx_list_data_at(nyx_set_list_%zu, nyx_set_index_%zu, "
+            "sizeof(%s), __FILE__, %zu, %zu, %zu) = nyx_set_value_%zu;\n",
+            element_name, node_index, node_index, element_name,
+            node->pos.line, node->pos.column, node->pos.offset, node_index);
+        append_indent(source, depth);
+        buffer_append(source, "}\n");
         return true;
     }
     if (!emit_stmt_list_set_append_indent(source, depth, program, node_index, errors)) {
@@ -1205,15 +782,15 @@ static bool emit_stmt_list_set(const TypedProgram *program, size_t node_index, s
     return true;
 }
 
-static bool emit_stmt_print(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_print(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
     (void)effective_source;
-    return emit_print_statement(program, node, source, errors, depth);
+    return emit_print_statement(program, gen, node, source, errors, depth);
 }
 
-static bool emit_stmt_expression_statement(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_expression_statement(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
     (void)node_index;
@@ -1222,39 +799,33 @@ static bool emit_stmt_expression_statement(const TypedProgram *program, size_t n
         program, node->left_child);
 
     if (expression != NULL && expression->kind == TYPED_PRINT) {
-        return emit_print_statement(program, expression, source, errors,
+        return emit_print_statement(program, gen, expression, source, errors,
                                     depth);
     }
     /* The outer cast discards the expression's value so a store reset or
        write statement is warning-free under -Wall. */
-    if (!append_indent(source, depth) ||
-        !buffer_append(source, "(void)(") ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ");\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    append_indent(source, depth);
+    buffer_append(source, "(void)(");
+    if (!emit_expression(program, node->left_child, source, errors)) {
         return false;
     }
+    buffer_append(source, ");\n");
     return true;
 }
 
-static bool emit_stmt_block(const TypedProgram *program, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+static bool emit_stmt_block(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
 {
-    return emit_block(program, node_index, depth, effective_source,
+    return emit_block(program, gen, node_index, depth, effective_source,
                       source, errors);
 }
 
-static const struct {
-    int key;
-    EmitStatementBodyHandler handler;
-} emit_statement_body_handlers2[] = {
+static const struct statement_handler_row emit_statement_body_handlers2[] = {
     {TYPED_RETURN, emit_stmt_return},
     {TYPED_BREAK, emit_stmt_break},
     {TYPED_CONTINUE, emit_stmt_break},
     {TYPED_IF, emit_stmt_if},
     {TYPED_WHILE, emit_stmt_while},
-    {TYPED_FOR, emit_stmt_for},
+    {TYPED_FOR, emit_for_statement},
     {TYPED_TABLE_SET, emit_stmt_table_set},
     {TYPED_RECORD_SET, emit_stmt_record_set},
     {TYPED_LOCAL_DECLARATION, emit_stmt_local_declaration},
@@ -1264,175 +835,265 @@ static const struct {
     {TYPED_PRINT, emit_stmt_print},
     {TYPED_EXPRESSION_STATEMENT, emit_stmt_expression_statement},
     {TYPED_BLOCK, emit_stmt_block},
+    {TYPED_DEFER, emit_stmt_defer},
+    {TYPED_PARALLEL, emit_parallel_statement},
+    {TYPED_WHEN, emit_when_statement},
 };
 
 static bool emit_statement_body_return(const TypedProgram *program, const TypedNode *node, ErrorState *errors, TextBuffer *source, size_t depth, size_t node_index)
 {
-    char return_type[NIPPY_IDENTIFIER_MAX + 32];
-    if (!format_c_type(program, node->type_index, return_type, sizeof(return_type), errors) ||
-        !append_indent(source, depth) || !buffer_append(source, "{\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "%s nyx_scope_result_%zu = ", return_type, node_index) ||
-        !emit_expression(program, node->left_child, source, errors) ||
-        !buffer_append(source, ";\n") || !append_indent(source, depth + 1) ||
-        !buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, NULL);\n"
-                               "    nyx_scope_release(&nyx_cache_top, NULL);\n") ||
-        !append_indent(source, depth + 1) ||
-        !buffer_appendf(source, "return nyx_scope_result_%zu;\n", node_index) ||
-        !append_indent(source, depth) || !buffer_append(source, "}\n")) {
-        if (!errors->reported) error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    char return_type[NYX_IDENTIFIER_MAX + 32];
+    if (!format_c_type(program, node->type_index, return_type, sizeof(return_type), errors)) {
+        return false;
+    }
+    append_indent(source, depth);
+    buffer_append(source, "{\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "%s nyx_scope_result_%zu = ", return_type, node_index);
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ";\n");
+    append_indent(source, depth + 1);
+    buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, NULL);\n"
+                           "    nyx_scope_release(&nyx_cache_top, NULL);\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "return nyx_scope_result_%zu;\n", node_index);
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
+    return true;
+}
+
+/* A return evaluates its value first, then leaves every block it is inside:
+   their defers run and their Stores are released, innermost first, and only
+   then does the function return the saved value. */
+static bool emit_return_unwinding(const TypedProgram *program, GeneratorContext *gen,
+                                  const TypedNode *node, size_t node_index,
+                                  size_t depth, const char *effective_source,
+                                  TextBuffer *source, ErrorState *errors)
+{
+    char return_type[NYX_IDENTIFIER_MAX + 32];
+
+    if (!format_c_type(program, node->type_index, return_type,
+                   sizeof(return_type), errors)) {
+        return false;
+    }
+    append_indent(source, depth);
+    buffer_append(source, "{\n");
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "%s nyx_scope_result_%zu = ", return_type,
+                    node_index);
+    if (!emit_expression(program, node->left_child, source, errors)) {
+        return false;
+    }
+    buffer_append(source, ";\n");
+    if (!emit_unwind(program, gen, false, depth + 1, effective_source, source,
+                 errors)) {
+        return false;
+    }
+    if (analysis_has(gen->analysis, ANALYSIS_SCOPE) &&
+        (!append_indent(source, depth + 1) ||
+         !buffer_append(source, "nyx_scope_cleanup(&nyx_scope_top, NULL);\n"
+                                "    nyx_scope_release(&nyx_cache_top, NULL);\n"))) {
+        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        return false;
+    }
+    append_indent(source, depth + 1);
+    buffer_appendf(source, "return nyx_scope_result_%zu;\n", node_index);
+    append_indent(source, depth);
+    buffer_append(source, "}\n");
+    return true;
+}
+
+/* A defer emits nothing where it is written; its block is emitted at each exit
+   of the block that holds it. It must be a statement of the block being
+   emitted, or the exit code would silently omit it. */
+static bool emit_stmt_defer(const TypedProgram *program, GeneratorContext *gen, size_t node_index, size_t depth, const char *effective_source, TextBuffer *source, ErrorState *errors)
+{
+    (void)gen;
+    const BlockFrame *frame;
+    const TypedNode *block;
+
+    (void)depth;
+    (void)effective_source;
+    (void)source;
+    if (gen->frame_count == 0) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
+        return false;
+    }
+    frame = &gen->frames[gen->frame_count - 1];
+    block = typed_program_node(program, frame->block);
+    if (block == NULL || frame->position >= block->children_count ||
+        block_child_at(program, block, frame->position) != node_index) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
     return true;
 }
 
-static bool emit_statement_body(const TypedProgram *program, size_t node_index,
+static bool emit_return_unwinding_statement(
+    const TypedProgram *program, GeneratorContext *gen, size_t node_index,
+    size_t depth, const char *effective_source, TextBuffer *source,
+    ErrorState *errors)
+{
+    return emit_return_unwinding(program, gen,
+                                 typed_program_node(program, node_index),
+                                 node_index, depth, effective_source, source,
+                                 errors);
+}
+
+static bool emit_scope_return_statement(
+    const TypedProgram *program, GeneratorContext *gen, size_t node_index,
+    size_t depth, const char *effective_source, TextBuffer *source,
+    ErrorState *errors)
+{
+    (void)gen;
+    (void)effective_source;
+    return emit_statement_body_return(program,
+                                      typed_program_node(program, node_index),
+                                      errors, source, depth, node_index);
+}
+
+static EmitStatementBodyHandler find_statement_handler(
+    const struct statement_handler_row *rows, size_t count, TypedNodeKind kind)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        if (rows[i].key == (int)kind) {
+            return rows[i].handler;
+        }
+    }
+    return NULL;
+}
+
+static bool emit_statement_body(const TypedProgram *program, GeneratorContext *gen, size_t node_index,
                                 size_t depth, const char *effective_source,
                                 TextBuffer *source, ErrorState *errors)
 {
     const TypedNode *node = typed_program_node(program, node_index);
+    EmitStatementBodyHandler handler;
 
     if (node == NULL) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
-    if (!buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
-                        effective_source)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-
-    for (size_t i = 0; i < NIPPY_COUNT_OF(emit_statement_body_handlers1); i++) {
-        if (emit_statement_body_handlers1[i].key == (int)node->kind) {
-            return emit_statement_body_handlers1[i].handler(program, node_index, depth, effective_source, source, errors);
+    buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
+                   effective_source);
+    handler = find_statement_handler(
+        emit_statement_body_handlers1, NYX_COUNT_OF(emit_statement_body_handlers1),
+        node->kind);
+    if (handler == NULL && node->kind == TYPED_RETURN) {
+        /* A return that leaves blocks with defers, or Stores to release, does
+           more than return. */
+        if (chain_has_defer(program, gen, false)) {
+            handler = emit_return_unwinding_statement;
+        } else if (analysis_has(gen->analysis, ANALYSIS_SCOPE)) {
+            handler = emit_scope_return_statement;
         }
     }
-
-    if (node->kind == TYPED_RETURN && program_uses_scope(program)) {
-        if (!emit_statement_body_return(program, node, errors, source, depth, node_index)) {
+    if (handler == NULL) {
+        handler = find_statement_handler(
+            emit_statement_body_handlers2,
+            NYX_COUNT_OF(emit_statement_body_handlers2), node->kind);
+    }
+    if (handler == NULL) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
         return false;
     }
-        return true;
-    }
-
-    for (size_t i = 0; i < NIPPY_COUNT_OF(emit_statement_body_handlers2); i++) {
-        if (emit_statement_body_handlers2[i].key == (int)node->kind) {
-            return emit_statement_body_handlers2[i].handler(program, node_index, depth, effective_source, source, errors);
-        }
-    }
-
-    error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_STATEMENT);
-    return false;
+    return handler(program, gen, node_index, depth, effective_source, source,
+                   errors);
 }
 
 
-static bool emit_function_signature_child_step(const TypedNode *node, size_t i, const char **parameter_name, ErrorState *errors, TextBuffer *source, char (*parameter_type)[64])
+/* The C name of a parameter: the receiver is always `nyx_self`. NULL when the
+   node is not a parameter or its name has no C spelling. */
+static const char *parameter_c_name(const TypedProgram *program,
+                                    const TypedNode *parameter, char *text,
+                                    size_t size)
 {
-    if (node->is_method && i == 0) {
-        (*parameter_name) = "nyx_self";
+    if (parameter->kind != TYPED_PARAMETER) {
+        return NULL;
     }
-    if (!valid_identifier((*parameter_name))) {
-        error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-        return false;
-    }
-    if (i > 0 && !buffer_append(source, ", ")) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    if (!((node->is_method && i == 0)
-              ? buffer_appendf(source, "%s *%s", (*parameter_type),
-                              (*parameter_name))
-              : buffer_appendf(source, "%s %s", (*parameter_type),
-                              (*parameter_name)))) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
+    return parameter->is_self
+               ? "nyx_self"
+               : user_c_name(program, parameter->name_index, text, size);
 }
 
-static bool emit_function_signature_child(const TypedProgram *program, const TypedNode *node, size_t i, ErrorState *errors, TextBuffer *source)
+static const TypedNode *function_parameter(const TypedProgram *program,
+                                           const TypedNode *function, size_t i)
 {
-    size_t child = *(const size_t *)list_get(&program->children,
-                                             node->children_start + i);
-    const TypedNode *parameter = typed_program_node(program, child);
-    char parameter_text[USER_NAME_CAPACITY];
-    const char *parameter_name;
-    char parameter_type[NIPPY_IDENTIFIER_MAX + 32];
+    return typed_program_node(
+        program, *(const size_t *)list_get(&program->children,
+                                           function->children_start + i));
+}
 
-    if (parameter == NULL || parameter->kind != TYPED_PARAMETER ||
-        !format_c_type(program, parameter->type_index, parameter_type,
-                       sizeof(parameter_type), errors)) {
-        if (!errors->reported) {
-            error_report(errors,
-                         MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
-        }
-        return false;
-    }
-    parameter_name = user_c_name(program, parameter->name_index,
-                                 parameter_text,
-                                 sizeof(parameter_text));
-    if (parameter->is_self != (node->is_method && i == 0)) {
+/* The text of one parameter in a signature: the receiver of a method is a
+   pointer, and every parameter after the first follows a comma. */
+static void append_parameter(TextBuffer *source, size_t i, bool receiver,
+                             const char *type, const char *name)
+{
+    buffer_appendf(source, "%s%s%s%s", i > 0 ? ", " : "", type,
+                   receiver ? " *" : " ", name);
+}
+
+/* One parameter of a signature. */
+static bool emit_parameter_declaration(const TypedProgram *program,
+                                       const TypedNode *function, size_t i,
+                                       TextBuffer *source, ErrorState *errors)
+{
+    const TypedNode *parameter = function_parameter(program, function, i);
+    bool receiver = function->is_method && i == 0;
+    char type[NYX_IDENTIFIER_MAX + 32];
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = parameter_c_name(program, parameter, name_text,
+                                        sizeof(name_text));
+
+    if (parameter->kind != TYPED_PARAMETER || parameter->is_self != receiver) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
         return false;
     }
-    if (!emit_function_signature_child_step(node, i, &parameter_name, errors, source, &parameter_type)) {
+    if (!format_c_type(program, parameter->type_index, type, sizeof(type),
+                       errors)) {
         return false;
     }
+    if (name == NULL) {
+        error_report(errors, MESSAGE_GENERATOR_INVALID_IDENTIFIER);
+        return false;
+    }
+    append_parameter(source, i, receiver, type, name);
     return true;
 }
 
-static bool emit_function_signature_i(const char *name, const TypedType *type, ErrorState *errors, const TypedFunctionSignature **signature, const TypedProgram *program, char (*return_name)[64], TextBuffer *source)
-{
-    if (!valid_identifier(name) || type == NULL ||
-        type->kind != NIPPY_TYPE_FUNCTION) {
-        error_report(errors, valid_identifier(name)
-                                 ? MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION
-                                 : MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-        return false;
-    }
-    (*signature) = typed_program_signature(program, type->signature_index);
-    if ((*signature) == NULL ||
-        !format_c_type(program, (*signature)->return_type, (*return_name),
-                       sizeof((*return_name)), errors)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
-        }
-        return false;
-    }
-    if (!buffer_appendf(source, "%s %s(", (*return_name), name)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        return false;
-    }
-    return true;
-}
-
+/* The return type and parameters of a function, named `name`. */
 static bool emit_function_signature(const TypedProgram *program,
                                     const TypedNode *node, const char *name,
                                     TextBuffer *source, ErrorState *errors)
 {
     const TypedType *type = typed_program_type(program, node->type_index);
-    const TypedFunctionSignature *signature;
-    char return_name[NIPPY_IDENTIFIER_MAX + 32];
-    size_t i = {0};
-    if (!emit_function_signature_i(name, type, errors, &signature, program, &return_name, source)) {
+    const TypedFunctionSignature *signature =
+        typed_program_signature(program, type->signature_index);
+    char return_name[NYX_IDENTIFIER_MAX + 32];
+    size_t i;
+
+    if (!format_c_type(program, signature->return_type, return_name,
+                       sizeof(return_name), errors)) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
         return false;
     }
-    if (node->children_count == 0) {
-        if (!buffer_append(source, "void")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+    buffer_appendf(source, "%s %s(%s", return_name, name,
+                   node->children_count == 0 ? "void" : "");
+    for (i = 0; i < node->children_count; i++) {
+        if (!emit_parameter_declaration(program, node, i, source, errors)) {
             return false;
         }
-    } else {
-        for (i = 0; i < node->children_count; i++) {
-            if (!emit_function_signature_child(program, node, i, errors, source)) {
-        return false;
     }
-        }
-    }
-    return buffer_append(source, ")");
+    buffer_append(source, ")");
+    return true;
 }
 
 
+/* The arguments the guarded entry point passes on to the inner function. */
 static bool emit_function_call_args(const TypedProgram *program,
                                     const TypedNode *node, TextBuffer *source,
                                     ErrorState *errors)
@@ -1440,187 +1101,175 @@ static bool emit_function_call_args(const TypedProgram *program,
     size_t i;
 
     for (i = 0; i < node->children_count; i++) {
-        size_t child = *(const size_t *)list_get(&program->children,
-                                                 node->children_start + i);
-        const TypedNode *parameter = typed_program_node(program, child);
-        char parameter_text[USER_NAME_CAPACITY];
-        const char *parameter_name;
+        char text[USER_NAME_CAPACITY];
+        const char *name = parameter_c_name(
+            program, function_parameter(program, node, i), text, sizeof(text));
 
-        if (parameter == NULL || parameter->kind != TYPED_PARAMETER) {
+        if (name == NULL) {
             error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
             return false;
         }
-        parameter_name = parameter->is_self
-                             ? "nyx_self"
-                             : user_c_name(program, parameter->name_index,
-                                           parameter_text,
-                                           sizeof(parameter_text));
-        if (parameter_name == NULL) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
-            return false;
-        }
-        if (i > 0 && !buffer_append(source, ", ")) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
-        if (!buffer_append(source, parameter_name)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            return false;
-        }
+        buffer_appendf(source, i > 0 ? ", %s" : "%s", name);
     }
     return true;
 }
 
 
+/* A parameter the body never reads is not a warning. */
 static bool emit_function_unused_params(const TypedProgram *program,
                                         const TypedNode *node,
-                                        TextBuffer *source,
-                                        ErrorState *errors)
+                                        TextBuffer *source)
 {
     size_t i;
 
     for (i = 0; i < node->children_count; i++) {
-        size_t child = *(const size_t *)list_get(&program->children,
-                                                 node->children_start + i);
-        const TypedNode *parameter = typed_program_node(program, child);
-        char parameter_name_text[USER_NAME_CAPACITY];
-        const char *parameter_name = parameter == NULL
-                                         ? NULL
-                                         : parameter->is_self
-                                               ? "nyx_self"
-                                               : user_c_name(
-                                                     program,
-                                                     parameter->name_index,
-                                                     parameter_name_text,
-                                                     sizeof(parameter_name_text));
+        char text[USER_NAME_CAPACITY];
+        const char *name = parameter_c_name(
+            program, function_parameter(program, node, i), text, sizeof(text));
 
-        if (parameter_name == NULL ||
-            !buffer_appendf(source, "    (void)%s;\n", parameter_name)) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
+        if (name == NULL) {
             return false;
         }
+        buffer_appendf(source, "    (void)%s;\n", name);
     }
     return true;
 }
 
 
-static bool emit_function_typed_calls_name(bool *recursive, const TypedProgram *program, const TypedNode *node, const TypedType **result_type, const TypedFunctionSignature *signature, TextBuffer *source, const char *effective_source, ErrorState *errors, const char *name, bool *outcome)
+/* True when the function's body calls it by its own name, which is direct
+   recursion and is what earns it a depth guard. */
+static bool function_calls_itself(const TypedProgram *program,
+                                  GeneratorContext *gen, size_t root_position,
+                                  const TypedNode *function)
 {
-    (*recursive) = typed_calls_name(program, node->left_child,
-                                 node->name_index);
-    (*result_type) = signature == NULL ? NULL :
-                  typed_program_type(program, signature->return_type);
+    size_t count, i;
+    const size_t *calls = analysis_nodes_in(gen->analysis, TYPED_FUNCTION_CALL,
+                                            root_position, &count);
 
-    if (!buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
-                        effective_source)) {
-        error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        do { *outcome = (false); return true; } while (0);
-    }
-    if (!(*recursive)) {
-        if (!emit_function_signature(program, node, name, source, errors) ||
-            !buffer_append(source, "\n{\n") ||
-            !emit_match_temporaries(program, (size_t)node->integer_value_u,
-                                    source, errors) ||
-            !emit_scope_frame_declaration(program, node->left_child, source, errors) ||
-            !emit_function_unused_params(program, node, source, errors) ||
-            !emit_block(program, node->left_child, 1, effective_source,
-                        source, errors) ||
-            ((*result_type) != NULL && (*result_type)->kind == NIPPY_TYPE_NIL &&
-             !buffer_append(source, "    return (nyx_nil)0;\n")) ||
-            !buffer_append(source, "}\n\n")) {
-            if (!errors->reported) {
-                error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-            }
-            do { *outcome = (false); return true; } while (0);
+    for (i = 0; i < count; i++) {
+        const TypedNode *call = typed_program_node(program, calls[i]);
+
+        if (call != NULL && call->name_index == function->name_index) {
+            return true;
         }
-        do { *outcome = (true); return true; } while (0);
     }
     return false;
 }
 
-static bool emit_function_valid_identifier(const char *name, const TypedType *type, ErrorState *errors)
+/* The function's definition under `name`: its locals, then its block. */
+static bool emit_function_definition(const TypedProgram *program,
+                                     GeneratorContext *gen,
+                                     const TypedNode *node, size_t root_position,
+                                     const char *name,
+                                     const char *effective_source,
+                                     TextBuffer *source, ErrorState *errors)
 {
-    if (!valid_identifier(name) || type == NULL ||
-        type->kind != NIPPY_TYPE_FUNCTION) {
-        error_report(errors, valid_identifier(name)
-                                 ? MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION
-                                 : MESSAGE_GENERATOR_INVALID_IDENTIFIER);
-        return false;
+    const TypedType *type = typed_program_type(program, node->type_index);
+    NyxType result = typed_program_type(
+                         program,
+                         typed_program_signature(program, type->signature_index)
+                             ->return_type)
+                         ->kind;
+    bool ok = emit_function_signature(program, node, name, source, errors);
+
+    buffer_append(source, "\n{\n");
+    ok = ok &&
+         emit_match_temporaries(program, (size_t)node->integer_value_u, source,
+                                errors) &&
+         emit_scope_frame_declaration(program, gen, root_position, source) &&
+         emit_function_unused_params(program, node, source) &&
+         emit_block(program, gen, node->left_child, 1, effective_source, source,
+                    errors);
+    if (result == NYX_TYPE_NIL) {
+        buffer_append(source, "    return (nyx_nil)0;\n");
     }
-    return true;
+    buffer_append(source, "}\n\n");
+    return ok;
 }
 
-bool emit_function(const TypedProgram *program, const TypedNode *node,
-                          const char *effective_source, TextBuffer *source,
-                          ErrorState *errors)
+/* A directly recursive function is entered through a wrapper that counts the
+   depth and stops a runaway recursion with a diagnostic. */
+static bool emit_guarded_function(const TypedProgram *program,
+                                  GeneratorContext *gen, const TypedNode *node,
+                                  size_t root_position, const char *name,
+                                  const char *effective_source,
+                                  TextBuffer *source, ErrorState *errors)
 {
-    char name_text[USER_NAME_CAPACITY];
-    const char *name = user_c_name(program, node->name_index,
-                                  name_text, sizeof(name_text));
     const TypedType *type = typed_program_type(program, node->type_index);
-    const TypedFunctionSignature *signature;
-    const TypedType *result_type;
-    bool recursive;
-    char inner_name[NIPPY_IDENTIFIER_MAX + 32];
-    char depth_name[NIPPY_IDENTIFIER_MAX + 32];
-    char return_name[NIPPY_IDENTIFIER_MAX + 32];
+    char inner_name[NYX_IDENTIFIER_MAX + 32];
+    char depth_name[NYX_IDENTIFIER_MAX + 32];
+    char return_name[NYX_IDENTIFIER_MAX + 32];
+    bool ok;
 
-    if (!emit_function_valid_identifier(name, type, errors)) {
-        return false;
-    }
-    signature = typed_program_signature(program, type->signature_index);
-    {
-        bool outcome;
-
-        if (emit_function_typed_calls_name(&recursive, program, node, &result_type, signature, source, effective_source, errors, name, &outcome)) {
-            return outcome;
-        }
-    }
-    if (signature == NULL ||
-        !format_c_type(program, signature->return_type, return_name,
-                       sizeof(return_name), errors)) {
+    if (!format_c_type(program,
+                       typed_program_signature(program, type->signature_index)
+                           ->return_type,
+                       return_name, sizeof(return_name), errors)) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
         return false;
     }
     snprintf(inner_name, sizeof(inner_name), "nyx_inner_%s", name);
     snprintf(depth_name, sizeof(depth_name), "nyx_depth_%s", name);
-    if (!buffer_appendf(source, "static size_t %s = 0;\n\n",
-                        depth_name) ||
-        !emit_function_signature(program, node, inner_name, source, errors) ||
-        !buffer_append(source, ";\n\n") ||
-        !emit_function_signature(program, node, name, source, errors) ||
-        !buffer_append(source, "\n{\n") ||
-        !buffer_appendf(source,
-                        "    if (++%s > NIPPY_RECURSION_LIMIT) {\n"
-                        "        ", depth_name) ||
-        !emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_RECURSION) ||
-        !buffer_appendf(source,
-                        "\n"
-                        "    }\n"
-                        "    %s nyx_recursion_result = %s(",
-                        return_name, inner_name) ||
-        !emit_function_call_args(program, node, source, errors) ||
-        !buffer_appendf(source,
-                        ");\n"
-                        "    %s--;\n"
-                        "    return nyx_recursion_result;\n"
-                        "}\n\n",
-                        depth_name) ||
-        !emit_function_signature(program, node, inner_name, source, errors) ||
-        !buffer_append(source, "\n{\n") ||
-        !emit_match_temporaries(program, (size_t)node->integer_value_u,
-                                source, errors) ||
-        !emit_scope_frame_declaration(program, node->left_child, source, errors) ||
-        !emit_function_unused_params(program, node, source, errors) ||
-        !emit_block(program, node->left_child, 1, effective_source, source,
-                    errors) ||
-        (result_type != NULL && result_type->kind == NIPPY_TYPE_NIL &&
-         !buffer_append(source, "    return (nyx_nil)0;\n")) ||
-        !buffer_append(source, "}\n\n")) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_OUT_OF_MEMORY);
-        }
+    buffer_appendf(source, "static %ssize_t %s = 0;\n\n",
+                   analysis_has(gen->analysis, ANALYSIS_PARALLEL)
+                       ? "_Thread_local "
+                       : "",
+                   depth_name);
+    ok = emit_function_signature(program, node, inner_name, source, errors);
+    buffer_append(source, ";\n\n");
+    ok = ok && emit_function_signature(program, node, name, source, errors);
+    buffer_appendf(source,
+                   "\n{\n    if (++%s > NYX_RECURSION_LIMIT) {\n        ",
+                   depth_name);
+    ok = ok && emit_inline_failure(source, node->pos, MESSAGE_RUNTIME_RECURSION);
+    buffer_appendf(source,
+                   "\n    }\n    %s nyx_recursion_result = %s(", return_name,
+                   inner_name);
+    ok = ok && emit_function_call_args(program, node, source, errors);
+    buffer_appendf(source,
+                   ");\n    %s--;\n    return nyx_recursion_result;\n}\n\n",
+                   depth_name);
+    return ok && emit_function_definition(program, gen, node, root_position,
+                                          inner_name, effective_source, source,
+                                          errors);
+}
+
+bool emit_function(const TypedProgram *program, GeneratorContext *gen, const TypedNode *node,
+                          size_t root_position, const char *effective_source, TextBuffer *source,
+                          ErrorState *errors)
+{
+    char name_text[USER_NAME_CAPACITY];
+    const char *name = checked_user_name(program, node->name_index, name_text,
+                                         sizeof(name_text), errors);
+    const TypedType *type = typed_program_type(program, node->type_index);
+
+    if (name == NULL) {
         return false;
     }
-    return true;
+    if (type == NULL || type->kind != NYX_TYPE_FUNCTION) {
+        error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_FUNCTION);
+        return false;
+    }
+    if (!emit_parallel_trampolines(program, gen, root_position, source, errors)) {
+        return false;
+    }
+    buffer_appendf(source, "#line %zu \"%s\"\n", node->pos.line,
+                   effective_source);
+    if (!function_calls_itself(program, gen, root_position, node)) {
+        return emit_function_definition(program, gen, node, root_position, name,
+                                        effective_source, source, errors);
+    }
+    return emit_guarded_function(program, gen, node, root_position, name,
+                                 effective_source, source, errors);
+}
+
+void generator_context_init(GeneratorContext *gen, const Analysis *analysis,
+                            const char *source_name, const char *header_name)
+{
+    gen->analysis = analysis;
+    gen->source_name = source_name;
+    gen->header_name = header_name;
+    gen->program_value = NULL;
+    gen->frame_count = 0;
+    gen->scope_loop_depth = 0;
 }

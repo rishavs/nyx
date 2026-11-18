@@ -1,4 +1,4 @@
-# Nippy architecture
+# Nyx architecture
 
 How the compiler is put together, what each stage owns, and why. This file
 describes the code as it exists; language rules live in `SEMANTICS.md`, the
@@ -7,9 +7,9 @@ test instructions in `BUILD.md`.
 
 ## Shape
 
-Nippy is a translator, not an interpreter. It reads a `.nip` source string and
+Nyx is a translator, not an interpreter. It reads a `.nip` source string and
 produces two C11 strings (a `.c` and a `.h`). The driver stages them beside the
-requested output, invokes `cc -std=c11`, then publishes the successful build.
+requested output, invokes `cc -std=c11 -pthread`, then publishes the successful build.
 There is no bytecode, no VM, and no runtime library.
 
 The compiler is written in C11 and links against libc only.
@@ -35,8 +35,8 @@ forward-only rule enforced structurally rather than by convention.
 | Lexer | source string | `LexerResult`: token list, or an error list | `compiler/lexer/` |
 | Parser | token list and string-byte pool | `Ast`: flattened syntax tree | `compiler/parser/` |
 | Checker | syntax tree | `TypedProgram`: typed, link-resolved program | `compiler/checker/` |
-| Analyser | typed program | nothing (validates only) | `compiler/analyser/` |
-| Generator | typed program | owned C11 `.c` and `.h` text | `compiler/generator/` |
+| Analyser | typed program | `Analysis`: a verdict, whole-program facts, and an index of nodes by kind | `compiler/analyser/` |
+| Generator | typed program and `Analysis` | owned C11 `.c` and `.h` text | `compiler/generator/` |
 
 ### Forward-only rules
 
@@ -119,6 +119,54 @@ The checker registers type declarations before resolving their fields. It
 creates a struct type shell before checking the fields so a handle can refer
 back to that shell; a recursive path without a handle is rejected. Completed
 handle payload graphs are checked for supported contents using a visited set.
+A `defer` is emitted where control leaves its block, not where it is written.
+The generator keeps a frame for every block it is emitting, holding the index of
+the statement being emitted, so an exit knows which defers precede it; a defer
+is a direct statement of its block, so that is known statically and needs no
+runtime state. Falling off the end runs the block's defers; `return`, `break`,
+and `continue` unwind the frames they leave, innermost first, running each
+frame's defers and then releasing its `scope` Store, so a defer inside a scope
+runs before its Store is released. A return value is saved before the unwind.
+Each deferred block is emitted once per exit, in its own C block.
+A `parallel` block with a pool lowers to `TYPED_PARALLEL` and is a scope to the
+escape analysis: the pool is one level deeper, an arm's result carries the pool's
+region, and `with var` results are read back through `TYPED_PARALLEL_RESULT`. The
+analyser's audit follows every named call from each arm's function and rejects a
+global Store or a call through a function value (`analyser.c`). The generator
+(`generator_parallel.c`) emits, ahead of the function that holds the block, a
+record and a `pthread` entry point per arm; the block evaluates arguments into
+the records, starts every arm but the first, runs the first, and joins. A pool is
+an ordinary `nyx_store` flagged `pool`, whose allocation functions advance an
+atomic cursor over a fixed buffer. In a program with `parallel` the generator
+also makes the scope generation counter atomic, the recursion depth counters
+`_Thread_local`, wraps each `print` in `flockfile`, and routes `exit` through a
+once-only guard so two trapping threads cannot both call it.
+Channels (`generator_channel.c`) are static: a ring buffer per channel and one
+table, all guarded by a single process-wide mutex and one condition variable.
+One lock lets a `when` wait on several channels and lets the deadlock accounting
+see every thread: a counter of live threads, of threads blocked on a channel
+since the last state change (a state change clears it and bumps an epoch, so a
+thread that was signalled but has not run yet is never counted), and of threads
+waiting for a block's arms. A parallel block that sees channels gives each arm a
+record pointing at a per-block counter, registers a thread before starting it,
+and reports when it ends; the inline first arm runs on a thread that is already
+counted and does not report. A timer is a channel with an interval and no
+buffer, ready when its next tick is due, and its waits use the same condition
+variable on a monotonic clock. `when` evaluates its send values, takes the
+lock, tries the arms in order with the lock held, releases it, and then runs the
+chosen block from an `if` chain, never a `switch`, so `break` reaches the
+enclosing loop.
+Arms run on reused workers (`emit_worker_runtime`): a block hands each arm to an
+idle worker, or starts a new worker if none is idle (so an arm that blocks never
+holds up another), and joins by waiting for its jobs' flags. Workers are
+detached and wait on one condition variable between blocks.
+A pool channel (`TYPED_CHANNEL_CREATE`, type kind `NYX_TYPE_CHANNEL`) is an
+ordinary `nyx_chan` carved from the pool, named by a `nyx_chanref` of the pool,
+an offset, and the pool's generation, resolved and checked on every operation.
+The typed send and receive wrappers are keyed by element type, not by channel,
+so a global channel and a pool channel of one element type share them. Pool
+Stores never move, which is why a pool is the only place a channel may live: a
+growable Store could reallocate under a thread waiting on a channel in it.
 A `scope` statement lowers to `TYPED_SCOPE`: the capacity is evaluated once, a
 Store header is entered on a per-activation cleanup chain, and the body runs.
 The headers are locals of the function (or of `main`), declared at its top, and
@@ -245,6 +293,30 @@ Reads the syntax tree through a `const` pointer and writes a separate
 - types the reserved `base64` builtin: it decodes its string-literal argument
   with a strict RFC 4648 decoder (`checker_base64.c`) and emits a static `Text`
   literal flagged `fixed_type`, so context never retypes it as a `String<N>`;
+- checks a `defer` body as an ordinary block with no `typeof` narrowings from
+  the code around it, because the block runs later, and rejects `return`,
+  `break`, and `continue` that would leave it; a `defer` at program level is
+  rejected. It lowers to `TYPED_DEFER` holding the block;
+- types a `parallel` block (`checker_parallel.c`): each arm is a call whose
+  arguments must be plain values (`type_is_sendable`) or the block's pool, with
+  its result assigned to an existing variable (`TYPED_PARALLEL_ARM`) or declared
+  in the then section through a synthetic local whose initialiser is a
+  `TYPED_PARALLEL_RESULT`; a repeated arm records its lane name and two bounds,
+  and one that assigns a result records the Array's capacity in
+  `integer_value_u`; declarations before the first arm are checked into a block
+  held in the block's `setup_block`; `cores()` lowers to `TYPED_CORES`;
+- registers a global `Atomic` (`global x: Atomic<T> = Atomic(c)`) in its own
+  table beside the Stores and types `load`, `store`, and `add` on it as
+  `TYPED_ATOMIC_LOAD`, `_STORE`, and `_ADD`;
+- registers a global `Channel` (or `Every` timer) in its own table, with the
+  `element | Nil` type a receive returns, and types `send`, `recv`, `try_send`,
+  `try_recv`, `close`, and `closed` as one `TYPED_CHANNEL_OP` whose
+  `integer_value` is the operation; a `when` lowers to `TYPED_WHEN` with a
+  `TYPED_WHEN_ARM` for each arm, whose binding is declared by a synthetic local
+  initialised from a `TYPED_WHEN_RESULT`, as `with var` is for `parallel`;
+- types the reserved `now` builtin as an `Int64` with no operands
+  (`TYPED_CLOCK_NOW`) and `sleep` as a `Nil` call with one `Int64` operand
+  (`TYPED_SLEEP`), rejecting a negative literal duration;
 - types the reserved `print` builtin as a statement with any number of
   arguments, contextualising string literals as `Text` and checking that each
   argument is printable;
@@ -267,7 +339,8 @@ Reads the syntax tree through a `const` pointer and writes a separate
 - treats `while true` with no `break` as never falling through;
 - rejects a function whose every return expression calls itself and enforces a
   recursive-stack depth guard in generated code;
-- caps any by-value type at 64 KiB so large payloads move into a Store;
+- caps any by-value type at `max_value_bytes` (64 KiB by default, 16 MiB at
+  most) so large payloads move into a Store;
 - checks `for` iterables and binds the loop value and optional `Int32` index, or
   the key and optional value for Records and Tables;
 - checks every `return` expression against the return type, and rejects
@@ -356,22 +429,138 @@ reserved `nyx_` prefix is rejected there. User identifiers are prefixed with
 Associated functions receive generated internal names after source-level owner
 and member resolution.
 
+#### How the checker is organised
+
+The checker is a set of small modules that each own one construct, and every
+place where behaviour varies by kind is a table with one engine (see "Tables
+instead of branches"). The modules:
+
+| File | Owns |
+|---|---|
+| `checker.c` | the driver (`checker_check`: open the lists, check each root through the `root_checks` table, close), the statement and expression dispatch tables, and the shared helpers below |
+| `checker_stmt.c` | blocks, assignments, `for`, local declarations, function declarations (`FunctionHead`), generic bodies' name scan |
+| `checker_calls.c`, `checker_generic.c` | calls (`call_rules`), arguments and call emission; generic calls (`GenericCall` phases) and instantiation |
+| `checker_methods*.c` | method calls on a value (`method_rules`), sharing `ReceiverCall`/`receiver_prepare` for the built-in families (collections, strings, errors, stores) |
+| `checker_inject.c` | coercing a value to a context's type (`inject_rules`: record and list literals, numeric and string literals, unions) |
+| `checker_match.c` | `match` as phases over one `Match` (head, arms, completeness, lowering) |
+| `checker_flow.c` | whether a statement returns, terminates or breaks (`FlowQuery` tables) and `typeof` narrowing |
+| `checker_resolve.c`, `checker_types.c` | resolving written types (`type_resolvers`, `application_rules`) and interning structural types (`intern_type`) |
+| `checker_decl.c`, `checker_channel.c`, `checker_parallel.c`, `checker_access.c`, `checker_constructors.c`, `checker_expr.c`, `checker_infer.c`, `checker_numeric.c`, `checker_base64.c`, `checker_print.c`, `checker_names.c` | globals, channels, parallel blocks, field and element access, constructors, expressions, type inference, numeric constants, base64, print, and name lookups |
+
+A construct is checked in phases that each return `bool`, joined with `&&`, so a
+function reads as the steps it takes and each step is small. A rule that may or
+may not apply returns one of "next", "rejected" or "accepted" and a table of
+rules is tried in order (`call_rules`, `identifier_rules`, `method_rules`,
+`inject_rules`).
+
+An allocation failure is recorded once, by `checker_ok`, and the check carries
+on: the entry points `check_statement` and `check_expression` refuse to start
+after a fatal error and report failure if one happened inside, and every typed
+node is built through `emit_node`, which also refuses. Allocations whose result
+the caller reads next (`checker_push_node`, `checker_add_type`,
+`checker_add_signature`) refuse to run after a failure, because what they would
+read is incomplete. This keeps the many "append and report out of memory"
+branches out of the checker's functions without ever reading a half-built
+structure; the allocation-failure sweeps in `tests/` fail every allocation in
+turn to hold that line.
+
 ### Analyser
 
-A read-only pass over the typed program that validates its internal links:
-root indices, direct child indices, variable-arity child indices, symbol
-indices, type indices, function-signature links, union and struct type-child
-runs, struct declaration links, handle element types, store ids, string-literal
-byte ranges and capacity, the shape of Error construct/field nodes, and the
-auxiliary type on an `.is` test. It
-produces no artifact, because memory and ownership analysis does not exist yet.
-When the bidirectional-pointer rules land, this stage either refines the typed
-program or is split out into a distinct analysis artifact — it must not become a
-second mutation pass over the syntax tree, which it never receives.
+A read-only pass over the typed program. It receives the `TypedProgram` through
+a `const` pointer and never sees the syntax tree. It runs three checks in order
+(`analyser_analyse`), stopping at the first that fails, and then reports facts:
+
+1. **Link validation** (`analyser_validate`, in `analyser_validate.c`): root
+   indices, direct child indices, variable-arity child indices, symbol indices,
+   type indices, node-kind and operator ranges, function-signature links, union
+   and struct type-child runs, struct declaration links and fields, handle
+   element types, string-literal byte ranges and capacity, the shape of Error
+   construct/field nodes, numeric literals and conversions, sum injections, the
+   operands of a binary operation, the shape of each `scope`, `defer`, atomic,
+   clock, channel, `when` and `parallel` node, and then Store ids and Store
+   capability ownership (`analyser_stores.c`: each Store root's type, capacity,
+   and unique id, and that every use of a Store names one that is visible).
+   Each invariant is a small rule that returns the diagnostic for what is wrong
+   with a node or a type, or nothing; two tables (`node_rules`, `type_rules`)
+   say which rules apply to which kind, and one engine runs them. A later stage
+   may therefore rely on what the rules prove: the generator and the facts pass
+   read links without checking them again, for a program that was validated.
+   A program built by hand and handed straight to the generator is not
+   validated, so the generator still checks the few links its own tests break.
+2. **Parallel audit** (`analyser_audit_parallel`, `analyser_parallel.c`):
+   follows every named call from each arm's function, once each, and rejects a
+   global Store or a call through a function value.
+3. **Escape analysis** (`analyser_regions.c`, described under the generator's
+   scope lowering): only when the program uses a scope, rejects any value from
+   a scoped Store that could outlive its scope.
+
+Its output is the verdict and, on success, an `Analysis` (`include/analysis.h`):
+a bitset of the runtime features the program uses (lists, slices, strings,
+channels, parallel and pool, atomics, the clock, recursion, scopes, checked
+arithmetic, numeric conversions, and so on) and the number of Store
+declarations. `analyser_facts.c` builds it from two tables, one keyed
+by type kind and one by node kind, plus the few rules that depend on more than
+the kind (`extra_features`) (a pool, an operator, a conversion between different types, a
+self-calling function). Adding a feature is a bit in `analysis.h` and a row in
+those tables. The same pass builds two indexes. The node index groups node
+indices by kind, and within a kind by the root that owns them (a function owns
+its body, a statement at program level owns itself; a nested function is a root
+of its own), with two stable counting sorts, so each group stays in node order.
+`analysis_nodes` gives a kind's nodes and `analysis_nodes_in` the ones in one
+root. The type index groups type indices by kind (`analysis_types`, and
+`analysis_nil_type`). The generator asks for these where it used to walk the
+program: list pops, optional reads, string literals, print arguments, equality
+comparisons, and channels by kind; the scope frames, parallel trampolines, and
+self-calls of a function by kind and root; Record, Table, fixed List, String,
+and Nil types by kind. Direct recursion is read the same way, as a call to its
+own name among the calls a function owns. The indexes are one allocation, so an
+`Analysis` is released with `analysis_free`.
+
+The analyser also works out, in `analyser_types.c`, the lists the generator
+emits type-related C from, so the generator walks a list instead of the type
+table or the program: the order to define types in (a depth-first walk that puts
+each type after the types it holds by value, and rejects a type that holds
+itself), the types print needs helpers for and the types a comparison needs
+helpers for (each with the types below it), the pairs of different string types
+that are compared, and the facts that a float is printed and a handle compared.
+Output goes into `TextBuffer`s that fail once and stay failed: the first append
+that cannot allocate sets `failed`, and every later append does nothing. An
+emitter therefore writes its text as a plain run of appends without checking each
+one, and a failure is looked for where a run ends (after each piece in
+`emit_pieces`, and once more at the end of `generator_generate`), where it is
+reported as running out of memory. A buffer built on the side is added to its
+parent with `buffer_append_buffer`, which fails the parent if the part failed
+rather than copying half a part. What an emitter still checks is real: a node or
+type it cannot emit, or another emitter's failure.
+
+The function typedefs are one per signature, written straight from the signature
+table in table order: that table is being written out, not searched, so there is
+nothing for the analyser to precompute. They are a row of `header_pieces` like
+everything else in the header. `analysis_collect` builds it without
+validating, for callers that build a program by hand.
+
+The facts the escape analysis computes (region ranges, call summaries, shapes)
+live in a per-analysis arena and are discarded when it returns. Heavy ownership
+analysis (per-object lifetimes) does not exist; the escape analysis is local and
+conservative. The `Analysis` is a separate artifact: the typed program stays
+read-only after the checker, and carries no whole-program flags of its own.
 
 ### Generator
 
-Consumes the typed program only. It emits:
+Consumes the typed program and the analyser's `Analysis`. It never rescans the
+program to decide which runtime pieces to emit; it reads the facts. The `Analysis`
+reaches the emit functions inside a `GeneratorContext`, an explicit parameter
+next to the `TypedProgram`. The context also holds the state of the emission in
+progress (the stack of blocks being emitted, for `defer`, `break`, and
+`return`); it lives on `generator_generate`'s stack, so nothing about the
+generator is hidden state and a failed call leaves nothing behind. It uses them for
+more than choosing what to emit: a Store's generation changes only when a `scope`
+or a parallel pool is released, so in a program with neither
+(`analysis_generations_vary`) the generator leaves out every generation
+comparison (`append_generation_check` in `generator_support.c`). Programs that
+have a scope keep all of them, as a second line of defence behind the escape
+analysis; the facts the escape analysis itself computes are not used to remove
+any check. It emits:
 
 - **the header**, holding the generated include guard, `<stdbool.h>`,
   `<stdint.h>`, `<stddef.h>` when a store or handle is present, the
@@ -404,7 +593,7 @@ formatted, and its text is not a stable interface. It *is* required to compile
 cleanly under `-std=c11 -Wall -Wextra -Wpedantic`, which is why unused
 initialised variables and unused parameters get a `(void)name;` line. Every
 declaration and statement emitted is preceded by `#line <line> "<source>"` so a
-C-compiler diagnostic points back at the Nippy source. Function types are
+C-compiler diagnostic points back at the Nyx source. Function types are
 emitted as typedefs so every generated declaration is a simple `type name` pair,
 including function-typed parameters and variables. `Bool` maps to `bool`;
 `Nil` maps to a one-byte `nyx_nil`; a union is a `uint32_t tag` plus a union
@@ -413,6 +602,10 @@ of payload members named by alternative position. `if`, `while`, `for`, `break`,
 sequence of temporaries and generated per-type pretty-printer helpers; helpers
 recurse through collections, structs, and unions using
 `CompilerConfig.max_print_depth` as the runtime limit.
+`TYPED_CLOCK_NOW` and `TYPED_SLEEP` call small `static inline` helpers
+(`nyx_clock_now`, `nyx_sleep`) built on POSIX `clock_gettime` and `nanosleep`;
+they and a leading `#define _POSIX_C_SOURCE 200809L` are emitted only when the
+program uses either node.
 `Error::throw` emits a compound literal with the source filename and position. `elseif` chains
 are emitted as nested `else { if ... }` blocks. A `TYPED_SUM_INJECT` becomes a
 compound literal, `TYPED_IS` (from `typeof x is T`) becomes a tag comparison (or a literal when the
@@ -460,8 +653,8 @@ rehash on growth. Optional `get` helpers return the `T | Nil` union instead of
 trapping on a missing key.
 
 A directly self-recursive function is emitted as a depth-guarded wrapper plus an
-inner implementation; exceeding `NIPPY_RECURSION_LIMIT` traps with
-`nippy: recursion depth exceeded` instead of overflowing the C stack.
+inner implementation; exceeding `NYX_RECURSION_LIMIT` traps with
+`nyx: recursion depth exceeded` instead of overflowing the C stack.
 An instance method signature lowers its implicit receiver to a pointer
 parameter; the member-call node passes the receiver's address, and uses of
 `self` lower to the pointed-to struct value. Returning `self` therefore
@@ -471,10 +664,67 @@ Because the number of declarations and fields is not fixed, the generator
 composes text in a growable `TextBuffer` and validates every interpolated
 identifier and filename before use.
 
+An emitter is shaped the same way throughout. It writes its text with
+`buffer_append`, `buffer_appendf` and `buffer_line` (indent, then the formatted
+text) and does not check them, because a `TextBuffer` that fails stays failed.
+What it does check is a real failure: an expression or type it cannot emit,
+which it reports and returns false for. A kind that can be written in several
+shapes (a binary operation, a numeric conversion) is an ordered list of rules,
+each of which writes the node and says so, or passes; the order is the
+precedence. A `for` loop is one `Loop` record and a function per shape of
+iterable (`generator_loops.c`). A function that nothing but the table needs is
+`static`.
+
+## Compiler goals, and how each is held
+
+`AGENTS.md` lists the compiler's goals. `Fail scoped` is the one it does not
+define; the reading used here is below, and `AGENTS.md` should be corrected if
+it is wrong. Each goal is a rule with a way to check it, so it cannot erode
+quietly.
+
+**Fail scoped.** A failure is confined to the scope that owns it: the call that
+failed releases what it acquired, reports one diagnostic, and leaves nothing
+behind that could change the next call. Held by:
+
+- *No state outside the call.* The compiler keeps no file-scope mutable state
+  and no `static` locals. What a stage needs while it works lives in its own
+  call: the parser's type-nesting depth is a parameter; the analyser's shape
+  arena is a field of its walker; the generator's block-frame stack, loop depth,
+  and analysis are one `GeneratorContext` on `generator_generate`'s stack. The
+  only exceptions are the allocation-failure hook (`alloc.c`) and the driver's
+  rename hook (`main.c`), which exist to inject failures. An architecture test
+  fails on any other file-scope mutable variable.
+- *Failure is whole.* A failed `CompilerResult` has a message and no source; a
+  successful one has both. A stage that fails has reported a diagnostic.
+- *Checked, not assumed.* `tests/compiler/failure.c` cuts the program off at
+  every byte, deletes every byte, and fails every allocation, and after each
+  failure compiles a reference program and requires byte-identical output.
+  `make test-sanitize` runs both suites under AddressSanitizer (with the leak
+  checker) and UBSan, so a failing stage that leaked or read past a buffer
+  fails the build.
+
+**Forward execution only.** This is the "Forward-only rules" above. Beyond the
+`const` entry points, it is checked by `tests/compiler/architecture.c`, which
+scans `compiler/`: a stage may include only its own artifact's headers (the
+generator may also include `analysis.h`, plain data); the analyser and generator
+may not cast away `const` from the typed program; and the entry points in
+`include/` take their input through `const` pointers. Facts a later stage needs
+are made explicit in the earlier stage's output instead of being re-derived: the
+analyser's `Analysis` carries the feature set, so the generator no longer
+scans the program to decide what to emit.
+
+**Data driven and declarative.** Code that varies by kind is a table of rows and
+one engine ("Tables instead of branches", below). The generator's assembly of a
+program is itself a table: `header_pieces` and `source_pieces` in
+`generator/generator.c` list each piece of fixed C or each emitting function
+with the facts that decide whether the program gets it, in output order. What is
+still imperative is listed in `TODO.md`.
+
 ## Failure behaviour
 
 The compiler is fail-closed: a stage either produces a complete artifact or
-reports a diagnostic and returns false. There is no partial success.
+reports a diagnostic and returns false. There is no partial success. Failure is
+also scoped to the call that failed; see "Compiler goals" above.
 
 - Every allocation is checked. `compiler/alloc.c` wraps `malloc`/`realloc` so
   the test suite can force an allocation to fail and prove each error path.
@@ -499,9 +749,18 @@ reports a diagnostic and returns false. There is no partial success.
 Diagnostic wording is defined in `include/messages.h` as `MESSAGE_*` macros.
 Position prefixes are formatted by the diagnostic accumulator or generated
 runtime code; external C compiler diagnostics are outside this catalog. Tests
-should reference the same macros. A source-scanning test catches common inline
-`error_report` literals and embedded runtime prefixes; it is not a complete C
-parser. Checking that every message has a behavioral test remains a review rule.
+should reference the same macros. Two source-scanning tests (`tests/compiler/diagnostics.c`)
+guard the catalog: one catches inline `error_report` literals and embedded
+runtime prefixes, the other fails on any string literal under `compiler/` that
+holds wording of its own (two words, a `'%s'` quote, or a `<placeholder>`; in the
+generator, a printed `<placeholder>`). Words a message substitutes into itself
+(`"function"`, `"no arguments"`, `"<source>"`) are `MESSAGE_FRAGMENT_*` macros, and
+what a program prints for a value with no text of its own (`<function>`,
+`<handle ...>`) is `MESSAGE_RUNTIME_PRINT_*`. What is not wording stays in code:
+the language's own spellings (keywords, type names such as `Int32`, `true`,
+`nil`, punctuation) and the C the generator emits. The scanners are heuristics,
+not a C parser. Checking that every message has a behavioral test remains a
+review rule.
 
 Source-level diagnostics are prefixed `file:line:column (byte offset): `, where
 line and column are 1-based and the offset is a 0-based byte index. Messages
@@ -520,7 +779,7 @@ without walking its contents — which is why identifiers are fixed-size
 
 Fixed-size records and buffers are used where the size is a hard language limit:
 `Token.text`, `AstSymbol.text`, and `TypedSymbol.text` are
-`char[NIPPY_IDENTIFIER_MAX]`, and `ErrorState.message` is a fixed
+`char[NYX_IDENTIFIER_MAX]`, and `ErrorState.message` is a fixed
 `ERROR_MESSAGE_CAPACITY` (4096) byte buffer whose truncation is handled.
 
 `Ast` keeps a separate `type_parameters` run because a generic declaration's
@@ -559,6 +818,14 @@ statements and `if` branches; `TypedProgram.types`, `.signatures`, and
 `.signature_parameters` hold resolved types. All of these are copied indices,
 never pointers.
 
+Constant folding is by node, and a folded expression is folded again by every
+expression that contains it, which would make a long chain of operators cost
+the square of its length. While the outermost binary expression is being
+checked, a fold is remembered per syntax node (`CheckContext.fold_memo`) and
+read back by the enclosing folds; the memo is invalidated all at once when that
+outermost expression ends, so a later expression, or the same one under other
+constants, never sees it.
+
 Checker recovery snapshots registry and scope lengths in one checkpoint and
 restores them together after a recoverable error. Fatal errors are carried as
 an explicit status rather than inferred from diagnostic text.
@@ -575,8 +842,8 @@ Public stage headers remain in `include/` and expose only the stage entry point.
 | `compiler/lexer/` | Lexer stage |
 | `compiler/parser/` | Parser: types, expressions, calls, statements, declarations |
 | `compiler/checker/` | Checker: names, types, resolution, inference, expressions, access, calls, methods, statements, flow, declarations |
-| `compiler/analyser/` | Analyser stage |
-| `compiler/generator/` | Generator: support, types, expressions, statements, print, and runtime emitters |
+| `compiler/analyser/` | Analyser: link validation (`analyser_validate.c`), Store capabilities (`analyser_stores.c`), parallel audit (`analyser_parallel.c`), escape analysis (`analyser_regions.c`), the feature facts (`analyser_facts.c`), and the type lists (`analyser_types.c`) |
+| `compiler/generator/` | Generator: support, types, expressions, statements, loops (`generator_loops.c`), print, and runtime emitters |
 | `include/` | Public headers only |
 | `tests/` | Shared test support and data, plus one source per suite module |
 | `bin/` | Build output (git-ignored) |
@@ -598,17 +865,71 @@ Each stage directory has one entry-point translation unit (`lexer.c`,
 Anything shared between those modules is declared in the directory's
 `*_internal.h`; it is compiler-internal and is not part of the public API.
 
+### Tables instead of branches
+
+Code that varies by kind (of token, type, node, or operator) is a table of rows
+and one small engine, not a `switch` or an `if` chain per case. This is how the
+compiler meets its data-driven goal and keeps cyclomatic complexity (and so the
+CRAP score) low: adding a kind adds a row. The tables in use:
+
+| Table | File | Rows are | The engine |
+|---|---|---|---|
+| `punctuation`, `keywords`, `escapes` | `lexer/lexer.c` | spellings and the token each makes | `lex_punctuation` (longest match), `keyword_type` |
+| `declarations`, `shared_keywords`, `shared_patterns`, `block_keywords` | `parser/parser.c`, `parser/parser_statement.c` | what starts a declaration or statement | `parse_root`, `parse_shared_statement`, `parse_statement` |
+| `type_forms` | `parser/parser_type.c` | `String`, `List`, `Array`, `Slice`, `Record`, `Table`: arity, size, messages | `parse_type_form` |
+| `type_rules` | `checker/checker_type_cmp.c` | the parts of a type that tell two types of a kind apart | `type_compare_depth` (`same_type` is "compares equal") |
+| `printable_verdicts`, `sendable_verdicts`, `error_verdicts`, `equality_verdicts`, `payload_verdicts` | `checker/checker_type_props.c` | what each kind contributes to a deep property | `type_has_property` over `typed_type_part` |
+| `binary_operators`, `literal_adapters` | `checker/checker_expr.c` | an operator's operand rule, result, and flags; how a literal adopts its context | `check_binary` phases |
+| `layout_recipes`, `layout_rules` | `checker/checker_types.c` | C members of a kind, or a function that lays out its parts | `type_layout_depth` |
+| `node_visitors` | `analyser/analyser_regions.c` | the region of a node's value, by node kind | `visit_inner` |
+| `print_rules` | `generator/generator_print.c` | a type's print body | `emit_print_helper` |
+| `collect_rules` | `analyser/analyser_types.c` | which types a type pulls in when it is printed or compared | `collect_type` |
+| `equivalence_rules` | `typed_program.c` | how two types are the same C type | `typed_types_equivalent` |
+| `type_features`, `node_features`, `operator_features`, `mixed_equalities`, `extra_features`, `implications` | `analyser/analyser_facts.c` | what a kind of type, node, or operator tells the generator the program uses; which facts imply others | `analysis_collect` |
+| `node_rules`, `type_rules` | `analyser/analyser_validate.c` | one invariant of a node or type, and the kind it applies to | `validate_node`, `validate_type` |
+| `dependency_rules` | `analyser/analyser_types.c` | what a kind of type must be defined after | `order_dependency` |
+| `projections`, `node_visitors` | `analyser/analyser_regions.c` | the steps that reach into a value; the region of a node's value | `is_projection`, `visit_inner` |
+| `conversion_rules`, `binary_rules`, `unary_emitters`, `operator_emitters` | `generator/generator_expr_operator.c` | one way a numeric conversion or binary operation is written as C (the first rule that takes the node wins); a unary operator; the operator kinds | `emit_operator_numeric_conversion`, `emit_operator_binary`, `emit_operator_unary`, `emit_expr_operators` |
+| `direct_emitters`, `families` | `generator/generator_expr.c` | the expression kinds written here; the other modules' families of kinds | `emit_expression` |
+| `literal_emitters`, `channel_op_emitters`, `equality_bodies`, `plain_c_names`, `numbered_c_names` | `generator/generator_expr_literal.c`, `generator_channel.c`, `generator_equality.c`, `generator_support.c` | a literal kind; a channel operation; an equality helper's body by type kind; a type's C name | `emit_expr_literals`, `emit_channel_op_expression`, `emit_one_equality`, `format_c_type` |
+| `emit_statement_body_handlers1`, `emit_statement_body_handlers2` | `generator/generator_stmt.c` | a statement kind and its emitter (two lists, with the return rules between them) | `emit_statement_body` |
+| `statement_checks`, `expression_checks`, `root_checks` | `checker/checker.c` | the check for a syntax node kind | `check_statement_node`, `check_expression_node`, `checker_check_root` |
+| `call_rules`, `builtin_calls`, `identifier_rules`, `method_rules`, `method_families` | `checker/checker_calls.c`, `checker_expr.c`, `checker_methods.c` | one way a call, name or method call can be recognised | `check_call`, `check_identifier`, `check_member_call` |
+| `inject_rules` | `checker/checker_inject.c` | one way a value is coerced to a context type | `inject_into` |
+| `returns_entries`, `terminates_entries`, `breaks_loop_entries` | `checker/checker_flow.c` | how a statement kind answers a control-flow question from its parts | `flow_holds` |
+| `type_resolvers`, `bare_names`, `application_rules` | `checker/checker_resolve.c` | how each syntax form of a type, a bare built-in name, or a type with arguments is resolved | `resolve_type_in_env`, `resolve_type_name`, `resolve_type_application` |
+| `subscript_shapes`, `access_shapes`, `pure_shapes`, `call_shapes` | `checker/checker_flow.c` | which operands of an expression kind are themselves expressions | `shape_of` |
+| `collection_methods`, `string_methods`, `check_store_method_handlers` | `checker/checker_methods_*.c` | a method name and its check | the family's `check_*_method` |
+| `redefined_names`, `resource_declarations`, `name_takers` | `checker/checker_decl.c`, `checker_names.c` | names a program may not declare; resource annotations; what makes a name taken | `check_type_name`, `check_var_declaration`, `name_is_taken` |
+| `const_reads`, `const_folds` | `checker/checker_decl.c` | how to read each kind of node as a constant; what each operator does to two constants and what can go wrong | `const_int_eval_node` |
+| `header_pieces`, `source_pieces` | `generator/generator.c` | a piece of the generated header or source: fixed C or a writer, and the facts that select it | `emit_pieces` |
+| `root_kinds` | `generator/generator.c` | what each kind of root node becomes | `root_kind` |
+| `type_rules` | `generator/generator_types.c` | the C a kind of type is written as: fixed text written once, or a function | `emit_types_in_order` |
+
+`typed_type_part_count` and `typed_type_part` (in `typed_program.c`) are the one
+definition of "the types a type is made of" (a struct's field types, otherwise
+its recorded children) that the checker's property engine and the generator's
+print walk share.
+
 ## Packaging
 
 ## Known gaps
 
-- No incremental compilation of Nippy programs: each `nippy` run compiles the
+- No incremental compilation of Nyx programs: each `nyx` run compiles the
   whole program. (The repository's own `make` build is incremental.)
-- No concurrency story.
+- Threads exist only as `parallel` blocks, with global `Atomic` cells and
+  channels for sharing. Messages are copies of plain values, bounded by
+  `max_value_bytes` (64 KiB by default); no `Text`, `List`, or handle can cross a
+  channel. A pool channel is a descriptor into the pool and lives as long as the
+  block; there are no pool rendezvous channels, and a pool channel cannot be a
+  field or a result.
+- The deadlock report cannot see a thread blocked outside a channel, a join, or
+  a timer. Nyx has no file or socket input yet, so nothing can block that way.
 - Program-level variables are not visible inside function bodies; only stores
   are. Local variables are block-scoped and cannot shadow parameters or other
   visible names.
-- No ownership or lifetime analysis; the analyser validates links only.
+- No per-object ownership or lifetime analysis; the analyser validates links
+  and rejects scoped values that could outlive their scope.
 - Type, variable, and store tables use linear string searches; function lookup
   and AST and typed-program symbol interning use hash indexes.
 - Function types are emitted as one typedef per signature occurrence, so

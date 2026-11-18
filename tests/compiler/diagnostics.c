@@ -2,7 +2,9 @@
 
 #include "compile_support.h"
 
+#include <ctype.h>
 #include <dirent.h>
+#include <string.h>
 
 static bool check_diagnostic_source(const char *path)
 {
@@ -21,7 +23,7 @@ static bool check_diagnostic_source(const char *path)
     }
     while (fgets(line, sizeof(line), file) != NULL) {
         line_number++;
-        if (strstr(line, "nippy: ") != NULL) {
+        if (strstr(line, "nyx: ") != NULL) {
             fprintf(stderr, "  inline runtime prefix at %s:%zu\n", path, line_number);
             ok = false;
         }
@@ -50,36 +52,111 @@ static bool check_diagnostic_source(const char *path)
     return ok;
 }
 
-static bool check_diagnostic_directory(const char *path, bool recurse)
+TEST("compiler diagnostics use the message catalog")
 {
-    DIR *dir = opendir(path);
-    struct dirent *entry;
+    return check_directory("compiler", true, check_diagnostic_source)
+               ? TEST_PASS
+               : TEST_FAIL;
+}
+
+/* A phrase is two words of three or more letters with a single space between
+   them. Wording like that belongs in messages.h even when it is only a fragment
+   a message substitutes into itself. */
+static bool has_phrase(const char *text)
+{
+    size_t i = 0;
+
+    while (text[i] != '\0') {
+        size_t start = i;
+
+        while (isalpha((unsigned char)text[i])) i++;
+        if (i - start >= 3 && text[i] == ' ') {
+            size_t next = i + 1;
+            size_t end = next;
+
+            while (isalpha((unsigned char)text[end])) end++;
+            if (end - next >= 3) return true;
+        }
+        if (i == start) i++;
+    }
+    return false;
+}
+
+static bool is_generator_path(const char *path)
+{
+    return strstr(path, "/generator") != NULL;
+}
+
+/* Reports a string literal on `line` that holds wording of its own. Generator
+   files hold C that the program emits, so there only a printed placeholder such
+   as "<function>" counts. */
+static bool literal_is_wording(const char *path, const char *literal)
+{
+    if (is_generator_path(path)) {
+        return strstr(literal, "\\\"<") != NULL &&
+               (islower((unsigned char)literal[strstr(literal, "\\\"<") -
+                                               literal + 3]) ||
+                literal[strstr(literal, "\\\"<") - literal + 3] == '.');
+    }
+    return has_phrase(literal) || strstr(literal, "'%s'") != NULL ||
+           (strchr(literal, '<') != NULL && islower((unsigned char)
+               literal[strchr(literal, '<') - literal + 1]));
+}
+
+static bool check_stray_wording(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    char line[4096];
+    size_t line_number = 0;
+    bool in_comment = false;
     bool ok = true;
 
-    if (dir == NULL) {
+    if (file == NULL) {
         fprintf(stderr, "  cannot read %s\n", path);
         return false;
     }
-    while ((entry = readdir(dir)) != NULL) {
-        char child[512];
-        size_t length = strlen(entry->d_name);
-        int written;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        const char *cursor = line;
+        char literal[4096];
+        bool was_comment = in_comment;
 
-        if (entry->d_name[0] == '.') continue;
-        written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(child)) {
-            ok = false;
-        } else if (length > 2 && strcmp(entry->d_name + length - 2, ".c") == 0) {
-            if (!check_diagnostic_source(child)) ok = false;
-        } else if (recurse && strchr(entry->d_name, '.') == NULL) {
-            if (!check_diagnostic_directory(child, false)) ok = false;
+        line_number++;
+        while (isspace((unsigned char)*cursor)) cursor++;
+        if (strstr(line, "/*") != NULL && strstr(line, "*/") == NULL) {
+            in_comment = true;
+        } else if (strstr(line, "*/") != NULL) {
+            in_comment = false;
+        }
+        if (was_comment || strncmp(cursor, "/*", 2) == 0 ||
+            strncmp(cursor, "#include", 8) == 0) {
+            continue;
+        }
+        for (; *cursor != '\0'; cursor++) {
+            size_t length = 0;
+
+            if (*cursor != '"') continue;
+            for (cursor++; *cursor != '\0' && *cursor != '"'; cursor++) {
+                if (*cursor == '\\' && cursor[1] != '\0') {
+                    literal[length++] = *cursor++;
+                }
+                literal[length++] = *cursor;
+            }
+            literal[length] = '\0';
+            if (literal_is_wording(path, literal)) {
+                fprintf(stderr, "  wording outside messages.h at %s:%zu: \"%s\"\n",
+                        path, line_number, literal);
+                ok = false;
+            }
+            if (*cursor == '\0') break;
         }
     }
-    closedir(dir);
+    fclose(file);
     return ok;
 }
 
-TEST("compiler diagnostics use the message catalog")
+TEST("compiler wording lives in the message catalog")
 {
-    return check_diagnostic_directory("compiler", true) ? TEST_PASS : TEST_FAIL;
+    return check_directory("compiler", true, check_stray_wording)
+               ? TEST_PASS
+               : TEST_FAIL;
 }

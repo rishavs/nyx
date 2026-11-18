@@ -92,6 +92,41 @@ const StoreEntry *find_store(const List *stores, const char *name)
     return NULL;
 }
 
+const AtomicEntry *find_atomic(const List *atomics, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < atomics->length; i++) {
+        const AtomicEntry *entry = list_get(atomics, i);
+
+        if (entry != NULL && strcmp(entry->name, name) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+const ChannelEntry *find_channel(const List *channels, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < channels->length; i++) {
+        const ChannelEntry *entry = list_get(channels, i);
+
+        if (entry != NULL && strcmp(entry->name, name) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+bool name_is_resource(const CheckContext *ctx, const char *name)
+{
+    return find_store(ctx->stores, name) != NULL ||
+           find_atomic(ctx->atomics, name) != NULL ||
+           find_channel(ctx->channels, name) != NULL;
+}
+
 bool identifier_is_reserved(const char *name)
 {
     static const char *const reserved[] = {
@@ -113,8 +148,8 @@ bool identifier_is_reserved(const char *name)
     if (name == NULL) {
         return false;
     }
-    if (strncmp(name, NIPPY_GENERATED_PREFIX,
-                sizeof(NIPPY_GENERATED_PREFIX) - 1) == 0) {
+    if (strncmp(name, NYX_GENERATED_PREFIX,
+                sizeof(NYX_GENERATED_PREFIX) - 1) == 0) {
         return true;
     }
     for (i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
@@ -139,21 +174,21 @@ bool check_reserved_name(CheckContext *ctx, SourcePos pos,
 
 typedef struct {
     const char *name;
-    NippyType kind;
+    NyxType kind;
 } BuiltinScalarType;
 
 static const BuiltinScalarType builtin_scalar_types[] = {
-    {"Int8", NIPPY_TYPE_INT8}, {"Int16", NIPPY_TYPE_INT16},
-    {"Int32", NIPPY_TYPE_INT32}, {"Int64", NIPPY_TYPE_INT64},
-    {"Uint8", NIPPY_TYPE_BYTE}, {"Byte", NIPPY_TYPE_BYTE},
-    {"Uint16", NIPPY_TYPE_UINT16}, {"Uint32", NIPPY_TYPE_UINT32},
-    {"Uint64", NIPPY_TYPE_UINT64},
-    {"Float32", NIPPY_TYPE_FLOAT32}, {"Float64", NIPPY_TYPE_FLOAT64},
-    {"Bool", NIPPY_TYPE_BOOL}, {"Nil", NIPPY_TYPE_NIL},
-    {"Store", NIPPY_TYPE_STORE}, {"Text", NIPPY_TYPE_DYNAMIC_STRING}
+    {"Int8", NYX_TYPE_INT8}, {"Int16", NYX_TYPE_INT16},
+    {"Int32", NYX_TYPE_INT32}, {"Int64", NYX_TYPE_INT64},
+    {"Uint8", NYX_TYPE_BYTE}, {"Byte", NYX_TYPE_BYTE},
+    {"Uint16", NYX_TYPE_UINT16}, {"Uint32", NYX_TYPE_UINT32},
+    {"Uint64", NYX_TYPE_UINT64},
+    {"Float32", NYX_TYPE_FLOAT32}, {"Float64", NYX_TYPE_FLOAT64},
+    {"Bool", NYX_TYPE_BOOL}, {"Nil", NYX_TYPE_NIL},
+    {"Store", NYX_TYPE_STORE}, {"Text", NYX_TYPE_DYNAMIC_STRING}
 };
 
-bool builtin_scalar_type_from_name(const char *name, NippyType *out)
+bool builtin_scalar_type_from_name(const char *name, NyxType *out)
 {
     size_t i;
 
@@ -173,7 +208,7 @@ bool is_builtin_type_name(const char *name)
         "Handle", "String", "TextBuilder", "List", "Array", "Slice",
         "Range", "Record", "Table", "Error"
     };
-    NippyType kind;
+    NyxType kind;
     size_t i;
 
     if (builtin_scalar_type_from_name(name, &kind)) return true;
@@ -187,16 +222,118 @@ bool is_builtin_type_name(const char *name)
 bool is_builtin_function_name(const char *name)
 {
     return strcmp(name, "print") == 0 || strcmp(name, "base64") == 0 ||
-           strcmp(name, "range") == 0;
+           strcmp(name, "range") == 0 || strcmp(name, "now") == 0 ||
+           strcmp(name, "sleep") == 0 || strcmp(name, "cores") == 0;
 }
 
 
-bool numeric_type_from_name(const char *name, NippyType *out)
+bool numeric_type_from_name(const char *name, NyxType *out)
 {
-    NippyType kind;
+    NyxType kind;
 
     if (!builtin_scalar_type_from_name(name, &kind) ||
-        !nippy_type_is_numeric(kind)) return false;
+        !nyx_type_is_numeric(kind)) return false;
     *out = kind;
+    return true;
+}
+
+typedef bool (*NameTaken)(const CheckContext *ctx, const char *name);
+
+static bool taken_by_local(const CheckContext *ctx, const char *name)
+{
+    return find_variable(ctx->locals, name) != NULL;
+}
+
+static bool taken_by_resource(const CheckContext *ctx, const char *name)
+{
+    return name_is_resource(ctx, name);
+}
+
+static bool taken_by_type(const CheckContext *ctx, const char *name)
+{
+    return find_type(ctx->types, name) != NULL;
+}
+
+static bool taken_by_function(const CheckContext *ctx, const char *name)
+{
+    return find_function(ctx, name) != NULL;
+}
+
+static bool taken_by_builtin_type(const CheckContext *ctx, const char *name)
+{
+    (void)ctx;
+    return is_builtin_type_name(name);
+}
+
+static bool taken_by_builtin_function(const CheckContext *ctx, const char *name)
+{
+    (void)ctx;
+    return is_builtin_function_name(name);
+}
+
+static const NameTaken name_takers[] = {
+    taken_by_local, taken_by_resource, taken_by_type, taken_by_function,
+    taken_by_builtin_type, taken_by_builtin_function,
+};
+
+/* A variable visible here: a local, or at the top level a global. */
+const VariableEntry *lookup_variable(const CheckContext *ctx, const char *name)
+{
+    const VariableEntry *variable = find_variable(ctx->locals, name);
+
+    if (variable == NULL && !ctx->in_function) {
+        variable = find_variable(ctx->globals, name);
+    }
+    return variable;
+}
+
+/* Whether a new binding may not use `name`: anything already visible there.
+   A new local also may not shadow a global at the top level. */
+bool name_is_taken(const CheckContext *ctx, const char *name,
+                   bool include_globals)
+{
+    size_t i;
+
+    if (include_globals && !ctx->in_function &&
+        find_variable(ctx->globals, name) != NULL) {
+        return true;
+    }
+    for (i = 0; i < NYX_COUNT_OF(name_takers); i++) {
+        if (name_takers[i](ctx, name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* One type parameter of a generic declaration: a fresh, unreserved name,
+   appended to the declaration's parameters. */
+bool add_type_parameter_name(CheckContext *ctx, size_t child,
+                             char (*parameters)[NYX_IDENTIFIER_MAX],
+                             size_t *count)
+{
+    const AstNode *parameter = ast_get_node(ctx->ast, child);
+    const char *name;
+
+    if (parameter == NULL || parameter->kind != AST_TYPE_PARAMETER) {
+        error_report(ctx->errors, MESSAGE_CHECKER_MISSING_AST_NODE, child);
+        return false;
+    }
+    name = ast_symbol_text(ctx->ast, parameter->name_index);
+    if (name == NULL) {
+        error_report_at(ctx->errors, parameter->pos,
+                        MESSAGE_CHECKER_MISSING_NAME_OR_TYPE);
+        return false;
+    }
+    if (!check_reserved_name(ctx, parameter->pos, name)) {
+        return false;
+    }
+    if (type_parameter_index(parameters, *count, name) != TYPED_NO_NODE) {
+        error_report_at(ctx->errors, parameter->pos,
+                        MESSAGE_CHECKER_DUPLICATE_TYPE_PARAMETER, name);
+        return false;
+    }
+    memcpy(parameters[*count], name, strlen(name) + 1);
+    (*count)++;
     return true;
 }
