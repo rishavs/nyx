@@ -114,7 +114,7 @@ TEST("Error in store")
         "end\n"
         "global arena: Store = Store(4096)\n"
         "var n: Int32 = line_of(arena.alloc<Error>("
-        "Error(\"E\", \"d\", \"f\", 9, 2, 3)))\n";
+        "Error(ErrorKind::InvalidInput(), \"d\", \"f\", 9, 2, 3)))\n";
 
     return run_generated(source, "9\n", "Error in a store");
 }

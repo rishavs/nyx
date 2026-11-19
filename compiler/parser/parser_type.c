@@ -392,6 +392,18 @@ static bool parse_function_type(size_t depth, const TokenList *tokens,
 }
 
 /* A name, or a name applied to type arguments: Box<Int32, Bool>. */
+/* `Owner::Case`, or `Owner<Args>::Case`, names one case of a sum type as a
+   type. A `::` followed by `name(` or `name<` is a static function of the
+   type, which the function and expression parsers read, so it is left alone
+   here. */
+static bool case_name_ahead(const TokenList *tokens, size_t cursor)
+{
+    return token_is(tokens, cursor, TOKEN_DOUBLE_COLON) &&
+           token_is(tokens, cursor + 1, TOKEN_IDENTIFIER) &&
+           !token_is(tokens, cursor + 2, TOKEN_LPAREN) &&
+           !token_is(tokens, cursor + 2, TOKEN_LT);
+}
+
 static bool parse_type_name(size_t depth, const TokenList *tokens, const List *string_bytes,
                             Ast *ast, size_t *cursor, size_t *out_index,
                             ErrorState *errors)
@@ -405,6 +417,7 @@ static bool parse_type_name(size_t depth, const TokenList *tokens, const List *s
     node.pos = token->pos;
     node.left_child = AST_NO_NODE;
     node.right_child = AST_NO_NODE;
+    node.second_name_index = AST_NO_NODE;
     if (!intern_token(ast, token, &node.name_index, errors)) {
         return false;
     }
@@ -419,6 +432,12 @@ static bool parse_type_name(size_t depth, const TokenList *tokens, const List *s
         ok = ok && push_type_run(ast, &arguments, &node.children_start,
                                  errors);
         list_free(&arguments);
+    }
+    if (ok && case_name_ahead(tokens, *cursor)) {
+        node.kind = AST_TYPE_CASE;
+        ok = intern_token(ast, token_at(tokens, *cursor + 1),
+                          &node.second_name_index, errors);
+        *cursor += 2;
     }
     return ok && push_node(ast, &node, out_index);
 }

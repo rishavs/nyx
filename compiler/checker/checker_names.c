@@ -8,7 +8,24 @@ size_t find_type_index(const List *types, const char *name)
     for (i = 0; i < types->length; i++) {
         const TypeEntry *entry = list_get(types, i);
 
-        if (entry != NULL && strcmp(entry->name, name) == 0) {
+        if (entry != NULL && entry->owner[0] == '\0' &&
+            strcmp(entry->name, name) == 0) {
+            return i;
+        }
+    }
+    return TYPED_NO_NODE;
+}
+
+
+size_t find_case_index(const List *types, const char *owner, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < types->length; i++) {
+        const TypeEntry *entry = list_get(types, i);
+
+        if (entry != NULL && strcmp(entry->owner, owner) == 0 &&
+            strcmp(entry->name, name) == 0) {
             return i;
         }
     }

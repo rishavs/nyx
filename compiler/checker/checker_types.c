@@ -78,7 +78,7 @@ bool string_literal_type(CheckContext *ctx, size_t *out_index)
 
 bool error_type(CheckContext *ctx, size_t *out_index)
 {
-    size_t header;
+    size_t kind;
     size_t description;
     size_t filename;
     size_t children_start;
@@ -92,14 +92,14 @@ bool error_type(CheckContext *ctx, size_t *out_index)
             return true;
         }
     }
-    if (!string_type(ctx, ctx->program->error_header_capacity, &header) ||
+    if (!error_kind_type(ctx, &kind) ||
         !string_type(ctx, ctx->program->error_description_capacity,
                      &description) ||
         !string_type(ctx, ctx->program->error_filename_capacity, &filename)) {
         return false;
     }
     children_start = ctx->program->type_children.length;
-    checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, header), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
+    checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, kind), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, description), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     checker_ok(ctx->errors, typed_program_add_type_child(ctx->program, filename), MESSAGE_CHECKER_OUT_OF_MEMORY_TYPING);
     {
@@ -137,6 +137,11 @@ bool error_field_type(CheckContext *ctx, size_t error_index,
         }
         *out_type = *type;
         return true;
+    }
+    /* The seventh field is not stored: it is the text of the kind's header,
+       which is as long as an `Other` kind's header. */
+    if (field == 6) {
+        return string_type(ctx, ctx->program->error_header_capacity, out_type);
     }
     return builtin_type(ctx, NYX_TYPE_INT32, out_type);
 }

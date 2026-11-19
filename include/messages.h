@@ -111,6 +111,10 @@
     "parser: expected a type name after 'type'"
 #define MESSAGE_PARSER_EXPECTED_AT_LEAST_ONE_FIELD \
     "parser: expected at least one field before 'end'"
+#define MESSAGE_PARSER_EXPECTED_CASE_NAME \
+    "parser: expected a case name"
+#define MESSAGE_PARSER_EXPECTED_CASE_OR_END \
+    "parser: expected '|' or 'end' after a case"
 #define MESSAGE_PARSER_EXPECTED_FIELD_NAME \
     "parser: expected a field name"
 #define MESSAGE_PARSER_EXPECTED_FIELD_COLON \
@@ -334,6 +338,12 @@
     "checker: declaration is missing a name or type"
 #define MESSAGE_CHECKER_DUPLICATE_FIELD \
     "checker: duplicate field '%s' in type '%s'"
+#define MESSAGE_CHECKER_DUPLICATE_CASE \
+    "checker: duplicate case '%s' in type '%s'"
+#define MESSAGE_CHECKER_UNKNOWN_CASE \
+    "checker: type '%s' has no case '%s'"
+#define MESSAGE_CHECKER_NOT_A_SUM_TYPE \
+    "checker: '%s' is not a sum type"
 #define MESSAGE_CHECKER_METHOD_OWNER \
     "checker: associated functions require a struct type, got '%s'"
 #define MESSAGE_CHECKER_METHOD_OWNER_PARAMETERS \
@@ -604,10 +614,24 @@
     "checker: cannot redefine built-in type 'Slice'"
 #define MESSAGE_CHECKER_REDEFINES_ERROR \
     "checker: cannot redefine built-in type 'Error'"
+#define MESSAGE_CHECKER_REDEFINES_ERROR_KIND \
+    "checker: cannot redefine built-in type 'ErrorKind'"
+/* The source of the declarations the language provides (see prelude.h): the
+   sum type of an Error's kind. The one %d is the capacity of a custom header. */
+#define MESSAGE_PRELUDE_ERROR_KIND \
+    "type ErrorKind is\n" \
+    "| NotFound | PermissionDenied | AlreadyExists | InvalidInput\n" \
+    "| InvalidPath | NotADirectory | IsADirectory | DirectoryNotEmpty\n" \
+    "| ReadOnly | Busy | Interrupted | Cancelled | TimedOut | Unsupported\n" \
+    "| ResourceExhausted | Closed | AddressInUse | AddressUnavailable\n" \
+    "| ConnectionRefused | ConnectionReset | ConnectionAborted\n" \
+    "| HostUnreachable | NetworkUnreachable | BrokenPipe | NotConnected\n" \
+    "| Other is header: String<%d> end\n" \
+    "end\n"
 #define MESSAGE_CHECKER_ERROR_ARGS \
-    "checker: Error takes header, description, filename, line, col, pos"
+    "checker: Error takes kind, description, filename, line, col, pos"
 #define MESSAGE_CHECKER_ERROR_THROW_ARGS \
-    "checker: Error::throw needs a header and a description"
+    "checker: Error::throw needs a kind and a description"
 #define MESSAGE_CHECKER_ERROR_ARG_TYPE \
     "checker: Error argument %zu has the wrong type"
 #define MESSAGE_CHECKER_STORE_NOT_GLOBAL \

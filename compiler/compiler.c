@@ -9,6 +9,7 @@
 #include "lexer.h"
 #include "messages.h"
 #include "parser.h"
+#include "prelude.h"
 #include "typed_program.h"
 
 #include <stdlib.h>
@@ -273,6 +274,27 @@ static bool compiler_compile_ast_initialized(ErrorState *errors, const CompilerC
     return false;
 }
 
+/* Parses the tokens. A program that names Error or ErrorKind also gets the
+   prelude that declares ErrorKind, after the end of its own source. */
+static bool compiler_parse(const char *source, const TypedProgram *program,
+                           LexerResult *lexed, Ast *ast, ErrorState *errors)
+{
+    bool prelude_needed = prelude_is_needed(&lexed->tokens);
+
+    if (prelude_needed &&
+        !prelude_append(lexed, source, program->error_header_capacity)) {
+        error_report(errors, MESSAGE_LEXER_OUT_OF_MEMORY);
+        return false;
+    }
+    if (!parser_parse(&lexed->tokens, &lexed->string_bytes, ast, errors)) {
+        return false;
+    }
+    if (prelude_needed) {
+        ast->prelude_offset = strlen(source) + 1;
+    }
+    return true;
+}
+
 static bool compiler_compile_max_source(const CompilerConfig *config, const char *source, ErrorState *errors, LexerResult *lexed, Ast *ast, bool *ast_initialized, TypedProgram *program, Analysis *analysis_out, CompilerResult *result)
 {
     Analysis *analysis = analysis_out;
@@ -300,7 +322,7 @@ static bool compiler_compile_max_source(const CompilerConfig *config, const char
         return true;
     }
 
-    if (!parser_parse(&(*lexed).tokens, &(*lexed).string_bytes, ast, errors)) {
+    if (!compiler_parse(source, program, lexed, ast, errors)) {
         (*ast_initialized) = true;
         return true;
     }

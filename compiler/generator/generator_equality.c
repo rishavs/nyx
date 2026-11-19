@@ -66,6 +66,9 @@ static bool equality_struct(const TypedProgram *p, const TypedType *type,
 
     (void)index;
     (void)errors;
+    if (declaration->children_count == 0) {
+        buffer_append(out, "    (void)a; (void)b;\n");
+    }
     for (i = 0; i < declaration->children_count; i++) {
         const TypedNode *field = typed_program_node(
             p, *(const size_t *)list_get(&p->children,
@@ -83,6 +86,27 @@ static bool equality_struct(const TypedProgram *p, const TypedType *type,
                        field->type_index, member, member);
     }
     return buffer_append(out, "    return true;\n}\n\n");
+}
+
+/* The same alternative, then the values of that alternative. An alternative
+   that carries nothing (Nil) is equal to itself. */
+static bool equality_union(const TypedProgram *p, const TypedType *type,
+                           size_t index, TextBuffer *out, ErrorState *errors)
+{
+    size_t i;
+
+    (void)index;
+    (void)errors;
+    buffer_append(out, "    if (a.tag != b.tag) return false;\n    switch (a.tag) {\n");
+    for (i = 0; i < type->child_count; i++) {
+        if (typed_program_type(p, type_part(p, type, i))->kind == NYX_TYPE_NIL) {
+            continue;
+        }
+        buffer_appendf(out,
+                       "    case %zu: return nyx_equal_%zu(a.value.v%zu, b.value.v%zu, file, line, column, pos);\n",
+                       i, type_part(p, type, i), i, i);
+    }
+    return buffer_append(out, "    default: return true;\n    }\n}\n\n");
 }
 
 static bool equality_fixed_list(const TypedProgram *p, const TypedType *type,
@@ -176,6 +200,7 @@ static const struct {
     {NYX_TYPE_DYNAMIC_STRING, equality_dynamic_string},
     {NYX_TYPE_HANDLE, equality_handle},
     {NYX_TYPE_STRUCT, equality_struct},
+    {NYX_TYPE_UNION, equality_union},
     {NYX_TYPE_FIXED_LIST, equality_fixed_list},
     {NYX_TYPE_LIST, equality_list},
     {NYX_TYPE_RECORD, equality_record},

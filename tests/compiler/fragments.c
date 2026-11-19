@@ -39,7 +39,7 @@ TEST("Error values default their file name when the source has none")
 {
     CompilerConfig config = {.header_name = "test.h"};
     CompilerResult result = compiler_compile(
-        "var e: Error = Error::throw(\"E\", \"d\")\n", &config);
+        "var e: Error = Error::throw(ErrorKind::InvalidInput(), \"d\")\n", &config);
     int ok = result.succeeded && result.c_source != NULL &&
              strstr(result.c_source, MESSAGE_FRAGMENT_DEFAULT_SOURCE_NAME) !=
                  NULL;

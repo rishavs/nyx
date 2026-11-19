@@ -174,7 +174,9 @@ static bool begin_instantiation(Instantiation *inst)
     snprintf(generated, sizeof(generated), "nyx_gen_%zu", ctx->generated_names++);
     inst->name_index = checker_name(ctx, generated);
     inst->declaration = ast_get_node(ctx->ast, inst->entry->ast_index);
-    if (inst->declaration == NULL || inst->declaration->kind != AST_TYPE_DECLARATION) {
+    if (inst->declaration == NULL ||
+        (inst->declaration->kind != AST_TYPE_DECLARATION &&
+         inst->declaration->kind != AST_ADT_CASE)) {
         error_report(ctx->errors, MESSAGE_CHECKER_UNSUPPORTED_AST_NODE);
         return false;
     }
@@ -428,6 +430,9 @@ static bool resolve_declared_name(CheckContext *ctx, const AstNode *node,
         *out = entry->type_index;
         return true;
     }
+    if (entry->kind == TYPE_ENTRY_ADT) {
+        return expand_adt(ctx, entry_index, NULL, 0, out);
+    }
     return entry->kind == TYPE_ENTRY_ALIAS
                ? expand_alias(ctx, entry, NULL, 0, out)
                : instantiate_struct(ctx, entry_index, NULL, 0, out);
@@ -664,6 +669,9 @@ static NameStep application_declared(const Application *app)
         entry = list_get(ctx->types, entry_index);
         if (entry->parameter_count == 0) {
             application_error(app, MESSAGE_CHECKER_TYPE_NOT_GENERIC);
+        } else if (entry->kind == TYPE_ENTRY_ADT) {
+            ok = expand_adt(ctx, entry_index, (const size_t *)arguments.items,
+                            arguments.length, app->out);
         } else if (entry->kind == TYPE_ENTRY_ALIAS) {
             ok = expand_alias(ctx, entry, (const size_t *)arguments.items,
                               arguments.length, app->out);
@@ -901,11 +909,18 @@ static bool resolve_application_form(CheckContext *ctx, const AstNode *node,
     return resolve_type_application(ctx, node, env, owner, out);
 }
 
+static bool resolve_case_form(CheckContext *ctx, const AstNode *node,
+                              const TypeEnv *env, const char *owner, size_t *out)
+{
+    return resolve_case_type(ctx, node, env, owner, out);
+}
+
 static const struct {
     AstNodeKind kind;
     TypeResolver resolve;
 } type_resolvers[] = {
     {AST_TYPE_NAME, resolve_name_form},
+    {AST_TYPE_CASE, resolve_case_form},
     {AST_TYPE_FIXED_STRING, resolve_fixed_string},
     {AST_TYPE_SLICE, resolve_slice},
     {AST_TYPE_RECORD, resolve_record},

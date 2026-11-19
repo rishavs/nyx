@@ -5,7 +5,7 @@
 
 /* The built-in Error's fields, in the order its type holds them. */
 static const char *const error_fields[] = {
-    "header", "description", "filename", "line", "col", "pos",
+    "kind", "description", "filename", "line", "col", "pos",
 };
 
 static bool lookup_struct_field(CheckContext *ctx, const TypedType *type,
@@ -33,19 +33,30 @@ static bool lookup_struct_field(CheckContext *ctx, const TypedType *type,
     return false;
 }
 
-static bool lookup_error_field(CheckContext *ctx, const TypedType *type,
-                               const char *name, size_t *out_type)
+/* The position of the field among an Error's six, or the count when there is
+   no such field. */
+static size_t error_field_position(const char *name)
 {
     size_t i;
 
-    for (i = 0; i < NYX_COUNT_OF(error_fields) && i < type->child_count; i++) {
+    for (i = 0; i < NYX_COUNT_OF(error_fields); i++) {
         if (strcmp(error_fields[i], name) == 0) {
-            *out_type = *(const size_t *)list_get(&ctx->program->type_children,
-                                                  type->first_child + i);
-            return true;
+            break;
         }
     }
-    return false;
+    return i;
+}
+
+static bool lookup_error_field(CheckContext *ctx, const TypedType *type,
+                               const char *name, size_t *out_type)
+{
+    size_t field = error_field_position(name);
+    size_t error;
+
+    (void)type;
+    return field < NYX_COUNT_OF(error_fields) &&
+           error_type(ctx, &error) &&
+           error_field_type(ctx, error, field, out_type);
 }
 
 bool lookup_field(CheckContext *ctx, size_t receiver_type, const char *name,
@@ -93,9 +104,11 @@ bool check_member_access(CheckContext *ctx, const AstNode *node, size_t ast_inde
                         name);
         return false;
     }
-    typed = new_node(TYPED_MEMBER_ACCESS, field_type, node->pos, receiver,
-                     TYPED_NO_NODE);
-    typed.name_index = checker_name(ctx, name);
+    /* An Error's fields are read by position, not by a C member name. */
+    typed = new_node(is_error ? TYPED_ERROR_FIELD : TYPED_MEMBER_ACCESS,
+                     field_type, node->pos, receiver, TYPED_NO_NODE);
+    typed.name_index = is_error ? TYPED_NO_NODE : checker_name(ctx, name);
+    typed.integer_value = is_error ? (int)error_field_position(name) : 0;
     typed.auxiliary_type = TYPED_NO_NODE;
     typed.store_id = TYPED_NO_NODE;
     return emit_node(ctx, &typed, ast_index, &(size_t){0});

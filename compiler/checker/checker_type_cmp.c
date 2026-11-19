@@ -497,6 +497,21 @@ static void write_application(TextOut *out, const AstNode *node,
     text_put(out, ">");
 }
 
+/* `Owner::Case`, with the type arguments before the `::` when there are any. */
+static void write_case(TextOut *out, const AstNode *node, const char *head)
+{
+    const char *name = ast_symbol_text(out->ast, node->second_name_index);
+
+    write_name(out, node, head);
+    if (node->children_count != 0) {
+        text_put(out, "<");
+        text_children(out, node, ", ");
+        text_put(out, ">");
+    }
+    text_put(out, "::");
+    text_put(out, name == NULL ? MESSAGE_FRAGMENT_VALUE : name);
+}
+
 static void write_union(TextOut *out, const AstNode *node, const char *head)
 {
     (void)head;
@@ -513,6 +528,7 @@ static const TextRule text_rules[] = {
     [AST_TYPE_RECORD] = {"Record", write_pair},
     [AST_TYPE_TABLE] = {"Table", write_pair},
     [AST_TYPE_APPLICATION] = {NULL, write_application},
+    [AST_TYPE_CASE] = {NULL, write_case},
     [AST_TYPE_UNION] = {NULL, write_union},
 };
 

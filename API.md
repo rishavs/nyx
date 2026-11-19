@@ -12,6 +12,7 @@ Everything here is C11 and depends only on libc.
 | `compiler.h` | The one-shot API: source string in, C11 text out |
 | `limits_config.h` | Named defaults and fixed compiler safety limits |
 | `error.h` | `ErrorState`, the diagnostic accumulator |
+| `prelude.h` | `prelude_is_needed`, `prelude_append`: the language's own declarations (`ErrorKind`), added to a program's tokens when it names them |
 | `alloc.h` | Checked allocation wrappers and the test failure hook |
 | `messages.h` | Every user-facing message, as `MESSAGE_*` macros |
 | `source_pos.h` | `SourcePos`: byte offset plus 1-based line and column |
@@ -242,6 +243,8 @@ typedef struct {
     List children;        /* indices into nodes, for variable-arity children */
     List type_parameters; /* indices into nodes, for generic declarations */
     List bytes;           /* decoded string-literal bytes */
+    size_t prelude_offset; /* where the language's own declarations begin in
+                              the source; SIZE_MAX when the program has none */
 } Ast;
 
 typedef struct {
@@ -268,14 +271,20 @@ typedef struct {
 ```
 
 `typed_program_init` seeds the capacities with the defaults: string maximum
-4096, list maximum 4096, and Error fields 32/128/128. `compiler_compile` overwrites them from
+4096, list maximum 4096, and Error fields 32/128/128 (the header capacity is that of an `ErrorKind::Other`).
+`compiler_compile` overwrites them from
 `CompilerConfig`.
 
 `AstNode` and `TypedNode` carry `left_child`/`right_child` for direct links and
 `children_start`/`children_count` for a run of variable-arity children in the
 owning `children` list. `AstNode` additionally carries
 `type_parameters_start`/`type_parameters_count`, indexing `Ast.type_parameters`
-(used by generic struct, alias, and function declarations; 0/0 when absent).
+(used by generic struct, alias, sum type, and function declarations; 0/0 when
+absent). `AST_ADT_DECLARATION` has the sum type's name in `name_index` and its
+`AST_ADT_CASE` nodes as children; a case has its name in `name_index` and its
+`AST_FIELD` nodes as children (none for a case that carries nothing).
+`AST_TYPE_CASE` has the owner in `name_index`, the case in `second_name_index`
+(`AST_NO_NODE` on every other type node) and the type arguments as children.
 The lexer represents `===` with `TOKEN_EQEQEQ`; binary AST and typed nodes
 retain it as `NYX_OPERATOR_STRICT_EQ`.
 For `AST_FUNCTION_DECLARATION` and `AST_TYPE_FUNCTION`, `right_child` is
@@ -631,12 +640,14 @@ index in `right_child`;
 `TYPED_BUILDER_FINISH` have the builder in `left_child`. `TYPED_ERROR_CONSTRUCT` has type
 `Error` and six children: header, description, filename, line, col, pos.
 `TYPED_ERROR_FIELD` has the field's type, the Error value in `left_child`, and
-the field index in `integer_value` (0 header, 1 description, 2 filename, 3 line,
-4 col, 5 pos). `NYX_TYPE_ERROR` is a built-in sized type with the fixed
-layout `header: String<32>`, `description: String<128>`,
-`filename: String<128>`, `line/col/pos: Int32` by default. The three string
-types are the Error type's three entries in `program->type_children`, in that
-order. `NYX_TYPE_STRING_LITERAL` is the checker's internal
+the field index in `integer_value` (0 kind, 1 description, 2 filename, 3 line,
+4 col, 5 pos, 6 the text of the kind, a `String` of the header capacity that is
+read from the kind and not stored). `NYX_TYPE_ERROR` is a built-in sized type
+with the fixed layout `kind: ErrorKind`, `description: String<128>`,
+`filename: String<128>`, `line/col/pos: Int32` by default. The kind (a union:
+`ErrorKind` is a sum type, which the checker lowers to a union of one struct per
+case) and the two string types are the Error type's three entries in
+`program->type_children`, in that order. `NYX_TYPE_STRING_LITERAL` is the checker's internal
 uncontextual literal type; a literal is retyped to `Text` or `String<N>` by
 injection, and the generator rejects any literal that remains uncontextual.
 `NYX_TYPE_DYNAMIC_STRING` (public type `Text`) and

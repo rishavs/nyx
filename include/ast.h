@@ -16,6 +16,8 @@
 typedef enum {
     AST_DECLARATION,
     AST_TYPE_DECLARATION,
+    AST_ADT_DECLARATION,
+    AST_ADT_CASE,
     AST_FUNCTION_DECLARATION,
     AST_FIELD,
     AST_PARAMETER,
@@ -43,6 +45,7 @@ typedef enum {
     AST_TYPE_APPLICATION,
     AST_TYPE_PARAMETER,
     AST_TYPE_ALIAS,
+    AST_TYPE_CASE,
     AST_IS,
     AST_MEMBER_CALL,
     AST_EXPRESSION_STATEMENT,
@@ -130,6 +133,10 @@ typedef struct {
     List type_parameters;
     /* Decoded bytes for string literals; nodes store offsets into this. */
     List bytes;
+    /* Where the language's own declarations (the prelude) begin in the source,
+       as a byte offset; a node at or after it is not the program's. SIZE_MAX
+       when the program has none. */
+    size_t prelude_offset;
 } Ast;
 
 void ast_init(Ast *ast);

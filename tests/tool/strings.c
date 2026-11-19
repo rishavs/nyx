@@ -52,7 +52,7 @@ TEST("Error fields")
         "  return 0\n"
         "end\n"
         "var n: Int32 = describe("
-        "Error(\"E\", \"d\", \"f\", 7, 2, 3))\n";
+        "Error(ErrorKind::InvalidInput(), \"d\", \"f\", 7, 2, 3))\n";
 
     return run_generated(source, "7\n", "Error fields");
 }
@@ -73,11 +73,11 @@ TEST("Error assignment")
 {
     const char *source =
         "fun line_after(e: Error): Int32\n"
-        "  e = Error(\"New\", \"d\", \"f\", 42, 2, 3)\n"
+        "  e = Error(ErrorKind::NotFound(), \"d\", \"f\", 42, 2, 3)\n"
         "  return e.line()\n"
         "end\n"
         "var n: Int32 = line_after("
-        "Error(\"Old\", \"d\", \"f\", 1, 2, 3))\n";
+        "Error(ErrorKind::Closed(), \"d\", \"f\", 1, 2, 3))\n";
 
     return run_generated(source, "42\n", "Error assignment");
 }
@@ -260,21 +260,15 @@ TEST("fixed list of strings")
     return run_generated(source, "2\n", "fixed list of strings");
 }
 
-/* Expected failure. SEMANTICS.md says `e.line` reads a field of an Error, but
-   the checker only accepts the method form `e.line()`. This test was defined
-   but never registered, so the gap went unnoticed. It reports TODO until the
-   field form works, then passes. */
 TEST("Error field access")
 {
     const char *source =
         "fun line_of(e: Error): Int32\n"
         "  return e.line\n"
         "end\n"
-        "var n: Int32 = line_of(Error(\"E\", \"d\", \"f\", 7, 2, 3))\n";
+        "var n: Int32 = line_of(Error(ErrorKind::InvalidInput(), \"d\", \"f\", 7, 2, 3))\n";
 
-    return run_generated(source, "7\n", "Error field access") == TEST_PASS
-               ? TEST_PASS
-               : TEST_TODO;
+    return run_generated(source, "7\n", "Error field access");
 }
 
 TEST("for fixed string")
@@ -335,10 +329,10 @@ TEST("for arena strings")
 TEST("Error::throw")
 {
     const char *source =
-        "var e: Error = Error::throw(\"E\", \"desc\")\n"
+        "var e: Error = Error::throw(ErrorKind::InvalidInput(), \"desc\")\n"
         "print(e)\n";
     const char *expected =
-        "Error(E, desc, test.nip, 1, 23, 22)\n";
+        "Error(InvalidInput, desc, test.nip, 1, 23, 22)\n";
 
     return run_generated(source, expected, "Error::throw");
 }

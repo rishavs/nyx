@@ -62,8 +62,7 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
                                   name_text, sizeof(name_text));
     size_t i;
 
-    if (node == NULL || node->kind != TYPED_TYPE_DECLARATION ||
-        node->children_count == 0) {
+    if (node == NULL || node->kind != TYPED_TYPE_DECLARATION) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
@@ -73,6 +72,11 @@ bool emit_struct_type(const TypedProgram *program, const TypedType *type,
     }
     if (!emit_struct_type_buffer_appendf(header, node, effective_source, errors, &i, program)) {
         return false;
+    }
+    if (node->children_count == 0) {
+        /* A case that carries nothing still needs a member: C has no empty
+           struct. */
+        buffer_append(header, "    char nyx_unit;\n");
     }
     buffer_appendf(header, "} %s;\n\n", name);
     return true;
@@ -159,49 +163,109 @@ bool emit_union_type(const TypedProgram *program, const TypedType *type,
     return true;
 }
 
+/* The member of a case struct that holds its text: a case with a field is the
+   one that carries a header of its own (`Other`), and the field is it. */
+static const TypedNode *case_header_field(const TypedProgram *program,
+                                          const TypedType *alternative)
+{
+    const TypedNode *declaration =
+        typed_program_node(program, alternative->declaration_node);
+
+    return declaration->children_count == 0
+               ? NULL
+               : typed_program_node(
+                     program, *(const size_t *)list_get(
+                                  &program->children,
+                                  declaration->children_start));
+}
+
+/* One case of the header switch: a kind with no header of its own reads as its
+   name; one with a header (`Other`) reads as that. */
+static void emit_error_header_case(const TypedProgram *program,
+                                   const TypedType *kind, size_t i,
+                                   TextBuffer *header)
+{
+    const TypedType *alternative = union_alternative_type(program, kind, i);
+    const TypedNode *field = case_header_field(program, alternative);
+    char field_text[USER_NAME_CAPACITY];
+
+    if (field != NULL) {
+        buffer_appendf(header, "    case %zu: return e.kind.value.v%zu.%s;\n", i, i,
+                       user_c_name(program, field->name_index, field_text,
+                                   sizeof(field_text)));
+        return;
+    }
+    buffer_appendf(header, "    case %zu: text = \"%s\"; break;\n", i,
+                   typed_program_symbol_text(program,
+                                             alternative->source_name_index));
+}
+
+/* The text of an Error's kind, as the `header()` method reads it. */
+static void emit_error_header_helper(const TypedProgram *program,
+                                     const TypedType *kind, const char *string_name,
+                                     TextBuffer *header)
+{
+    size_t i;
+
+    buffer_appendf(header,
+                   "static inline %s nyx_error_header(nyx_error e)\n{\n"
+                   "    %s r = { {0}, 0 };\n"
+                   "    const char *text = \"\";\n"
+                   "    switch (e.kind.tag) {\n",
+                   string_name, string_name);
+    for (i = 0; i < kind->child_count; i++) {
+        emit_error_header_case(program, kind, i, header);
+    }
+    buffer_appendf(header,
+                   "    default: break;\n    }\n"
+                   "    while (text[r.length] != '\\0' && r.length < %d) {\n"
+                   "        r.data[r.length] = (uint8_t)text[r.length];\n"
+                   "        r.length++;\n    }\n"
+                   "    return r;\n}\n\n",
+                   program->error_header_capacity);
+}
+
 static bool emit_types_in_order_header(const TypedType *type, ErrorState *errors, const TypedProgram *program, TextBuffer *header)
 {
-    const size_t *header_type;
-    const size_t *description_type;
-    const size_t *filename_type;
-    char header_name[NYX_IDENTIFIER_MAX + 32];
+    size_t parts[3];
+    char kind_name[NYX_IDENTIFIER_MAX + 32];
     char description_name[NYX_IDENTIFIER_MAX + 32];
     char filename_name[NYX_IDENTIFIER_MAX + 32];
+    char header_name[NYX_IDENTIFIER_MAX + 32];
+    size_t i;
 
     if (type->child_count != 3) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
-    header_type = list_get(&program->type_children,
-                           type->first_child);
-    description_type = list_get(&program->type_children,
-                                type->first_child + 1);
-    filename_type = list_get(&program->type_children,
-                             type->first_child + 2);
-    if (header_type == NULL || description_type == NULL ||
-        filename_type == NULL ||
-        !format_c_type(program, *header_type, header_name,
-                       sizeof(header_name), errors) ||
-        !format_c_type(program, *description_type, description_name,
+    for (i = 0; i < 3; i++) {
+        parts[i] = *(const size_t *)list_get(&program->type_children,
+                                             type->first_child + i);
+    }
+    if (!format_c_type(program, parts[0], kind_name, sizeof(kind_name), errors) ||
+        !format_c_type(program, parts[1], description_name,
                        sizeof(description_name), errors) ||
-        !format_c_type(program, *filename_type, filename_name,
-                       sizeof(filename_name), errors)) {
-        if (!errors->reported) {
-            error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
-        }
+        !format_c_type(program, parts[2], filename_name, sizeof(filename_name),
+                       errors)) {
         return false;
     }
     buffer_appendf(
         header,
         "typedef struct {\n"
-        "    %s header;\n"
+        "    %s kind;\n"
         "    %s description;\n"
         "    %s filename;\n"
         "    int32_t line;\n"
         "    int32_t col;\n"
         "    int32_t pos;\n"
         "} nyx_error;\n\n",
-        header_name, description_name, filename_name);
+        kind_name, description_name, filename_name);
+    /* The header text is a String of the configured header capacity, which is
+       also the type of an `Other` kind's header. */
+    snprintf(header_name, sizeof(header_name), "nyx_string_%d",
+             program->error_header_capacity);
+    emit_error_header_helper(program, typed_program_type(program, parts[0]),
+                             header_name, header);
     return true;
 }
 

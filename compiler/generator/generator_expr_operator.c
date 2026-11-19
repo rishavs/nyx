@@ -253,7 +253,8 @@ static bool is_composite_kind(NyxType kind)
 {
     return kind == NYX_TYPE_STRUCT || kind == NYX_TYPE_FIXED_LIST ||
            kind == NYX_TYPE_LIST || kind == NYX_TYPE_RECORD ||
-           kind == NYX_TYPE_TABLE || kind == NYX_TYPE_HANDLE;
+           kind == NYX_TYPE_TABLE || kind == NYX_TYPE_HANDLE ||
+           kind == NYX_TYPE_UNION;
 }
 
 /* Two string types that would not be the same C type. */
@@ -563,7 +564,8 @@ static bool emit_operator_struct_constructor(const TypedProgram *program,
     }
     buffer_appendf(buffer, "(%s){ ", type_name);
     ok = emit_children_expressions(program, node, buffer, errors);
-    buffer_append(buffer, " }");
+    /* The member of a struct with no fields is initialised to zero. */
+    buffer_append(buffer, node->children_count == 0 ? "0 }" : " }");
     return ok;
 }
 

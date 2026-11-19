@@ -45,6 +45,10 @@ static bool emit_print_helper_declaration(const TypedProgram *program, const Typ
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_TYPE);
         return false;
     }
+    if (declaration->children_count == 0) {
+        buffer_appendf(source, "    fputs(\"%s\", stdout);\n", name);
+        return true;
+    }
     buffer_appendf(source, "    fputs(\"%s { \", stdout);\n", name);
     for ((*i) = 0; (*i) < declaration->children_count; (*i)++) {
         if (!emit_print_helper_declaration_child(program, declaration, i, errors, source)) {
@@ -58,7 +62,7 @@ static bool emit_print_helper_declaration(const TypedProgram *program, const Typ
 static void emit_print_helper_names(TextBuffer *source, size_t *i, const TypedType *type, const TypedProgram *program)
 {
     static const char *const names[] = {
-        "header", "description", "filename", "line", "col", "pos"
+        "kind", "description", "filename", "line", "col", "pos"
     };
 
     buffer_append(source, "    fputs(\"Error(\", stdout);\n");

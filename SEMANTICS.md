@@ -13,6 +13,7 @@ A program is a sequence of items, read in source order:
 
 - a struct type declaration, `type Name ... end`;
 - a type alias, `type Name = Type`;
+- a sum type, `type Name is | Case ... end`;
 - a value declaration, `var name [: Type] = expression` or
   `const name [: Type] = expression`;
 - a global store declaration, `global name: Store = Store(bytes)`;
@@ -28,8 +29,8 @@ function body, or inside another block.
 Recursive syntax nesting is limited to 256 levels, and the parsed syntax tree
 is limited to a depth of 1024. Exceeding either limit is a compile-time error.
 
-Either type form may be generic: `type Name<T> = ...` or
-`type Name<T> ... end`.
+Any type form may be generic: `type Name<T> = ...`, `type Name<T> ... end`, or
+`type Name<T> is ... end`.
 
 Comments are ignored between tokens. `--` starts a line comment, and `--[` …
 `]--` delimits a multiline comment.
@@ -137,10 +138,14 @@ A type is a type expression. The implemented forms are:
 - **`String<N>`** — a built-in fixed-capacity string: at most `N` bytes stored
   inline in the value. `N` is an `Int32` byte capacity in
   `0..max_string_capacity` (default 4096).
-- **`Error`** — a built-in fixed-layout error value with a short header, a
-  description, a filename, and a source position.
+- **`Error`** — a built-in fixed-layout error value with a kind (an
+  `ErrorKind`), a description, a filename, and a source position.
+- **`ErrorKind`** — the built-in sum type of what an `Error` is about, declared
+  by the language itself; see [`ErrorKind`](#errorkind).
 - **struct types** — declared by the program, with fields, and nominal.
 - **union types** — written `A | B | C`, structural.
+- **sum types** — declared with cases, `type Shape is | Circle is radius: Int32
+  end | Empty end`; see [Sum types](#sum-types).
 - **function types** — written `Fun<(Int32, Int32):Int32>`, naming the parameter
   types and the return type. `Fun<():Bool>` is a function type with no
   parameters. Omit the return annotation for a no-result function type, for
@@ -225,8 +230,8 @@ Expressions are:
 - store and handle methods: `s.alloc<T>(value)`, `h.read()`,
   `h.write(value)`;
 - fixed-string methods: `s.byte_len()`, `s.byte_at(i)`;
-- Error methods: `e.header()`, `e.description()`, `e.filename()`, `e.line()`,
-  `e.col()`, `e.pos()`;
+- Error methods: `e.kind()`, `e.header()`, `e.description()`, `e.filename()`,
+  `e.line()`, `e.col()`, `e.pos()`;
 - arithmetic, bitwise, comparison, equality, and logical operators;
 - grouped expressions, `( expression )`.
 
@@ -616,6 +621,91 @@ Argument values are reordered at compile time: `Point(y = 4, x = 3)` and
 `Point(3, 4)` produce the same value, and generated C always writes arguments in
 field order.
 
+## Sum types
+
+A sum type is declared with cases:
+
+```nyx
+type Shape is
+  | Circle is radius: Int32 end
+  | Square is side: Int32, label: String<8> end
+  | Empty
+end
+```
+
+A case is a name, alone or followed by `is`, its fields, and `end`; the fields
+are written like a struct's (`name: Type`, commas optional, defaults allowed). A
+payload has at least one field. A pipe may lead or trail the cases, so
+`type Dir is North | South end` is a sum type of two cases. Case names within
+one sum type are unique, and the fields within one case are unique.
+
+A sum type may be generic, and its cases share its parameters:
+
+```nyx
+type Maybe<T> is
+  | Some is value: T end
+  | None
+end
+```
+
+**Building a value.** A case is built by calling it as a static function of the
+type, with its fields as a struct constructor takes them (all positional or all
+named, a default for an omitted field). The result has the type of the sum type:
+
+```nyx
+var a: Shape = Shape::Circle(radius = 3)
+var b = Shape::Square(4, "box")     -- b is a Shape
+var c = Shape::Empty()
+```
+
+For a generic sum type the type arguments come, in order, from the call
+(`Maybe<Int32>::Some(value = 1)`), from the type the context expects
+(`var m: Maybe<Bool> = Maybe::None()`, a `return` in a function that returns
+`Maybe<Int32>`), or from the values (`Maybe::Some(value = 1)` is a
+`Maybe<Int32>`). A case needing a type argument that none of these gives is an
+error.
+
+A case name written without its parentheses is not a value. When the context
+expects the case itself (`var s: Shape::Circle = Shape::Circle(radius = 3)`),
+the result is the case, not the sum type.
+
+**Testing and matching.** A case is also a type, written `Owner::Case`, or
+`Owner<Arguments>::Case` for a generic sum type. It is tested like any union
+alternative, and a test narrows the value to the case so its fields can be read:
+
+```nyx
+match typeof s
+with Shape::Circle then
+  print(s.radius)
+with Shape::Square then
+  print(s.side)
+with Shape::Empty then
+  print(0)
+end
+```
+
+A statement `match` over a sum type with no `else` must cover every case, and
+an expression `match` needs an `else`, as for any union. A pattern for a case
+of a generic sum type spells the type arguments, `Maybe<Int32>::Some`;
+`Maybe::Some` alone is an error.
+
+**What it is.** A sum type is the union of one struct per case. Everything a
+union does is therefore what a sum type does: the tag, injection of a case into
+the sum type, `typeof` tests, narrowing, exhaustiveness, printing (a value prints
+as its case, `Circle { radius: 3 }`, and a case with no fields as its name), and
+being a field, an element of an array or list, a parameter, or a result. A case
+is a struct, so it is nominal: two cases with the same fields are different
+types. Two operations are specific to sum types: `==` and `!=` compare two
+values of one sum type by case and then by field (a union of types that can all
+be compared with `==` compares the same way), and the type has a name of its own
+that can be used where a type is written.
+
+Not yet: a sum type that mixes cases with existing types (write a union alias
+for that), a sum type with one case (it is that case's struct, so it prints and
+tests as the case), and a `typeof` test or pattern for the sum type itself
+(`typeof x is Shape`, because the sum type is a union and a test needs a single
+non-union type).
+
 ## Value declarations
 
 ```text
@@ -700,7 +790,7 @@ Bool         true / false
 Nil          nil
 String<N>    raw bytes
 Text         raw bytes
-Error        Error(header, description, filename, line, col, pos)
+Error        Error(kind, description, filename, line, col, pos)
 struct       Name { field: value, ... }
 union        active payload only
 Array        [element, ...]
@@ -1778,7 +1868,7 @@ The arena slot contains the fixed string value, including its inline bytes.
 
 ```text
 type Error
-  header: String<32>
+  kind: ErrorKind
   description: String<128>
   filename: String<128>
   line: Int32
@@ -1788,20 +1878,21 @@ end
 ```
 
 It is constructed positionally and its fields are read directly. The field
-methods remain available:
+methods remain available, and `header()` reads the text of the kind:
 
 ```nyx
-var e: Error = Error("E_CONCAT", "concat failed", "main.nip", 3, 7, 42)
+var e: Error = Error(ErrorKind::NotFound(), "no such file", "main.nip", 3, 7, 42)
 
 var line: Int32 = e.line
-var header: String<32> = e.header
+var kind: ErrorKind = e.kind
+var header: String<32> = e.header()
 var description: String<128> = e.description
 ```
 
 The compiler can fill in the source position:
 
 ```nyx
-var e: Error = Error::throw("E_CONCAT", "concat failed")
+var e: Error = Error::throw(ErrorKind::InvalidInput(), "concat failed")
 ```
 
 A call statement whose result type contains `Error` is rejected: the error would
@@ -1809,7 +1900,7 @@ otherwise disappear. Bind the result, inspect it, or use `match` with an `else`
 to handle it. A result type contains `Error` recursively through unions,
 structs, handles, and collections.
 
-`Error::throw(header, description)` takes the two string fields and fills
+`Error::throw(kind, description)` takes the kind and the description and fills
 `filename`, `line`, `col`, and `pos` from the source file and the call site.
 The filename is the compiler's configured source name, truncated to the
 configured filename capacity.
@@ -1818,10 +1909,15 @@ configured filename capacity.
 - It can be passed, returned, stored in a Store, stored in a struct field, and
   used as a union alternative, for example `String<8> | Error`.
 - `typeof e is Error` narrows a union alternative normally.
-- `Error(...)` takes exactly `header`, `description`, `filename`, `line`,
-  `col`, `pos`. `Error::throw(header, description)` fills the last four from the
+- `Error(...)` takes exactly `kind`, `description`, `filename`, `line`,
+  `col`, `pos`. `Error::throw(kind, description)` fills the last four from the
   source position. Named arguments are not accepted.
-- The field capacities default to `32` (header), `128` (description), and `128`
+- The six fields are readable: `e.kind`, `e.description`, `e.filename`,
+  `e.line`, `e.col`, `e.pos`. `e.header()` is a method only: it is the name of
+  the kind, or the header of an `Other` kind, as a `String<N>` of the header
+  capacity (a longer name is cut).
+- The field capacities default to `32` (header, the header of an
+  `ErrorKind::Other`), `128` (description), and `128`
   (filename) bytes. `CompilerConfig.error_header_capacity`,
   `error_description_capacity`, and `error_filename_capacity` override them;
   `0` selects the default, clamped to `max_string_capacity`, and explicit values
@@ -1830,6 +1926,34 @@ configured filename capacity.
   matching value or a literal.
 - `Error` is a fixed-size inline value (about 300 bytes at the defaults) and is
   copied by value.
+
+### `ErrorKind`
+
+`ErrorKind` is a sum type the language declares itself:
+
+```text
+type ErrorKind is
+  | NotFound | PermissionDenied | AlreadyExists | InvalidInput | InvalidPath
+  | NotADirectory | IsADirectory | DirectoryNotEmpty | ReadOnly | Busy
+  | Interrupted | Cancelled | TimedOut | Unsupported | ResourceExhausted
+  | Closed | AddressInUse | AddressUnavailable | ConnectionRefused
+  | ConnectionReset | ConnectionAborted | HostUnreachable | NetworkUnreachable
+  | BrokenPipe | NotConnected
+  | Other is header: String<32> end
+end
+```
+
+It is used like any sum type: `ErrorKind::TimedOut()` builds a kind,
+`typeof k is ErrorKind::TimedOut` and `match typeof k with ErrorKind::NotFound
+then ...` test it, and `k == ErrorKind::Closed()` compares two. `Other` is for a
+category of the program's own: `ErrorKind::Other(header = "E_PARSE")`. The
+capacity of its header is `error_header_capacity`.
+
+The declaration is not in the source. A program that names `Error` or
+`ErrorKind` gets it appended to its tokens after the end of its own source, so
+its positions do not move, and a program that never names either has no
+`ErrorKind` types in its output. The name `ErrorKind` is reserved: a program may
+not declare a type of that name.
 
 Dynamic strings and `TextBuilder` are described under
 [Strings and Error](#strings-and-error). C string projection and the
@@ -2083,8 +2207,12 @@ language's behaviour:
 - `String<N>` becomes a `nyx_string_N` struct with a `uint8_t data[N+1]` array
   and a `uint32_t length`. A literal becomes a compound literal with its byte
   values, a NUL, zero padding, and the literal length.
-- `Error` becomes a `nyx_error` struct containing the two fixed-string fields
-  and the three `Int32` fields, in declaration order.
+- `Error` becomes a `nyx_error` struct containing the kind (a sum type, so a
+  tagged struct), the two fixed-string fields, and the three `Int32` fields, in
+  declaration order. A helper `nyx_error_header` reads the text of the kind.
+- A sum type is a union of one struct per case (see
+  [Sum types](#sum-types)). A case that carries nothing becomes a struct with
+  one dummy `char` member, because C has no empty struct.
 - Each struct type, and each concrete instantiation of a generic struct, becomes
   a `typedef struct` with one member per field, in declaration order.
 - Each distinct union type becomes a tagged struct: a `uint32_t tag` and a union
@@ -2161,7 +2289,13 @@ If compilation fails with no diagnostic recorded, the message is exactly
 - Closures and capturing program-level variables.
 - Mutual recursion between functions, because function forward references are not accepted.
 - Explicit type arguments at generic call sites; generic calls infer them.
-- Union type patterns in `typeof`/`match`, and union-subset widening.
+- Union type patterns in `typeof`/`match`, and union-subset widening. This
+  includes `typeof x is Shape` for a sum type.
+- A sum type that mixes cases with existing types; a sum type is all cases.
+- A sum type of one case that is distinct from that case.
+- A `Maybe::Some` pattern with its type arguments left to the scrutinee.
+- Printing a case with its owner (`Shape::Circle`); a case prints by its own
+  name.
 - Function-typed struct fields, because generated type definitions are emitted
   before the function-pointer typedefs they would need. Function-typed union
   alternatives use inline function-pointer payloads. Function types with

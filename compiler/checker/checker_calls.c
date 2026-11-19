@@ -800,33 +800,82 @@ static CallStep call_needs_name(const CallSite *call)
     return CALL_REJECTED;
 }
 
-/* Type::function(...) calls a function declared in a type. */
-static bool check_static_call(const CallSite *call, const char *owner)
+/* Type::function(...) calls a function declared in a type, builds a case of a
+   sum type, or throws an Error. */
+typedef CallStep (*StaticRule)(const CallSite *call, const char *owner);
+
+static CallStep static_error_throw(const CallSite *call, const char *owner)
+{
+    if (owner == NULL || strcmp(owner, "Error") != 0 ||
+        strcmp(call->name, "throw") != 0) {
+        return CALL_NEXT;
+    }
+    return call_step(check_error_throw(call->ctx, call->node, call->ast_index));
+}
+
+/* A sum type's own name is a case, unless it also has a static function of
+   that name. Anything else called on a sum type is a case that does not exist. */
+static CallStep static_case(const CallSite *call, const char *owner)
+{
+    CheckContext *ctx = call->ctx;
+    const FunctionEntry *associated;
+
+    if (owner == NULL || !is_sum_type_name(ctx, owner)) {
+        return CALL_NEXT;
+    }
+    if (find_case_index(ctx->types, owner, call->name) != TYPED_NO_NODE) {
+        return call_step(
+            check_case_call(ctx, call->node, owner, call->ast_index));
+    }
+    associated = find_associated_function(ctx->functions, owner, call->name);
+    if (associated != NULL && associated->is_static) {
+        return CALL_NEXT;
+    }
+    error_report_at(ctx->errors, call->node->pos, MESSAGE_CHECKER_UNKNOWN_CASE,
+                    owner, call->name);
+    return CALL_REJECTED;
+}
+
+static CallStep static_function(const CallSite *call, const char *owner)
 {
     CheckContext *ctx = call->ctx;
     const FunctionEntry *associated =
         find_associated_function(ctx->functions, owner, call->name);
     char full_name[NYX_IDENTIFIER_MAX * 2 + 4];
 
-    if (owner != NULL && strcmp(owner, "Error") == 0 &&
-        strcmp(call->name, "throw") == 0) {
-        return check_error_throw(ctx, call->node, call->ast_index);
-    }
     if (associated == NULL || !associated->is_static) {
         snprintf(full_name, sizeof(full_name), "%s::%s",
                  owner == NULL ? MESSAGE_FRAGMENT_MISSING_NAME : owner,
                  call->name);
         error_report_at(ctx->errors, call->node->pos,
                         MESSAGE_CHECKER_UNKNOWN_CALL, full_name);
-        return false;
+        return CALL_REJECTED;
     }
     if (associated->generic) {
-        return check_generic_call(ctx, call->node,
-                                  find_function_index(ctx, associated->name),
-                                  call->ast_index);
+        return call_step(check_generic_call(
+            ctx, call->node, find_function_index(ctx, associated->name),
+            call->ast_index));
     }
-    return check_associated_function_call(ctx, call->node, associated,
-                                          call->ast_index, false);
+    return call_step(check_associated_function_call(
+        ctx, call->node, associated, call->ast_index, false));
+}
+
+static const StaticRule static_rules[] = {
+    static_error_throw, static_case, static_function,
+};
+
+static bool check_static_call(const CallSite *call, const char *owner)
+{
+    size_t i;
+
+    for (i = 0; i < NYX_COUNT_OF(static_rules); i++) {
+        CallStep step = static_rules[i](call, owner);
+
+        if (step != CALL_NEXT) {
+            return step == CALL_ACCEPTED;
+        }
+    }
+    return false;
 }
 
 static CallStep call_static(const CallSite *call)
@@ -966,6 +1015,11 @@ static CallStep call_type_constructor(const CallSite *call)
         return CALL_NEXT;
     }
     entry = (const TypeEntry *)list_get(ctx->types, index);
+    if (entry->kind == TYPE_ENTRY_ADT) {
+        error_report_at(ctx->errors, call->node->pos,
+                        MESSAGE_CHECKER_CONSTRUCTOR_NOT_STRUCT, call->name);
+        return CALL_REJECTED;
+    }
     if (entry->parameter_count > 0) {
         return call_step(
             check_generic_constructor(ctx, call->node, index, call->ast_index));

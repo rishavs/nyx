@@ -243,7 +243,7 @@ var x: Int32 = p.x
 p.x = 3
 ```
 
-`Error` fields are readable (`e.line`, `e.header`, ...) but not writable. Field
+`Error` fields are readable (`e.kind`, `e.line`, ...) but not writable. Field
 writes require a variable/parameter field chain; writes through temporaries or
 list elements are not supported yet.
 
@@ -471,7 +471,7 @@ Bool        true
 Nil         nil
 String<N>   ada
 Text        ada
-Error       Error(E, desc, file, 3, 7, 42)
+Error       Error(TimedOut, desc, file, 3, 7, 42)
 struct      Point { x: 4, y: 5 }
 Array       [1, 2, 3]
 List        [10, 20]
@@ -573,6 +573,39 @@ needs an `else`:
 var z: Int32 = if typeof x is Int32 then 1 else 0 end
 var w: Int32 = match x with true then 1 else 0 end
 ```
+
+### Sum types
+
+A sum type is a choice among named cases, each of which may carry fields:
+
+```nyx
+type Shape is
+  | Circle is radius: Int32 end
+  | Square is side: Int32 end
+  | Empty
+end
+
+type Maybe<T> is | Some is value: T end | None end
+
+var a: Shape = Shape::Circle(radius = 3)
+var none: Maybe<Int32> = Maybe::None()
+
+match typeof a
+with Shape::Circle then
+  print(a.radius)
+with Shape::Square then
+  print(a.side)
+with Shape::Empty then
+  print(0)
+end
+```
+
+A case is built by calling it (`Shape::Empty()`) and is also a type
+(`Shape::Circle`), so it is tested with `typeof` and narrows the value to read
+its fields. A `match` over a sum type must cover every case. Two values of one
+sum type compare with `==`. A sum type is the union of one struct per case, so it
+works anywhere a union does. The built-in `ErrorKind` of an `Error` is a sum
+type declared by the language itself (see [`Error`](#strings-and-error)).
 
 Generic calls infer their type arguments from the value arguments, including
 generic constructors (`Pair(1, true)` is `Pair<Int64, Bool>`). Each concrete
@@ -1013,29 +1046,34 @@ var stored: String<16> = h.read()
 `Error` is a built-in value with a fixed layout:
 
 ```nyx
-var e: Error = Error("E_PARSE", "unexpected token", "main.nip", 3, 7, 42)
+var e: Error = Error(ErrorKind::InvalidInput(), "unexpected token", "main.nip", 3, 7, 42)
 
 var line: Int32 = e.line
-var header: String<32> = e.header
+var kind: ErrorKind = e.kind
+var header: String<32> = e.header()
 var description: String<128> = e.description
 ```
 
 The compiler can fill the source position:
 
 ```nyx
-var e: Error = Error::throw("E_PARSE", "unexpected token")
+var e: Error = Error::throw(ErrorKind::InvalidInput(), "unexpected token")
 ```
 
-`Error::throw(header, description)` uses the configured source filename and the
+`Error::throw(kind, description)` uses the configured source filename and the
 call-site line, column, and byte offset for the other four fields.
 
-It carries `header: String<32>`, `description: String<128>`,
-`filename: String<128>`, and `line`/`col`/`pos: Int32` by default. The three
-string capacities are configurable through `CompilerConfig`
-(`error_header_capacity`, `error_description_capacity`,
+It carries `kind: ErrorKind`, `description: String<128>`,
+`filename: String<128>`, and `line`/`col`/`pos: Int32` by default. The kind is
+a sum type the language declares, with twenty-five fixed cases such as
+`NotFound`, `TimedOut`, and `InvalidInput`, plus `Other(header)` for a category
+of your own; it is matched like any sum type (see below), and `e.header()` is
+its name, or the header of an `Other`. The three string capacities (the header
+of an `Other`, the description, and the filename) are configurable through
+`CompilerConfig` (`error_header_capacity`, `error_description_capacity`,
 `error_filename_capacity`); setting a field to `0` selects the default,
 clamped to `max_string_capacity`. `Error` fields are readable directly
-(`e.line`, `e.header`, ...) and the field methods remain available; fields are
+(`e.kind`, `e.line`, ...) and the field methods remain available; fields are
 not writable. `Error` can be stored, passed, returned, put in a struct field,
 and used as a union alternative such as `String<8> | Error`.
 

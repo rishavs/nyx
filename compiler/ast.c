@@ -11,6 +11,7 @@ void ast_init(Ast *ast)
     list_init(&ast->children, sizeof(size_t));
     list_init(&ast->type_parameters, sizeof(size_t));
     list_init(&ast->bytes, sizeof(unsigned char));
+    ast->prelude_offset = (size_t)-1;
 }
 
 void ast_free(Ast *ast)

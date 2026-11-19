@@ -26,6 +26,16 @@ source  ->  tokens  ->  syntax tree  ->  typed program  ->  C11 text
 artifact through a `const` pointer and produces a new artifact; none of them
 writes into the artifact it was given.
 
+Between the lexer and the parser the driver adds the language's own declarations
+when the program names them (`compiler/prelude.c`). A program whose tokens
+contain `Error` or `ErrorKind` gets the declaration of the `ErrorKind` sum type,
+written as Nyx source, lexed on its own and appended to the program's tokens
+before the end-of-file token, with its positions after the end of the source so
+the program's own diagnostics keep theirs; `Ast.prelude_offset` records where it
+starts, and the checker lets that declaration, and only that, use the reserved
+name `ErrorKind`. The prelude is therefore checked and emitted like a user's sum
+type, and a program that never names `Error` carries none of it.
+
 The driver frees the syntax tree as soon as the checker returns, so the analyser
 and generator cannot reach it even by accident. That is the pipeline's
 forward-only rule enforced structurally rather than by convention.
@@ -100,9 +110,17 @@ stored inline in `Ast.nodes` and refer to each other by index, with
 `AST_NO_NODE` (`(size_t)-1`) meaning "no child". Top-level declarations are
 recorded in `Ast.roots`, in source order.
 
+A type declaration is one of three nodes: `AST_TYPE_ALIAS` (`type N = T`),
+`AST_TYPE_DECLARATION` (a struct: fields up to `end`), or `AST_ADT_DECLARATION`
+(`type N is | Case ... end`), whose children are `AST_ADT_CASE` nodes, each with
+its fields as children. A case written as a type, `Owner::Case` or
+`Owner<Args>::Case`, is `AST_TYPE_CASE`: the owner in `name_index`, the case in
+`second_name_index`, the type arguments as children. The type parser leaves a
+`::` followed by `(` or `<` alone, because that is a static function.
+
 Nodes whose arity varies — struct fields, function parameters, blocks, `if`
 branches, call arguments, union alternatives, type arguments, and function-type
-parameters — store their children as one contiguous run of indices in
+parameters, and the cases of a sum type — store their children as one contiguous run of indices in
 `Ast.children`, recorded by `children_start` and `children_count`. A child
 expression or statement can therefore push its own nodes without splitting its
 parent's run: every variable-arity node appends its run only after all of its
@@ -371,8 +389,9 @@ Reads the syntax tree through a `const` pointer and writes a separate
 - supports same-type numeric arithmetic, ordering, bitwise, shift, and unary
   operators. Numeric equality compares across types without lossy conversion;
   `===` compares both type and value. Comparable composites use generated
-  structural equality helpers, strings compare by content across types, and
-  handles compare validated allocation identities;
+  structural equality helpers (a union compares its tag, then the active
+  alternative, so a sum type compares by case and field), strings compare by
+  content across types, and handles compare validated allocation identities;
 - implements explicit numeric conversion through `Int32(expr)` and the other
   numeric type names. A constant argument is converted and range-checked in
   the checker (`checker_numeric.c`) and recorded as a conversion whose source
@@ -400,9 +419,18 @@ Reads the syntax tree through a `const` pointer and writes a separate
   can be a struct/union/parameter/return and `TextBuilder` cannot be an
   `alloc`/`Handle` element; `get` on List, Array, Slice, and Table returns an
   optional union instead of trapping;
-- builds the built-in `Error` type and its three configured fixed-string field
-  types, checks `Error(...)` argument count and types, and types its six field
-  methods;
+- builds the built-in `Error` type (its kind, a sum type, and two configured
+  fixed-string field types), checks `Error(...)` argument count and types, and
+  types its six fields and their methods (and the derived `header()`);
+- checks sum types (`checker_adt.c`): a sum type `type S is | A | B is x: T end
+  end` is declared as one struct entry per case (owner `S`, name `A`, the sum
+  type's parameters) and an entry for `S` itself, which resolves to the
+  `intern_union` of the case structs for its type arguments. A case is built by
+  `S::A(...)` (a static call, `check_case_call`), which checks a struct
+  constructor and injects the struct into the union, and is written as a type
+  `S::A` (`AST_TYPE_CASE`, `resolve_case_type`). Nothing else knows about sum
+  types: tags, `typeof`, narrowing, exhaustiveness, printing and `==` are the
+  union's;
 - copies string bytes into `TypedProgram.bytes`, so the typed program outlives
   the syntax tree;
 - rejects store/function field and union-alternative types, and Store in
@@ -441,6 +469,7 @@ instead of branches"). The modules:
 | `checker_stmt.c` | blocks, assignments, `for`, local declarations, function declarations (`FunctionHead`), generic bodies' name scan |
 | `checker_calls.c`, `checker_generic.c` | calls (`call_rules`), arguments and call emission; generic calls (`GenericCall` phases) and instantiation |
 | `checker_methods*.c` | method calls on a value (`method_rules`), sharing `ReceiverCall`/`receiver_prepare` for the built-in families (collections, strings, errors, stores) |
+| `checker_adt.c` | sum types: declaring the case entries, resolving a sum type to the union of its case structs, case types and case constructors |
 | `checker_inject.c` | coercing a value to a context's type (`inject_rules`: record and list literals, numeric and string literals, unions) |
 | `checker_match.c` | `match` as phases over one `Match` (head, arms, completeness, lowering) |
 | `checker_flow.c` | whether a statement returns, terminates or breaks (`FlowQuery` tables) and `typeof` narrowing |
@@ -607,7 +636,12 @@ recurse through collections, structs, and unions using
 they and a leading `#define _POSIX_C_SOURCE 200809L` are emitted only when the
 program uses either node.
 `Error::throw` emits a compound literal with the source filename and position. `elseif` chains
-are emitted as nested `else { if ... }` blocks. A `TYPED_SUM_INJECT` becomes a
+are emitted as nested `else { if ... }` blocks. A struct with no fields (the case
+of a sum type that carries nothing) has one dummy `char` member and is built as
+`(T){ 0 }`, because C has no empty struct. `nyx_error` holds the kind (a sum
+type, so a tagged struct) and is followed by `nyx_error_header`, which reads the
+kind's name, or an `Other` kind's header, as a string of the header capacity.
+A `TYPED_SUM_INJECT` becomes a
 compound literal, `TYPED_IS` (from `typeof x is T`) becomes a tag comparison (or a literal when the
 checker decided it statically), and `TYPED_SUM_PAYLOAD` reads the payload member
 directly.
@@ -852,6 +886,7 @@ Public stage headers remain in `include/` and expose only the stage entry point.
 | File | Role |
 |---|---|
 | `compiler/main.c` | Command-line driver: read, compile, write, invoke `cc` |
+| `compiler/prelude.c` | The declarations the language provides in its own source (`ErrorKind`), appended to the tokens of a program that names them |
 | `compiler/compiler.c` | `compiler_compile`: drives the stages, owns the result |
 | `compiler/ast.c` | `Ast` lifecycle and symbol interning |
 | `compiler/typed_program.c` | `TypedProgram` lifecycle and symbol copying |

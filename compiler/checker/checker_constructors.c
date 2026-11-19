@@ -346,10 +346,10 @@ static bool infer_from_field(CheckContext *ctx, const AstNode *node,
 
 /* Infer the type arguments from the values given, then instantiate the struct
    with them. */
-static bool instantiate_from_values(CheckContext *ctx, const AstNode *node,
-                                    const AstNode *declaration,
-                                    const TypeEntry *entry, size_t entry_index,
-                                    size_t *type_index)
+bool instantiate_from_values(CheckContext *ctx, const AstNode *node,
+                             const AstNode *declaration,
+                             const TypeEntry *entry, size_t entry_index,
+                             size_t *type_index)
 {
     InferEnv infer = {0};
     TypeEnv env = {0};

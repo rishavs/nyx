@@ -96,6 +96,7 @@ static bool validate_source_type_depth(CheckContext *ctx, size_t index,
     }
     alternatives = node->kind == AST_TYPE_UNION ||
                    node->kind == AST_TYPE_APPLICATION ||
+                   node->kind == AST_TYPE_CASE ||
                    node->kind == AST_TYPE_FUNCTION;
     return (!alternatives || validate_alternatives(ctx, node, depth)) &&
            validate_operands(ctx, node, depth);
@@ -1096,6 +1097,7 @@ static bool checker_predeclare_types(CheckContext *ctx, List *invalid_roots,
         const AstNode *node = ast_get_node(ctx->ast, root);
         size_t before = ctx->types->length;
         bool declares = node != NULL && (node->kind == AST_TYPE_DECLARATION ||
+                                         node->kind == AST_ADT_DECLARATION ||
                                          node->kind == AST_TYPE_ALIAS);
 
         if (!declares || *(const bool *)list_get(invalid_roots, i)) {
@@ -1128,9 +1130,13 @@ static bool root_type(CheckContext *ctx, const AstNode *node, size_t root)
     if (entry == NULL || entry->parameter_count != 0) {
         return entry != NULL;
     }
-    checked = entry->kind == TYPE_ENTRY_ALIAS
-                  ? expand_alias(ctx, entry, NULL, 0, &resolved)
-                  : instantiate_struct(ctx, index, NULL, 0, &resolved);
+    if (entry->kind == TYPE_ENTRY_ADT) {
+        checked = expand_adt(ctx, index, NULL, 0, &resolved);
+    } else {
+        checked = entry->kind == TYPE_ENTRY_ALIAS
+                      ? expand_alias(ctx, entry, NULL, 0, &resolved)
+                      : instantiate_struct(ctx, index, NULL, 0, &resolved);
+    }
     checked = checked && check_type_value_size(ctx, resolved, node->pos);
     if (checked) {
         entry->type_index = resolved;
@@ -1185,6 +1191,7 @@ static const struct {
 } root_checks[] = {
     {AST_DECLARATION, check_var_declaration},
     {AST_TYPE_DECLARATION, root_type},
+    {AST_ADT_DECLARATION, root_type},
     {AST_TYPE_ALIAS, root_type},
     {AST_FUNCTION_DECLARATION, check_function_declaration},
     {AST_EXPRESSION_STATEMENT, root_expression},
@@ -1221,6 +1228,7 @@ static void checker_publish_root(CheckContext *ctx, const AstNode *node,
 {
     size_t typed_root = *mapping_slot(ctx->mapping, root);
     bool declares = node->kind == AST_TYPE_DECLARATION ||
+                    node->kind == AST_ADT_DECLARATION ||
                     node->kind == AST_TYPE_ALIAS;
 
     if (declares || typed_root == TYPED_NO_NODE) {

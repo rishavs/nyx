@@ -122,7 +122,7 @@ TEST("Error with too few arguments")
 TEST("Error with a non-string description")
 {
     return compile_fails(
-        "var e: Error = Error(\"E\", 1, \"f\", 1, 2, 3)\n",
+        "var e: Error = Error(ErrorKind::InvalidInput(), 1, \"f\", 1, 2, 3)\n",
         "Error with a non-string description",
         MESSAGE_CHECKER_ERROR_ARG_TYPE, (size_t)2);
 }
@@ -246,7 +246,7 @@ TEST("bare String")
 TEST("Error::throw argument count")
 {
     return compile_fails(
-        "var e: Error = Error::throw(\"E\")\n",
+        "var e: Error = Error::throw(ErrorKind::InvalidInput())\n",
         "Error::throw argument count",
         MESSAGE_CHECKER_ERROR_THROW_ARGS);
 }
@@ -254,7 +254,7 @@ TEST("Error::throw argument count")
 TEST("Error.throw requires static syntax")
 {
     return compile_fails(
-        "var e: Error = Error.throw(\"E\", \"description\")\n",
+        "var e: Error = Error.throw(ErrorKind::InvalidInput(), \"description\")\n",
         "the old Error.throw syntax",
         MESSAGE_CHECKER_UNKNOWN_MEMBER, "throw");
 }

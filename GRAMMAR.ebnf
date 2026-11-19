@@ -38,11 +38,18 @@ declaration        = type-declaration
 (* ---- type declarations ---- *)
 
 (* "type Name = T" is a transparent alias. "type Name Field* end" is a nominal
-   struct. A type declaration may be generic; the parameter list follows the
-   name in both forms. *)
+   struct. "type Name is Case ... end" is a sum type: a union of one struct per
+   case. A type declaration may be generic; the parameter list follows the name
+   in all three forms. *)
 type-declaration   = "type", identifier, [ type-parameters ],
                      ( "=", type
+                     | "is", [ "|" ], case, { "|", case }, [ "|" ], "end"
                      | field, { [ "," ], field }, [ "," ], "end" ) ;
+
+(* A case is its name, or its name and fields up to its own "end". A pipe may
+   lead or trail the cases, and a payload has at least one field. *)
+case               = identifier, [ "is", field, { [ "," ], field },
+                                    [ "," ], "end" ] ;
 
 type-parameters    = "<", identifier, { ",", identifier }, ">" ;
 
@@ -200,11 +207,16 @@ primary-type       = "String", "<", integer-literal, ">"
                    | "Range", "<", type, ">"
                    | "Record", "<", type, ",", type, ",", integer-literal, ">"
                    | "Table", "<", type, ",", type, ">"
+                   | case-type
                    | type-name, [ "<", type-arguments, ">" ]
                    | function-type
                    | "(", type, ")" ;
 
 type-arguments     = type, { ",", type } ;
+
+(* The type of one case of a sum type. A "::" that is followed by "(" or "<" is
+   a static function, not a case. *)
+case-type          = type-name, [ "<", type-arguments, ">" ], "::", identifier ;
 
 function-type      = "Fun", "<", "(", [ type, { ",", type } ], ")",
                      [ ":", type ], ">" ;
@@ -214,8 +226,9 @@ type-name          = identifier ;
                         "Uint16", "Uint32", "Uint64", "Float32", "Float64",
                         "Bool", "Byte" (alias for Uint8), "Nil", "Text",
                         "TextBuilder", "List", "Array", "Slice", "Range", "Record",
-                        "Table", "String", "Store", "Handle", "Error", a
-                        declared struct or alias, or a type parameter in scope.
+                        "Table", "String", "Store", "Handle", "Error",
+                        "ErrorKind", a declared struct, alias or sum type, or a
+                        type parameter in scope.
                         Bare "Text" is the dynamic arena/static-backed type.
                         List<T> is dynamic; Array<T,N> is fixed-capacity with a
                         runtime length. Slice<T> is a read-only view of a
@@ -497,8 +510,9 @@ end                = "end" ;
    fixed-to-dynamic. TextBuilder copies alias the same builder state, and
    List<T> copies alias the same list state. A fixed Array literal may contain
    0..capacity elements. A dynamic list is created with
-   points.list<T>(capacity). Error is constructed with Error(header, description,
-   filename, line, col, pos). *)
+   points.list<T>(capacity). Error is constructed with Error(kind, description,
+   filename, line, col, pos); the kind is an ErrorKind, a sum type the language
+   declares, built as ErrorKind::NotFound(). *)
 
 (* ---- rejected forms worth naming ---- *)
 
@@ -538,7 +552,7 @@ end                = "end" ;
        var b: Text = a       (* checker: initialiser type does not match *)
        var c: String<16> = a   (* checker: initialiser type does not match *)
    Error needs all six arguments in order:
-       Error("E", "d")         (* checker: Error takes header, description ... *)
+       Error("E", "d")         (* checker: Error takes kind, description ... *)
    Assignment is not an expression:
        var y: Int32 = (x = 1)  (* parser: expected ')' *)
    Assignment targets a variable, not a store or function:

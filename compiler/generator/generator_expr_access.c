@@ -94,22 +94,25 @@ static bool emit_access_error_construct(const TypedProgram *program, const Typed
 
 static bool emit_access_error_field(const TypedProgram *program, const TypedNode *node, TextBuffer *buffer, ErrorState *errors, bool *handled)
 {
-    *handled = true;
     static const char *const fields[] = {
-        "header", "description", "filename", "line", "col", "pos"
+        "kind", "description", "filename", "line", "col", "pos"
     };
+    bool ok;
 
-    if (node->integer_value < 0 || node->integer_value > 5) {
+    *handled = true;
+    if (node->integer_value < 0 || node->integer_value > 6) {
         error_report(errors, MESSAGE_GENERATOR_UNSUPPORTED_EXPRESSION);
         return false;
     }
-    buffer_append(buffer, "(");
-    if (!emit_expression(program, node->left_child, buffer, errors)) {
-        return false;
+    /* The seventh is the text of the kind, which a helper reads. */
+    buffer_append(buffer, node->integer_value == 6 ? "nyx_error_header(" : "(");
+    ok = emit_expression(program, node->left_child, buffer, errors);
+    if (node->integer_value == 6) {
+        buffer_append(buffer, ")");
+    } else {
+        buffer_appendf(buffer, ").%s", fields[node->integer_value]);
     }
-    buffer_appendf(buffer, ").%s",
-                    fields[node->integer_value]);
-    return true;
+    return ok;
 }
 
 static const struct {

@@ -276,7 +276,7 @@ static Violation error_throw(const NodeCheck *c)
 
 static Violation error_field(const NodeCheck *c)
 {
-    return holds(c->node->integer_value >= 0 && c->node->integer_value <= 5,
+    return holds(c->node->integer_value >= 0 && c->node->integer_value <= 6,
                  MESSAGE_ANALYSER_INVALID_ERROR, c->index);
 }
 
@@ -788,11 +788,6 @@ static bool part_has_type(const TypedProgram *program, size_t part)
     return typed_program_type(program, part) != NULL;
 }
 
-static bool part_is_string(const TypedProgram *program, size_t part)
-{
-    return type_is(program, part, NYX_TYPE_STRING);
-}
-
 static bool part_is_integer(const TypedProgram *program, size_t part)
 {
     const TypedType *type = typed_program_type(program, part);
@@ -888,11 +883,26 @@ static Violation handle_type_check(const TypeCheck *c)
                  MESSAGE_ANALYSER_INVALID_HANDLE_TYPE, c->index);
 }
 
-/* An Error holds three strings: header, description and filename. */
+/* An Error holds its kind (a sum type, so a union) and two strings: the
+   description and the filename. */
 static Violation error_type_check(const TypeCheck *c)
 {
-    return holds(c->type->child_count == 3 && run_in_range(c) &&
-                     parts_are(c, part_is_string),
+    const TypedProgram *p = c->program;
+    bool shaped = c->type->child_count == 3 && run_in_range(c);
+
+    return holds(shaped &&
+                     type_is(p,
+                             *(const size_t *)list_get(&p->type_children,
+                                                       c->type->first_child),
+                             NYX_TYPE_UNION) &&
+                     type_is(p,
+                             *(const size_t *)list_get(&p->type_children,
+                                                       c->type->first_child + 1),
+                             NYX_TYPE_STRING) &&
+                     type_is(p,
+                             *(const size_t *)list_get(&p->type_children,
+                                                       c->type->first_child + 2),
+                             NYX_TYPE_STRING),
                  MESSAGE_ANALYSER_INVALID_TYPE_CHILD, c->index);
 }
 

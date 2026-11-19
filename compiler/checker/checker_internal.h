@@ -18,7 +18,8 @@
 
 typedef enum {
     TYPE_ENTRY_STRUCT,
-    TYPE_ENTRY_ALIAS
+    TYPE_ENTRY_ALIAS,
+    TYPE_ENTRY_ADT
 } TypeEntryKind;
 
 /* A declared type. Instantiations live in CheckContext.struct_instantiations
@@ -26,8 +27,13 @@ typedef enum {
    List. */
 typedef struct {
     char name[NYX_IDENTIFIER_MAX];
+    /* The sum type a case belongs to, empty for any other entry. A case is a
+       struct entry that bare-name lookup never finds. */
+    char owner[NYX_IDENTIFIER_MAX];
     TypeEntryKind kind;
-    size_t ast_index;  /* AST_TYPE_DECLARATION or AST_TYPE_ALIAS */
+    /* AST_TYPE_DECLARATION, AST_TYPE_ALIAS, AST_ADT_DECLARATION, or the
+       AST_ADT_CASE of a case. */
+    size_t ast_index;
     size_t type_index; /* concrete non-generic struct, or TYPED_NO_NODE */
     char parameters[NYX_MAX_TYPE_PARAMETERS][NYX_IDENTIFIER_MAX];
     size_t parameter_count;
@@ -203,6 +209,31 @@ bool emit_narrowed_value(CheckContext *ctx, size_t source,
                          const Narrowing *narrowing, size_t *out);
 size_t *mapping_slot(List *mapping, size_t index);
 size_t find_type_index(const List *types, const char *name);
+size_t find_case_index(const List *types, const char *owner, const char *name);
+bool check_type_name(CheckContext *ctx, const AstNode *node, const char *name);
+bool declare_type(CheckContext *ctx, const AstNode *node, const char *name,
+                  size_t ast_index, TypeEntry *entry);
+bool check_duplicate_fields(CheckContext *ctx, const AstNode *node,
+                            const char *name);
+bool check_expanding_fields(CheckContext *ctx, const AstNode *node,
+                            const char *name, const TypeEntry *entry);
+
+/* Sum types (checker_adt.c). A sum type declared with cases is the union of
+   one struct per case; see ARCH.md. */
+bool declare_cases(CheckContext *ctx, const AstNode *declaration,
+                   size_t adt_entry);
+bool expand_adt(CheckContext *ctx, size_t entry_index, const size_t *arguments,
+                size_t argument_count, size_t *out_type);
+bool resolve_case_type(CheckContext *ctx, const AstNode *node,
+                       const TypeEnv *env, const char *owner, size_t *out_type);
+bool check_case_call(CheckContext *ctx, const AstNode *node, const char *owner,
+                     size_t ast_index);
+bool is_sum_type_name(const CheckContext *ctx, const char *name);
+bool error_kind_type(CheckContext *ctx, size_t *out_type);
+bool instantiate_from_values(CheckContext *ctx, const AstNode *node,
+                             const AstNode *declaration,
+                             const TypeEntry *entry, size_t entry_index,
+                             size_t *type_index);
 const TypeEntry *find_type(const List *types, const char *name);
 const FunctionEntry *find_function(const CheckContext *ctx, const char *name);
 const FunctionEntry *find_associated_function(const List *functions,

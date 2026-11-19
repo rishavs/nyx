@@ -1,0 +1,2 @@
+var e: Error = Error::throw(ErrorKind::TimedOut(), "slow")
+print(e.header())

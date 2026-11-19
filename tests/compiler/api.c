@@ -147,11 +147,11 @@ TEST("compiler: custom Error capacities")
                              .error_description_capacity = 16,
                              .error_filename_capacity = 24};
     CompilerResult result = compiler_compile(
-        "var e: Error = Error(\"E\", \"d\", \"f\", 1, 2, 3)\n", &config);
+        "var e: Error = Error(ErrorKind::InvalidInput(), \"d\", \"f\", 1, 2, 3)\n", &config);
     int ok;
 
     ok = result.succeeded && result.h_source != NULL &&
-         strstr(result.h_source, "nyx_string_8 header;") != NULL &&
+         strstr(result.h_source, "nyx_string_8 nyx_u_header;") != NULL &&
          strstr(result.h_source, "nyx_string_16 description;") != NULL &&
          strstr(result.h_source, "nyx_string_24 filename;") != NULL;
     compiler_result_free(&result);
@@ -171,7 +171,7 @@ TEST("compiler: invalid Error capacity")
                              .error_description_capacity = 16,
                              .error_filename_capacity = 24};
     CompilerResult result = compiler_compile(
-        "var e: Error = Error(\"E\", \"d\", \"f\", 1, 2, 3)\n", &config);
+        "var e: Error = Error(ErrorKind::InvalidInput(), \"d\", \"f\", 1, 2, 3)\n", &config);
     char expected[256];
     int ok;
 

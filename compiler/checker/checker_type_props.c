@@ -132,6 +132,7 @@ static const unsigned char equality_verdicts[] = {
     [NYX_TYPE_RECORD] = VERDICT_PARTS,
     [NYX_TYPE_TABLE] = VERDICT_PARTS,
     [NYX_TYPE_STRUCT] = VERDICT_PARTS,
+    [NYX_TYPE_UNION] = VERDICT_PARTS,
 };
 
 static const PropertyRules printable_rules = RULES(printable_verdicts, false);

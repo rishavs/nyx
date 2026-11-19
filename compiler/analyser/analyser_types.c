@@ -339,7 +339,8 @@ static bool composite_kind(NyxType kind)
 {
     return kind == NYX_TYPE_STRUCT || kind == NYX_TYPE_FIXED_LIST ||
            kind == NYX_TYPE_LIST || kind == NYX_TYPE_RECORD ||
-           kind == NYX_TYPE_TABLE || kind == NYX_TYPE_HANDLE;
+           kind == NYX_TYPE_TABLE || kind == NYX_TYPE_HANDLE ||
+           kind == NYX_TYPE_UNION;
 }
 
 static bool pair_listed(const List *pairs, size_t left, size_t right)

@@ -160,7 +160,7 @@ TEST("structs, unions, and arrays of plain values are plain values")
         "fun f(s: Shape, u: Int32 | Bool | Nil, e: Error): Int32 return 1 end\n"
         "var s: Shape = Shape([Point(1, 2.0)], \"box\")\n"
         "var u: Int32 | Bool | Nil = 3\n"
-        "var e: Error = Error(\"E\", \"d\", \"f\", 1, 2, 3)\n"
+        "var e: Error = Error(ErrorKind::InvalidInput(), \"d\", \"f\", 1, 2, 3)\n"
         "parallel do with f(s, u, e) end\n",
         "plain aggregate arguments");
 }

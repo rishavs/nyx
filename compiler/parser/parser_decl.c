@@ -23,132 +23,255 @@ static bool parse_default_literal(const TokenList *tokens, const List *string_by
     return false;
 }
 
-static bool parse_type_declaration_position_at(const Token **token, ErrorState *errors, const TokenList *tokens, size_t *cursor, List *fields, const List *string_bytes, Ast *ast, size_t *field_type_index, AstNode *field, size_t field_name_index, size_t *field_index)
+/* A type declaration is one of three shapes after its name and type
+   parameters: `= Type` (an alias), `is | Case ... end` (a sum type of cases),
+   or fields up to `end` (a struct). */
+
+typedef struct {
+    const TokenList *tokens;
+    const List *string_bytes;
+    Ast *ast;
+    size_t *cursor;
+    ErrorState *errors;
+} TypeParse;
+
+static bool type_parse_oom(const TypeParse *p)
 {
-    if ((*token) == NULL || (*token)->type != TOKEN_COLON) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_FIELD_COLON);
-        list_free(fields);
-        return false;
-    }
-    (*cursor)++;
+    error_report_fatal(p->errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
+    return false;
+}
 
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL ||
-        ((*token)->type != TOKEN_IDENTIFIER &&
-         (*token)->type != TOKEN_LPAREN)) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_FIELD_TYPE);
-        list_free(fields);
-        return false;
-    }
-    if (!parse_type(tokens, string_bytes, ast, cursor, field_type_index, errors)) {
-        list_free(fields);
-        return false;
-    }
+static bool type_parse_error(const TypeParse *p, const char *message)
+{
+    error_report_at(p->errors, position_at(p->tokens, *p->cursor), message);
+    return false;
+}
 
-    (*field).kind = AST_FIELD;
-    (*field).name_index = field_name_index;
-    (*field).left_child = (*field_type_index);
-    (*field).right_child = AST_NO_NODE;
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) != NULL && (*token)->type == TOKEN_EQUALS) {
-        (*cursor)++;
-        if (!parse_default_literal(tokens, string_bytes, ast, cursor,
-                                   &(*field).right_child, errors)) {
-            list_free(fields);
+static bool at_token(const TypeParse *p, TokenType type)
+{
+    const Token *token = token_at(p->tokens, *p->cursor);
+
+    return token != NULL && token->type == type;
+}
+
+/* `: Type` and an optional `= default`, after a field's name. */
+static bool parse_field_tail(const TypeParse *p, AstNode *field)
+{
+    if (!at_token(p, TOKEN_COLON)) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_FIELD_COLON);
+    }
+    (*p->cursor)++;
+    if (!at_token(p, TOKEN_IDENTIFIER) && !at_token(p, TOKEN_LPAREN)) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_FIELD_TYPE);
+    }
+    if (!parse_type(p->tokens, p->string_bytes, p->ast, p->cursor,
+                    &field->left_child, p->errors)) {
+        return false;
+    }
+    if (!at_token(p, TOKEN_EQUALS)) {
+        return true;
+    }
+    (*p->cursor)++;
+    return parse_default_literal(p->tokens, p->string_bytes, p->ast, p->cursor,
+                                 &field->right_child, p->errors);
+}
+
+/* `name: Type`, pushed, with its index returned. */
+static bool parse_field(const TypeParse *p, size_t *out_field)
+{
+    const Token *name = token_at(p->tokens, *p->cursor);
+    AstNode field = {0};
+
+    if (name == NULL || name->type != TOKEN_IDENTIFIER) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_FIELD_NAME);
+    }
+    field.kind = AST_FIELD;
+    field.pos = name->pos;
+    field.right_child = AST_NO_NODE;
+    if (!intern_token(p->ast, name, &field.name_index, p->errors)) {
+        return false;
+    }
+    (*p->cursor)++;
+    return parse_field_tail(p, &field) &&
+           (push_node(p->ast, &field, out_field) || type_parse_oom(p));
+}
+
+/* What follows a field: `end` closes the list, a comma separates it from the
+   next field (and may also trail), and anything else must start a field. */
+typedef enum {
+    FIELD_MORE,
+    FIELD_DONE,
+    FIELD_BAD
+} FieldNext;
+
+static FieldNext field_next(const TypeParse *p)
+{
+    if (at_token(p, TOKEN_COMMA)) {
+        (*p->cursor)++;
+    }
+    if (at_token(p, TOKEN_KEYWORD_END)) {
+        (*p->cursor)++;
+        return FIELD_DONE;
+    }
+    return at_token(p, TOKEN_IDENTIFIER) ? FIELD_MORE : FIELD_BAD;
+}
+
+/* The fields in `fields`, in order, as the node's children. */
+static bool attach_children(const TypeParse *p, AstNode *owner,
+                            const List *indices)
+{
+    size_t i;
+
+    owner->children_start = p->ast->children.length;
+    owner->children_count = indices->length;
+    for (i = 0; i < indices->length; i++) {
+        if (!ast_push_child(p->ast, *(const size_t *)list_get(indices, i))) {
+            return type_parse_oom(p);
+        }
+    }
+    return true;
+}
+
+static bool collect_fields(const TypeParse *p, List *fields)
+{
+    FieldNext next = FIELD_MORE;
+
+    while (next == FIELD_MORE) {
+        size_t field;
+
+        if (!parse_field(p, &field) ||
+            !(list_push(fields, &field) || type_parse_oom(p))) {
+            return false;
+        }
+        next = token_at(p->tokens, *p->cursor) == NULL ? FIELD_BAD
+                                                       : field_next(p);
+    }
+    return next == FIELD_DONE ||
+           type_parse_error(p, MESSAGE_PARSER_EXPECTED_FIELD_OR_END);
+}
+
+/* One or more fields up to `end`, which is consumed. The fields become the
+   node's children. */
+static bool parse_fields_until_end(const TypeParse *p, AstNode *owner)
+{
+    List fields;
+    bool ok = !at_token(p, TOKEN_KEYWORD_END) &&
+              token_at(p->tokens, *p->cursor) != NULL;
+
+    if (!ok) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_AT_LEAST_ONE_FIELD);
+    }
+    list_init(&fields, sizeof(size_t));
+    ok = collect_fields(p, &fields) && attach_children(p, owner, &fields);
+    list_free(&fields);
+    return ok;
+}
+
+/* `Case` or `Case is fields end`: one case of a sum type. */
+static bool parse_case(const TypeParse *p, size_t *out_case)
+{
+    const Token *name = token_at(p->tokens, *p->cursor);
+    AstNode node = {0};
+
+    if (name == NULL || name->type != TOKEN_IDENTIFIER) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_CASE_NAME);
+    }
+    node.kind = AST_ADT_CASE;
+    node.pos = name->pos;
+    node.left_child = AST_NO_NODE;
+    node.right_child = AST_NO_NODE;
+    if (!intern_token(p->ast, name, &node.name_index, p->errors)) {
+        return false;
+    }
+    (*p->cursor)++;
+    if (at_token(p, TOKEN_KEYWORD_IS)) {
+        (*p->cursor)++;
+        if (!parse_fields_until_end(p, &node)) {
             return false;
         }
     }
-    if (!push_node(ast, field, field_index) ||
-        !list_push(fields, field_index)) {
-        error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-        list_free(fields);
-        return false;
-    }
-
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_FIELD_OR_END);
-        list_free(fields);
-        return false;
-    }
-    return true;
+    return push_node(p->ast, &node, out_case) || type_parse_oom(p);
 }
 
-static bool parse_type_declaration_aliased(const Token *token, size_t *cursor, const TokenList *tokens, const List *string_bytes, Ast *ast, ErrorState *errors, SourcePos *declaration_pos, size_t name_index, size_t type_parameters_start, size_t type_parameters_count, bool *outcome)
+/* The cases up to the type's `end`: each one, and a pipe before the next. A
+   pipe may also trail the last. */
+static bool collect_cases(const TypeParse *p, List *cases)
 {
-    if (token != NULL && token->type == TOKEN_EQUALS) {
-        size_t aliased_type;
-        AstNode alias = {0};
+    bool more = true;
 
-        (*cursor)++;
-        if (!parse_type(tokens, string_bytes, ast, cursor, &aliased_type, errors)) {
-            do { *outcome = (false); return true; } while (0);
+    while (more) {
+        size_t node;
+
+        if (!parse_case(p, &node) ||
+            !(list_push(cases, &node) || type_parse_oom(p))) {
+            return false;
         }
-        alias.kind = AST_TYPE_ALIAS;
-        alias.pos = (*declaration_pos);
-        alias.name_index = name_index;
-        alias.left_child = AST_NO_NODE;
-        alias.right_child = aliased_type;
-        alias.type_parameters_start = type_parameters_start;
-        alias.type_parameters_count = type_parameters_count;
-        do { *outcome = (push_root(ast, &alias, errors)); return true; } while (0);
-    }
-
-    if (token == NULL || token->type == TOKEN_KEYWORD_END) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_AT_LEAST_ONE_FIELD);
-        do { *outcome = (false); return true; } while (0);
-    }
-    return false;
-}
-
-static bool parse_type_declaration_children_start(const Token **token, const TokenList *tokens, size_t *cursor, ErrorState *errors, Ast *ast, size_t *name_index, const List *string_bytes, size_t *type_parameters_start, size_t *type_parameters_count, AstNode *declaration)
-{
-    (*declaration) = (AstNode){0};
-
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type != TOKEN_IDENTIFIER) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_TYPE_NAME_AFTER_TYPE);
-        return false;
-    }
-    if (!intern_token(ast, (*token), name_index, errors)) {
-        return false;
-    }
-    (*cursor)++;
-
-    if (!parse_type_parameters(tokens, string_bytes, ast, cursor,
-                               type_parameters_start,
-                               type_parameters_count, errors)) {
-        return false;
+        more = at_token(p, TOKEN_PIPE);
+        if (more) {
+            (*p->cursor)++;
+            more = !at_token(p, TOKEN_KEYWORD_END);
+        }
     }
     return true;
 }
 
-static bool parse_type_declaration_token_at(const Token **token, const TokenList *tokens, size_t *cursor, ErrorState *errors, List *fields, AstNode *field, Ast *ast, size_t *field_name_index, const List *string_bytes, size_t *field_type_index, size_t *field_index)
+/* `| A | B is x: T end | C end`: the cases of a sum type, up to its `end`. A
+   pipe may lead or trail. */
+static bool parse_cases(const TypeParse *p, AstNode *declaration)
 {
-    (*token) = token_at(tokens, *cursor);
-    if ((*token) == NULL || (*token)->type != TOKEN_IDENTIFIER) {
-        error_report_at(errors, position_at(tokens, *cursor),
-                        MESSAGE_PARSER_EXPECTED_FIELD_NAME);
-        list_free(fields);
-        return false;
-    }
-    (*field).pos = (*token)->pos;
-    if (!intern_token(ast, (*token), field_name_index, errors)) {
-        list_free(fields);
-        return false;
-    }
-    (*cursor)++;
+    List cases;
+    bool ok;
 
-    (*token) = token_at(tokens, *cursor);
-    if (!parse_type_declaration_position_at(token, errors, tokens, cursor, fields, string_bytes, ast, field_type_index, field, (*field_name_index), field_index)) {
-    return false;
+    if (at_token(p, TOKEN_PIPE)) {
+        (*p->cursor)++;
+    }
+    list_init(&cases, sizeof(size_t));
+    ok = collect_cases(p, &cases) &&
+         (at_token(p, TOKEN_KEYWORD_END) ||
+          type_parse_error(p, MESSAGE_PARSER_EXPECTED_CASE_OR_END)) &&
+         attach_children(p, declaration, &cases);
+    list_free(&cases);
+    if (ok) {
+        (*p->cursor)++;
+    }
+    return ok;
 }
-    return true;
+
+/* The name and type parameters after `type`. */
+static bool parse_type_head(const TypeParse *p, AstNode *declaration)
+{
+    const Token *name = token_at(p->tokens, *p->cursor);
+
+    if (name == NULL || name->type != TOKEN_IDENTIFIER) {
+        return type_parse_error(p, MESSAGE_PARSER_EXPECTED_TYPE_NAME_AFTER_TYPE);
+    }
+    declaration->left_child = AST_NO_NODE;
+    declaration->right_child = AST_NO_NODE;
+    if (!intern_token(p->ast, name, &declaration->name_index, p->errors)) {
+        return false;
+    }
+    (*p->cursor)++;
+    return parse_type_parameters(p->tokens, p->string_bytes, p->ast, p->cursor,
+                                 &declaration->type_parameters_start,
+                                 &declaration->type_parameters_count, p->errors);
+}
+
+/* What follows the head: `= Type`, `is` and cases, or fields. */
+static bool parse_type_body(const TypeParse *p, AstNode *declaration)
+{
+    if (at_token(p, TOKEN_EQUALS)) {
+        (*p->cursor)++;
+        declaration->kind = AST_TYPE_ALIAS;
+        return parse_type(p->tokens, p->string_bytes, p->ast, p->cursor,
+                          &declaration->right_child, p->errors);
+    }
+    if (at_token(p, TOKEN_KEYWORD_IS)) {
+        (*p->cursor)++;
+        declaration->kind = AST_ADT_DECLARATION;
+        return parse_cases(p, declaration);
+    }
+    declaration->kind = AST_TYPE_DECLARATION;
+    return parse_fields_until_end(p, declaration);
 }
 
 bool parse_type_declaration(
@@ -156,79 +279,13 @@ bool parse_type_declaration(
     SourcePos declaration_pos, ErrorState *errors
 )
 {
-    const Token *token;
-    size_t name_index;
-    size_t type_parameters_start;
-    size_t type_parameters_count;
-    List fields = {0};
-    size_t children_start = {0};
-    size_t i = {0};
+    TypeParse p = {tokens, string_bytes, ast, cursor, errors};
     AstNode declaration = {0};
-    if (!parse_type_declaration_children_start(&token, tokens, cursor, errors, ast, &name_index, string_bytes, &type_parameters_start, &type_parameters_count, &declaration)) {
-        return false;
-    }
 
-    token = token_at(tokens, *cursor);
-    {
-        bool outcome;
-
-        if (parse_type_declaration_aliased(token, cursor, tokens, string_bytes, ast, errors, &declaration_pos, name_index, type_parameters_start, type_parameters_count, &outcome)) {
-            return outcome;
-        }
-    }
-
-    list_init(&fields, sizeof(size_t));
-    for (;;) {
-        size_t field_name_index;
-        size_t field_type_index;
-        size_t field_index;
-        AstNode field = {0};
-
-        if (!parse_type_declaration_token_at(&token, tokens, cursor, errors, &fields, &field, ast, &field_name_index, string_bytes, &field_type_index, &field_index)) {
-        return false;
-    }
-        if (token->type == TOKEN_KEYWORD_END) {
-            (*cursor)++;
-            break;
-        }
-        if (token->type == TOKEN_COMMA) {
-            (*cursor)++;
-            token = token_at(tokens, *cursor);
-            if (token != NULL && token->type == TOKEN_KEYWORD_END) {
-                (*cursor)++;
-                break;
-            }
-        }
-        if (token->type != TOKEN_IDENTIFIER) {
-            error_report_at(errors, position_at(tokens, *cursor),
-                            MESSAGE_PARSER_EXPECTED_FIELD_OR_END);
-            list_free(&fields);
-            return false;
-        }
-    }
-
-    children_start = ast->children.length;
-    for (i = 0; i < fields.length; i++) {
-        size_t field_index = *(const size_t *)list_get(&fields, i);
-
-        if (!ast_push_child(ast, field_index)) {
-            error_report_fatal(errors, MESSAGE_PARSER_OUT_OF_MEMORY_BUILDING_TREE);
-            list_free(&fields);
-            return false;
-        }
-    }
-    declaration.children_count = fields.length;
-    list_free(&fields);
-
-    declaration.kind = AST_TYPE_DECLARATION;
     declaration.pos = declaration_pos;
-    declaration.name_index = name_index;
-    declaration.left_child = AST_NO_NODE;
-    declaration.right_child = AST_NO_NODE;
-    declaration.children_start = children_start;
-    declaration.type_parameters_start = type_parameters_start;
-    declaration.type_parameters_count = type_parameters_count;
-    return push_root(ast, &declaration, errors);
+    return parse_type_head(&p, &declaration) &&
+           parse_type_body(&p, &declaration) &&
+           push_root(ast, &declaration, errors);
 }
 
 

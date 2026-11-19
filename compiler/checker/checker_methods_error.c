@@ -1,8 +1,9 @@
 #include "checker_internal.h"
 
-/* The fields of a caught Error read as methods: error.line(). */
+/* The fields of a caught Error read as methods: error.line(). The last is not
+   a field: `header()` is the text of the kind, its name or an `Other` header. */
 static const char *const error_field_names[] = {
-    "header", "description", "filename", "line", "col", "pos",
+    "kind", "description", "filename", "line", "col", "pos", "header",
 };
 
 bool check_error_method(CheckContext *ctx, const AstNode *node,

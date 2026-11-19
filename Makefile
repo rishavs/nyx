@@ -6,7 +6,7 @@ JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
 ifeq (,$(filter -j%,$(MAKEFLAGS)))
 MAKEFLAGS += -j$(JOBS)
 endif
-COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c \
+COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c compiler/prelude.c \
 	compiler/lexer/lexer.c compiler/parser/parser.c \
 	compiler/parser/parser_type.c compiler/parser/parser_call.c \
 	compiler/parser/parser_expr.c compiler/parser/parser_stmt.c \
@@ -29,7 +29,7 @@ COMPILER_SOURCES = compiler/main.c compiler/alloc.c compiler/compiler.c \
 	compiler/checker/checker_channel.c \
 	compiler/checker/checker_flow.c compiler/checker/checker_decl.c \
 	compiler/checker/checker_numeric.c compiler/checker/checker_base64.c \
-	compiler/checker/checker_inject.c compiler/checker/checker_match.c compiler/checker/checker_generic.c \
+	compiler/checker/checker_inject.c compiler/checker/checker_adt.c compiler/checker/checker_match.c compiler/checker/checker_generic.c \
 	compiler/analyser/analyser.c compiler/analyser/analyser_validate.c compiler/analyser/analyser_stores.c compiler/analyser/analyser_parallel.c compiler/analyser/analyser_regions.c compiler/analyser/analyser_facts.c compiler/analyser/analyser_types.c compiler/generator/generator.c \
 	compiler/generator/generator_support.c \
 	compiler/generator/generator_types.c compiler/generator/generator_expr.c \

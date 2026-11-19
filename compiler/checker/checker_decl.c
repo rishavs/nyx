@@ -885,6 +885,7 @@ static const struct {
     {"Array", MESSAGE_CHECKER_REDEFINES_ARRAY},
     {"Slice", MESSAGE_CHECKER_REDEFINES_SLICE},
     {"Error", MESSAGE_CHECKER_REDEFINES_ERROR},
+    {"ErrorKind", MESSAGE_CHECKER_REDEFINES_ERROR_KIND},
     {"Record", MESSAGE_CHECKER_REDEFINES_RECORD},
     {"Table", MESSAGE_CHECKER_REDEFINES_TABLE},
     {"Byte", MESSAGE_CHECKER_REDEFINES_BUILTIN},
@@ -916,10 +917,16 @@ static const char *redefinition_message(const char *name)
 }
 
 /* Why a program may not declare a type of this name, or NULL. */
-static const char *type_name_problem(CheckContext *ctx, const char *name)
+static const char *type_name_problem(CheckContext *ctx, const AstNode *node,
+                                     const char *name)
 {
     const char *redefined = redefinition_message(name);
 
+    /* The language declares ErrorKind itself, in the prelude after the
+       program; it is the one declaration of a reserved name that is allowed. */
+    if (node->pos.offset >= ctx->ast->prelude_offset) {
+        redefined = NULL;
+    }
     if (redefined != NULL) {
         return redefined;
     }
@@ -933,8 +940,8 @@ static const char *type_name_problem(CheckContext *ctx, const char *name)
     return NULL;
 }
 
-static bool check_type_name(CheckContext *ctx, const AstNode *node,
-                            const char *name)
+bool check_type_name(CheckContext *ctx, const AstNode *node,
+                     const char *name)
 {
     const char *problem;
 
@@ -946,7 +953,7 @@ static bool check_type_name(CheckContext *ctx, const AstNode *node,
     if (!check_reserved_name(ctx, node->pos, name)) {
         return false;
     }
-    problem = type_name_problem(ctx, name);
+    problem = type_name_problem(ctx, node, name);
     if (problem != NULL) {
         error_report_at(ctx->errors, node->pos, problem, name);
     }
@@ -954,8 +961,8 @@ static bool check_type_name(CheckContext *ctx, const AstNode *node,
 }
 
 /* Record the type's name and type parameters. */
-static bool declare_type(CheckContext *ctx, const AstNode *node,
-                         const char *name, size_t ast_index, TypeEntry *entry)
+bool declare_type(CheckContext *ctx, const AstNode *node,
+                  const char *name, size_t ast_index, TypeEntry *entry)
 {
     size_t i;
 
@@ -965,8 +972,10 @@ static bool declare_type(CheckContext *ctx, const AstNode *node,
         return false;
     }
     memcpy(entry->name, name, strlen(name) + 1);
-    entry->kind = node->kind == AST_TYPE_ALIAS ? TYPE_ENTRY_ALIAS
-                                               : TYPE_ENTRY_STRUCT;
+    entry->kind = node->kind == AST_TYPE_ALIAS
+                      ? TYPE_ENTRY_ALIAS
+                      : node->kind == AST_ADT_DECLARATION ? TYPE_ENTRY_ADT
+                                                          : TYPE_ENTRY_STRUCT;
     entry->ast_index = ast_index;
     entry->type_index = TYPED_NO_NODE;
     for (i = 0; i < node->type_parameters_count; i++) {
@@ -991,8 +1000,8 @@ static const AstNode *field_at(const CheckContext *ctx, const AstNode *node,
 }
 
 /* Two fields of one name would be two members of one C struct. */
-static bool check_duplicate_fields(CheckContext *ctx, const AstNode *node,
-                                   const char *name)
+bool check_duplicate_fields(CheckContext *ctx, const AstNode *node,
+                            const char *name)
 {
     size_t first;
     size_t second;
@@ -1020,8 +1029,8 @@ static bool check_duplicate_fields(CheckContext *ctx, const AstNode *node,
     return true;
 }
 
-static bool check_expanding_fields(CheckContext *ctx, const AstNode *node,
-                                   const char *name, const TypeEntry *entry)
+bool check_expanding_fields(CheckContext *ctx, const AstNode *node,
+                            const char *name, const TypeEntry *entry)
 {
     size_t i;
 
@@ -1082,6 +1091,9 @@ bool check_type_declaration(CheckContext *ctx, const AstNode *node,
         return false;
     }
     entry_index = ctx->types->length - 1;
+    if (entry.kind == TYPE_ENTRY_ADT) {
+        return declare_cases(ctx, node, entry_index);
+    }
     if (entry.kind == TYPE_ENTRY_ALIAS) {
         return resolve_declared_alias(ctx, &entry, entry_index);
     }

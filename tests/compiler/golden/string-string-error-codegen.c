@@ -42,13 +42,13 @@ static inline bool nyx_string_128_equal(nyx_string_128 a, nyx_string_128 b)
 int main(void)
 {
 #line 1 "test.nip"
-    nyx_error nyx_u_e = (nyx_error){ (nyx_string_32){ { 69, 0 }, 1 }, (nyx_string_128){ { 100, 101, 115, 99, 0 }, 4 }, (nyx_string_128){ { 116, 101, 115, 116, 46, 110, 105, 112, 0 }, 8 }, 1, 2, 3 };
+    nyx_error nyx_u_e = (nyx_error){ ((nyx_sum_27){ .tag = 19, .value.v19 = (nyx_u_nyx_gen_3){ 0 } }), (nyx_string_128){ { 100, 101, 115, 99, 0 }, 4 }, (nyx_string_128){ { 116, 101, 115, 116, 46, 110, 105, 112, 0 }, 8 }, 1, 2, 3 };
     (void)nyx_u_e;
 #line 2 "test.nip"
     int32_t nyx_u_l = (nyx_u_e).line;
     (void)nyx_u_l;
 #line 3 "test.nip"
-    nyx_string_32 nyx_u_h = (nyx_u_e).header;
+    nyx_string_32 nyx_u_h = nyx_error_header(nyx_u_e);
     (void)nyx_u_h;
     return 0;
 }

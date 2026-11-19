@@ -1,0 +1,8 @@
+type Shape is
+  | Circle is radius: Int32 end
+  | Square is side: Int32 end
+  | Empty
+end
+var a: Shape = Shape::Circle(radius = 3)
+var b: Shape = Shape::Empty()
+print(a == b)
